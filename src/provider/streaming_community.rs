@@ -10,6 +10,7 @@ use std::sync::{LazyLock, OnceLock};
 use url::Url;
 
 const DEFAULT_BASE_URL: &str = "https://streamingcommunityz.name";
+const DEFAULT_LANG: &str = "it";
 const LANGUAGES: &[&str] = &["it", "en"];
 const IMAGE_PRIORITIES: &[&str] = &["poster", "cover", "cover_mobile", "background"];
 
@@ -217,7 +218,10 @@ impl StreamingCommunityProvider {
         &self,
         entry: &MediaEntry,
     ) -> ProviderResult<(serde_json::Value, String)> {
-        let url = format!("{}/titles/{}-{}", self.base_url, entry.id, entry.slug);
+        let url = format!(
+            "{}/{DEFAULT_LANG}/titles/{}-{}",
+            self.base_url, entry.id, entry.slug
+        );
 
         let resp = self
             .client
@@ -247,11 +251,11 @@ impl StreamingCommunityProvider {
     ) -> ProviderResult<String> {
         let url = if let Some(ep_id) = episode_id {
             format!(
-                "{}/iframe/{media_id}?episode_id={ep_id}&next_episode=1",
+                "{}/{DEFAULT_LANG}/iframe/{media_id}?episode_id={ep_id}&next_episode=1",
                 self.base_url
             )
         } else {
-            format!("{}/iframe/{media_id}", self.base_url)
+            format!("{}/{DEFAULT_LANG}/iframe/{media_id}", self.base_url)
         };
 
         let resp = self
@@ -424,7 +428,7 @@ impl Provider for StreamingCommunityProvider {
             let (_page_data, version) = self.fetch_title_page(&entry).await?;
 
             let url = format!(
-                "{}/titles/{}-{}/season-{season_number}",
+                "{}/{DEFAULT_LANG}/titles/{}-{}/season-{season_number}",
                 self.base_url, entry.id, entry.slug
             );
 
