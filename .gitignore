@@ -1,2 +1,5 @@
 target
 .worktrees
+dist/
+.DS_Store
+.dep-cache/
