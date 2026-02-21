@@ -16,6 +16,9 @@ pub struct NativeVideoPlayer {
     playing: bool,
 }
 
+const PLAYER_WIDTH: f64 = 960.0;
+const PLAYER_HEIGHT: f64 = 540.0;
+
 impl NativeVideoPlayer {
     pub fn play(url: &str, title: &str, mtm: MainThreadMarker) -> Result<Self, String> {
         let ns_url_string: Retained<NSString> = NSString::from_str(url);
@@ -24,7 +27,10 @@ impl NativeVideoPlayer {
 
         let player = unsafe { AVPlayer::initWithURL(AVPlayer::alloc(mtm), &ns_url) };
 
-        let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(960.0, 540.0));
+        let frame = CGRect::new(
+            CGPoint::new(0.0, 0.0),
+            CGSize::new(PLAYER_WIDTH, PLAYER_HEIGHT),
+        );
         let player_view = unsafe { AVPlayerView::initWithFrame(AVPlayerView::alloc(mtm), frame) };
         unsafe { player_view.setPlayer(Some(&player)) };
 
@@ -52,10 +58,12 @@ impl NativeVideoPlayer {
             }
 
             let main_frame = main_window.frame();
-            let panel_x = main_frame.origin.x + (main_frame.size.width - 960.0) / 2.0;
-            let panel_y = main_frame.origin.y + (main_frame.size.height - 540.0) / 2.0;
-            let panel_frame =
-                CGRect::new(CGPoint::new(panel_x, panel_y), CGSize::new(960.0, 540.0));
+            let panel_x = main_frame.origin.x + (main_frame.size.width - PLAYER_WIDTH) / 2.0;
+            let panel_y = main_frame.origin.y + (main_frame.size.height - PLAYER_HEIGHT) / 2.0;
+            let panel_frame = CGRect::new(
+                CGPoint::new(panel_x, panel_y),
+                CGSize::new(PLAYER_WIDTH, PLAYER_HEIGHT),
+            );
             panel.setFrame_display(panel_frame, true);
         }
 

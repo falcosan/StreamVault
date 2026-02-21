@@ -10,6 +10,8 @@ use iced::{Alignment, Element, Fill, Subscription, Task as IcedTask, Theme};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+const TICK_INTERVAL_MS: u64 = 500;
+
 pub struct App {
     screen: Screen,
     config: AppConfig,
@@ -76,7 +78,7 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        iced::time::every(std::time::Duration::from_millis(500)).map(|_| Message::Tick)
+        iced::time::every(std::time::Duration::from_millis(TICK_INTERVAL_MS)).map(|_| Message::Tick)
     }
 
     pub fn update(&mut self, message: Message) -> IcedTask<Message> {
@@ -554,7 +556,7 @@ impl App {
             style::nav_button("Downloads", is_downloads, Message::NavigateDownloads),
             style::nav_button("Settings", is_settings, Message::NavigateSettings),
         ]
-        .width(160)
+        .width(style::SIDEBAR_WIDTH)
         .align_x(Alignment::Center);
 
         container(sidebar_content)
