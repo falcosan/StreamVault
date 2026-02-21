@@ -65,9 +65,9 @@ impl Default for DownloadConfig {
             retry_count: 30,
             concurrent_download: true,
             max_speed: String::new(),
-            select_video: "best".into(),
-            select_audio: "lang='ita|Ita|it':for=best".into(),
-            select_subtitle: "lang='ita|eng|Ita|Eng|it|en':for=all".into(),
+            select_video: "all".into(),
+            select_audio: "all".into(),
+            select_subtitle: "all".into(),
         }
     }
 }

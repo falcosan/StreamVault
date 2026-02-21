@@ -76,10 +76,8 @@ impl DownloadEngine {
             cmd.arg("--max-speed").arg(&self.config.download.max_speed);
         }
 
-        if self.config.download.select_video != "best" {
-            cmd.arg("--select-video")
-                .arg(&self.config.download.select_video);
-        }
+        cmd.arg("--select-video")
+            .arg(&self.config.download.select_video);
 
         cmd.arg("--select-audio")
             .arg(&self.config.download.select_audio);
