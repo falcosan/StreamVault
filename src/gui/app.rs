@@ -2,7 +2,7 @@ use crate::config::AppConfig;
 use crate::download::{DownloadEngine, DownloadProgress, DownloadRequest};
 use crate::gui::screens;
 use crate::gui::style;
-use crate::playback::PlaybackEngine;
+use crate::playback::{PlaybackEngine, PlaybackState};
 use crate::provider::{Episode, MediaEntry, Provider, Season, StreamUrl, StreamingCommunityProvider};
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Fill, Subscription, Task as IcedTask, Theme};
@@ -14,6 +14,7 @@ pub enum Screen {
     Home,
     Search,
     Details,
+    Player,
     Downloads,
     Settings,
 }
@@ -37,7 +38,16 @@ pub enum Message {
     PlayEntry(usize),
     PlayMovie,
     PlayEpisode(u32, u32),
-    StreamUrlResolved(Result<StreamUrl, String>),
+    StreamUrlResolved(Result<(StreamUrl, String), String>),
+
+    PlayerPause,
+    PlayerResume,
+    PlayerStop,
+    PlayerSeekForward,
+    PlayerSeekBackward,
+    PlayerVolumeUp,
+    PlayerVolumeDown,
+    PlayerCommandDone(Result<(), String>),
 
     DownloadMovie,
     DownloadEpisode(u32, u32),
@@ -65,12 +75,14 @@ pub enum Message {
     SettingsToggleGpu(bool),
     SettingsToggleProxy(bool),
     SettingsSave,
+
+    Tick,
 }
 
 pub struct App {
     screen: Screen,
     config: AppConfig,
-    provider: Arc<StreamingCommunityProvider>,
+    provider: Arc<dyn Provider>,
     provider_online: bool,
 
     search_query: String,
@@ -83,14 +95,18 @@ pub struct App {
     selected_season: Option<u32>,
     is_loading_details: bool,
 
+    playback: PlaybackEngine,
+    playing_title: String,
+
     downloads: Vec<DownloadProgress>,
-    download_tx: Option<mpsc::UnboundedSender<DownloadProgress>>,
+    download_tx: mpsc::UnboundedSender<DownloadProgress>,
+    download_rx: Option<mpsc::UnboundedReceiver<DownloadProgress>>,
 }
 
 impl App {
     pub fn new() -> (Self, IcedTask<Message>) {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let provider = Arc::new(StreamingCommunityProvider::new());
+        let (tx, rx) = mpsc::unbounded_channel();
+        let provider: Arc<dyn Provider> = Arc::new(StreamingCommunityProvider::new());
 
         let app = Self {
             screen: Screen::Home,
@@ -105,12 +121,14 @@ impl App {
             episodes: Vec::new(),
             selected_season: None,
             is_loading_details: false,
+            playback: PlaybackEngine::new(),
+            playing_title: String::new(),
             downloads: Vec::new(),
-            download_tx: Some(tx),
+            download_tx: tx,
+            download_rx: Some(rx),
         };
 
-        let check_task =
-            IcedTask::perform(check_provider(provider), Message::ProviderStatusChecked);
+        let check_task = IcedTask::perform(check_provider(provider), Message::ProviderStatusChecked);
 
         (app, check_task)
     }
@@ -120,11 +138,16 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        Subscription::none()
+        iced::time::every(std::time::Duration::from_millis(500)).map(|_| Message::Tick)
     }
 
     pub fn update(&mut self, message: Message) -> IcedTask<Message> {
         match message {
+            Message::Tick => {
+                self.drain_download_progress();
+                IcedTask::none()
+            }
+
             Message::NavigateHome => {
                 self.screen = Screen::Home;
                 IcedTask::none()
@@ -241,13 +264,15 @@ impl App {
 
             Message::PlayEntry(index) => {
                 if let Some(entry) = self.search_results.get(index).cloned() {
+                    let title = entry.display_title();
                     let provider = self.provider.clone();
                     IcedTask::perform(
                         async move {
-                            provider
+                            let stream = provider
                                 .get_stream_url(&entry, None, None)
                                 .await
-                                .map_err(|e| e.to_string())
+                                .map_err(|e| e.to_string())?;
+                            Ok((stream, title))
                         },
                         Message::StreamUrlResolved,
                     )
@@ -257,13 +282,15 @@ impl App {
             }
             Message::PlayMovie => {
                 if let Some(entry) = self.selected_entry.clone() {
+                    let title = entry.display_title();
                     let provider = self.provider.clone();
                     IcedTask::perform(
                         async move {
-                            provider
+                            let stream = provider
                                 .get_stream_url(&entry, None, None)
                                 .await
-                                .map_err(|e| e.to_string())
+                                .map_err(|e| e.to_string())?;
+                            Ok((stream, title))
                         },
                         Message::StreamUrlResolved,
                     )
@@ -274,13 +301,18 @@ impl App {
             Message::PlayEpisode(season, ep_num) => {
                 if let Some(entry) = self.selected_entry.clone() {
                     let episode = self.episodes.iter().find(|e| e.number == ep_num).cloned();
+                    let title = format!(
+                        "{} S{:02}E{:02}",
+                        entry.name, season, ep_num
+                    );
                     let provider = self.provider.clone();
                     IcedTask::perform(
                         async move {
-                            provider
+                            let stream = provider
                                 .get_stream_url(&entry, episode.as_ref(), Some(season))
                                 .await
-                                .map_err(|e| e.to_string())
+                                .map_err(|e| e.to_string())?;
+                            Ok((stream, title))
                         },
                         Message::StreamUrlResolved,
                     )
@@ -289,18 +321,69 @@ impl App {
                 }
             }
             Message::StreamUrlResolved(result) => {
-                if let Ok(stream) = result {
+                if let Ok((stream, title)) = result {
+                    self.playing_title = title;
+                    self.screen = Screen::Player;
+                    self.playback = PlaybackEngine::new();
+                    let url = stream.url.clone();
                     IcedTask::perform(
                         async move {
                             let mut engine = PlaybackEngine::new();
-                            let _ = engine.play(&stream.url).await;
+                            engine.play(&url).await.map_err(|e| e.to_string())?;
+                            std::mem::forget(engine);
+                            Ok(())
                         },
-                        |_: ()| Message::NavigateHome,
+                        Message::PlayerCommandDone,
                     )
                 } else {
                     IcedTask::none()
                 }
             }
+
+            Message::PlayerPause => {
+                IcedTask::perform(
+                    async { PlaybackEngine::send_ipc_static("\"set_property\", \"pause\", true").await },
+                    Message::PlayerCommandDone,
+                )
+            }
+            Message::PlayerResume => {
+                IcedTask::perform(
+                    async { PlaybackEngine::send_ipc_static("\"set_property\", \"pause\", false").await },
+                    Message::PlayerCommandDone,
+                )
+            }
+            Message::PlayerStop => {
+                self.playing_title.clear();
+                IcedTask::perform(
+                    async { PlaybackEngine::send_ipc_static("\"quit\"").await },
+                    Message::PlayerCommandDone,
+                )
+            }
+            Message::PlayerSeekForward => {
+                IcedTask::perform(
+                    async { PlaybackEngine::send_ipc_static("\"seek\", 10").await },
+                    Message::PlayerCommandDone,
+                )
+            }
+            Message::PlayerSeekBackward => {
+                IcedTask::perform(
+                    async { PlaybackEngine::send_ipc_static("\"seek\", -10").await },
+                    Message::PlayerCommandDone,
+                )
+            }
+            Message::PlayerVolumeUp => {
+                IcedTask::perform(
+                    async { PlaybackEngine::send_ipc_static("\"add\", \"volume\", 5").await },
+                    Message::PlayerCommandDone,
+                )
+            }
+            Message::PlayerVolumeDown => {
+                IcedTask::perform(
+                    async { PlaybackEngine::send_ipc_static("\"add\", \"volume\", -5").await },
+                    Message::PlayerCommandDone,
+                )
+            }
+            Message::PlayerCommandDone(_) => IcedTask::none(),
 
             Message::DownloadMovie => {
                 if let Some(entry) = self.selected_entry.clone() {
@@ -366,16 +449,15 @@ impl App {
                     let progress = DownloadProgress::new(id, filename);
                     self.downloads.push(progress);
 
-                    if let Some(tx) = self.download_tx.clone() {
-                        IcedTask::perform(
-                            async move {
-                                engine.download(request, tx).await;
-                            },
-                            |_: ()| Message::NavigateDownloads,
-                        )
-                    } else {
-                        IcedTask::none()
-                    }
+                    let tx = self.download_tx.clone();
+                    self.screen = Screen::Downloads;
+
+                    IcedTask::perform(
+                        async move {
+                            engine.download(request, tx).await;
+                        },
+                        |_: ()| Message::Tick,
+                    )
                 } else {
                     IcedTask::none()
                 }
@@ -450,30 +532,39 @@ impl App {
                 self.config.requests.proxy_url = v;
                 IcedTask::none()
             }
-            Message::SettingsToggleConcurrent(_) => {
-                self.config.download.concurrent_download =
-                    !self.config.download.concurrent_download;
+            Message::SettingsToggleConcurrent(val) => {
+                self.config.download.concurrent_download = val;
                 IcedTask::none()
             }
-            Message::SettingsToggleMergeAudio(_) => {
-                self.config.process.merge_audio = !self.config.process.merge_audio;
+            Message::SettingsToggleMergeAudio(val) => {
+                self.config.process.merge_audio = val;
                 IcedTask::none()
             }
-            Message::SettingsToggleMergeSubtitle(_) => {
-                self.config.process.merge_subtitle = !self.config.process.merge_subtitle;
+            Message::SettingsToggleMergeSubtitle(val) => {
+                self.config.process.merge_subtitle = val;
                 IcedTask::none()
             }
-            Message::SettingsToggleGpu(_) => {
-                self.config.process.use_gpu = !self.config.process.use_gpu;
+            Message::SettingsToggleGpu(val) => {
+                self.config.process.use_gpu = val;
                 IcedTask::none()
             }
-            Message::SettingsToggleProxy(_) => {
-                self.config.requests.use_proxy = !self.config.requests.use_proxy;
+            Message::SettingsToggleProxy(val) => {
+                self.config.requests.use_proxy = val;
                 IcedTask::none()
             }
             Message::SettingsSave => {
                 self.config.save();
                 IcedTask::none()
+            }
+        }
+    }
+
+    fn drain_download_progress(&mut self) {
+        if let Some(ref mut rx) = self.download_rx {
+            while let Ok(progress) = rx.try_recv() {
+                if let Some(existing) = self.downloads.iter_mut().find(|d| d.id == progress.id) {
+                    *existing = progress;
+                }
             }
         }
     }
@@ -498,6 +589,9 @@ impl App {
                     screens::home_view(self.provider_online)
                 }
             }
+            Screen::Player => {
+                screens::player_view(self.playback.state(), &self.playing_title)
+            }
             Screen::Downloads => screens::downloads_view(&self.downloads),
             Screen::Settings => screens::settings_view(&self.config),
         };
@@ -515,7 +609,8 @@ impl App {
 
     fn sidebar(&self) -> Element<'_, Message> {
         let is_home = matches!(self.screen, Screen::Home);
-        let is_search = matches!(self.screen, Screen::Search);
+        let is_search = matches!(self.screen, Screen::Search | Screen::Details);
+        let is_player = matches!(self.screen, Screen::Player);
         let is_downloads = matches!(self.screen, Screen::Downloads);
         let is_settings = matches!(self.screen, Screen::Settings);
 
@@ -525,6 +620,7 @@ impl App {
             Space::with_height(30),
             nav_button("Home", is_home, Message::NavigateHome),
             nav_button("Search", is_search, Message::NavigateSearch),
+            nav_button("Player", is_player, Message::NavigateHome),
             nav_button("Downloads", is_downloads, Message::NavigateDownloads),
             nav_button("Settings", is_settings, Message::NavigateSettings),
         ]
@@ -552,6 +648,6 @@ fn nav_button(label: &str, is_active: bool, msg: Message) -> Element<'_, Message
         .into()
 }
 
-async fn check_provider(provider: Arc<StreamingCommunityProvider>) -> bool {
+async fn check_provider(provider: Arc<dyn Provider>) -> bool {
     provider.search("test").await.is_ok()
 }

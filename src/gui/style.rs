@@ -4,7 +4,6 @@ use iced::Theme;
 
 pub const BG_DARK: iced::Color = color!(0x1a, 0x1a, 0x2e);
 pub const BG_CARD: iced::Color = color!(0x16, 0x21, 0x3e);
-pub const ACCENT: iced::Color = color!(0x0f, 0x3d, 0x82);
 pub const ACCENT_HOVER: iced::Color = color!(0x15, 0x52, 0xab);
 pub const TEXT_PRIMARY: iced::Color = color!(0xe0, 0xe0, 0xe0);
 pub const TEXT_SECONDARY: iced::Color = color!(0x8a, 0x8a, 0x9a);

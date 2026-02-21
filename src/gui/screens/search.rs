@@ -72,11 +72,7 @@ fn result_card<'a>(index: usize, entry: &'a MediaEntry) -> Element<'a, Message> 
         style::WARNING
     };
 
-    let year_display = if entry.year != "9999" {
-        entry.year.clone()
-    } else {
-        String::new()
-    };
+    let year_display = entry.year_display().to_string();
 
     let info = column![
         text(entry.name.clone()).size(16).color(style::TEXT_PRIMARY),

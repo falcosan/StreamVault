@@ -1,8 +1,9 @@
+use crate::util::find_binary;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::{Child, Command};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PlaybackState {
     Stopped,
     Playing(String),
@@ -27,6 +28,12 @@ pub struct PlaybackEngine {
     ipc_socket: PathBuf,
 }
 
+impl Default for PlaybackEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlaybackEngine {
     pub fn new() -> Self {
         let ipc_socket = std::env::temp_dir().join("streamvault-mpv.sock");
@@ -37,25 +44,10 @@ impl PlaybackEngine {
         }
     }
 
-    fn find_mpv() -> PathBuf {
-        let candidates = [
-            PathBuf::from("/opt/homebrew/bin/mpv"),
-            PathBuf::from("/usr/local/bin/mpv"),
-            PathBuf::from("/usr/bin/mpv"),
-            PathBuf::from("/Applications/mpv.app/Contents/MacOS/mpv"),
-        ];
-
-        candidates
-            .into_iter()
-            .find(|p| p.exists())
-            .or_else(|| which::which("mpv").ok())
-            .unwrap_or_else(|| PathBuf::from("mpv"))
-    }
-
     pub async fn play(&mut self, url: &str) -> Result<(), String> {
         self.stop().await;
 
-        let mpv_path = Self::find_mpv();
+        let mpv_path = find_binary("mpv");
         let _ = tokio::fs::remove_file(&self.ipc_socket).await;
 
         let child = Command::new(&mpv_path)
@@ -88,7 +80,7 @@ impl PlaybackEngine {
         self.state = PlaybackState::Stopped;
     }
 
-    pub async fn send_command(&self, cmd: &str) -> Result<(), String> {
+    async fn send_ipc(&self, cmd: &str) -> Result<(), String> {
         if !self.ipc_socket.exists() {
             return Err("mpv not running".into());
         }
@@ -117,15 +109,14 @@ impl PlaybackEngine {
         match command {
             PlaybackCommand::Play(url) => self.play(&url).await,
             PlaybackCommand::Pause => {
-                self.send_command("\"set_property\", \"pause\", true").await?;
+                self.send_ipc("\"set_property\", \"pause\", true").await?;
                 if let PlaybackState::Playing(ref url) = self.state {
                     self.state = PlaybackState::Paused(url.clone());
                 }
                 Ok(())
             }
             PlaybackCommand::Resume => {
-                self.send_command("\"set_property\", \"pause\", false")
-                    .await?;
+                self.send_ipc("\"set_property\", \"pause\", false").await?;
                 if let PlaybackState::Paused(ref url) = self.state {
                     self.state = PlaybackState::Playing(url.clone());
                 }
@@ -135,14 +126,10 @@ impl PlaybackEngine {
                 self.stop().await;
                 Ok(())
             }
-            PlaybackCommand::SeekForward => self.send_command("\"seek\", 10").await,
-            PlaybackCommand::SeekBackward => self.send_command("\"seek\", -10").await,
-            PlaybackCommand::VolumeUp => {
-                self.send_command("\"add\", \"volume\", 5").await
-            }
-            PlaybackCommand::VolumeDown => {
-                self.send_command("\"add\", \"volume\", -5").await
-            }
+            PlaybackCommand::SeekForward => self.send_ipc("\"seek\", 10").await,
+            PlaybackCommand::SeekBackward => self.send_ipc("\"seek\", -10").await,
+            PlaybackCommand::VolumeUp => self.send_ipc("\"add\", \"volume\", 5").await,
+            PlaybackCommand::VolumeDown => self.send_ipc("\"add\", \"volume\", -5").await,
         }
     }
 
@@ -152,5 +139,42 @@ impl PlaybackEngine {
 
     pub fn is_playing(&self) -> bool {
         matches!(self.state, PlaybackState::Playing(_))
+    }
+
+    pub fn is_paused(&self) -> bool {
+        matches!(self.state, PlaybackState::Paused(_))
+    }
+
+    pub fn current_url(&self) -> Option<&str> {
+        match &self.state {
+            PlaybackState::Playing(url) | PlaybackState::Paused(url) => Some(url),
+            PlaybackState::Stopped => None,
+        }
+    }
+
+    pub async fn send_ipc_static(cmd: &str) -> Result<(), String> {
+        let socket = std::env::temp_dir().join("streamvault-mpv.sock");
+        if !socket.exists() {
+            return Err("mpv not running".into());
+        }
+
+        let payload = format!("{{ \"command\": [{cmd}] }}\n");
+
+        #[cfg(unix)]
+        {
+            use tokio::io::AsyncWriteExt;
+            use tokio::net::UnixStream;
+
+            let mut stream = UnixStream::connect(&socket)
+                .await
+                .map_err(|e| format!("IPC connect error: {e}"))?;
+
+            stream
+                .write_all(payload.as_bytes())
+                .await
+                .map_err(|e| format!("IPC write error: {e}"))?;
+        }
+
+        Ok(())
     }
 }

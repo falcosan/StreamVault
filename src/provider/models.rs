@@ -12,7 +12,7 @@ pub struct MediaEntry {
     pub name: String,
     pub slug: String,
     pub media_type: MediaType,
-    pub year: String,
+    pub year: Option<String>,
     pub image_url: Option<String>,
     pub tmdb_id: Option<String>,
 }
@@ -44,15 +44,14 @@ impl MediaEntry {
         self.media_type == MediaType::Movie
     }
 
-    pub fn poster_url(&self) -> Option<&str> {
-        self.image_url.as_deref()
+    pub fn display_title(&self) -> String {
+        match &self.year {
+            Some(y) => format!("{} ({y})", self.name),
+            None => self.name.clone(),
+        }
     }
 
-    pub fn display_title(&self) -> String {
-        if self.year != "9999" {
-            format!("{} ({})", self.name, self.year)
-        } else {
-            self.name.clone()
-        }
+    pub fn year_display(&self) -> &str {
+        self.year.as_deref().unwrap_or("")
     }
 }

@@ -26,7 +26,9 @@ pub fn details_view<'a>(
                 .size(14)
                 .color(style::ACCENT_HOVER),
             Space::with_width(12),
-            text(entry.year.clone()).size(14).color(style::TEXT_SECONDARY),
+            text(entry.year_display().to_string())
+                .size(14)
+                .color(style::TEXT_SECONDARY),
         ],
     ]
     .padding(20);

@@ -1,8 +1,9 @@
 mod config;
-mod provider;
 mod download;
-mod playback;
 mod gui;
+mod playback;
+mod provider;
+mod util;
 
 use gui::App;
 use iced::application;

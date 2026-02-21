@@ -1,38 +1,95 @@
 use super::models::{Episode, MediaEntry, MediaType, Season, StreamUrl};
 use super::traits::{Provider, ProviderError, ProviderResult};
+use crate::util::UNKNOWN_YEAR;
 use regex::Regex;
 use reqwest::Client;
 use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{LazyLock, OnceLock};
 use url::Url;
 
-const BASE_URL: &str = "https://streamingcommunityz.name";
+const DEFAULT_BASE_URL: &str = "https://streamingcommunityz.name";
 const LANGUAGES: &[&str] = &["it", "en"];
 const IMAGE_PRIORITIES: &[&str] = &["poster", "cover", "cover_mobile", "background"];
 
+static APP_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("div#app").expect("valid selector"));
+static IFRAME_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("iframe").expect("valid selector"));
+static BODY_SCRIPT_SELECTOR: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse("body script").expect("valid selector"));
+
+static TOKEN_RE: OnceLock<Regex> = OnceLock::new();
+static EXPIRES_RE: OnceLock<Regex> = OnceLock::new();
+static URL_RE: OnceLock<Regex> = OnceLock::new();
+static FHD_RE: OnceLock<Regex> = OnceLock::new();
+
+fn token_re() -> &'static Regex {
+    TOKEN_RE.get_or_init(|| {
+        Regex::new(r#"(?:['"]token['"]|token)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
+    })
+}
+
+fn expires_re() -> &'static Regex {
+    EXPIRES_RE.get_or_init(|| {
+        Regex::new(r#"(?:['"]expires['"]|expires)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
+    })
+}
+
+fn url_re() -> &'static Regex {
+    URL_RE.get_or_init(|| {
+        Regex::new(r#"(?:['"]url['"]|url)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
+    })
+}
+
+fn fhd_re() -> &'static Regex {
+    FHD_RE.get_or_init(|| Regex::new(r"window\.canPlayFHD\s*=\s*(true|false)").unwrap())
+}
+
 pub struct StreamingCommunityProvider {
     client: Client,
+    base_url: String,
 }
 
 impl StreamingCommunityProvider {
     pub fn new() -> Self {
+        Self::with_base_url(DEFAULT_BASE_URL.to_string())
+    }
+
+    pub fn with_base_url(base_url: String) -> Self {
         let client = Client::builder()
             .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
             .timeout(std::time::Duration::from_secs(30))
-            .danger_accept_invalid_certs(true)
             .cookie_store(true)
             .build()
-            .expect("Failed to build HTTP client");
+            .expect("reqwest client build");
 
-        Self { client }
+        Self { client, base_url }
+    }
+
+    fn parse_data_page(html: &str) -> ProviderResult<serde_json::Value> {
+        let document = Html::parse_document(html);
+
+        let app_div = document
+            .select(&APP_SELECTOR)
+            .next()
+            .ok_or_else(|| ProviderError::Parse("No #app div found".into()))?;
+
+        let data_page = app_div
+            .value()
+            .attr("data-page")
+            .ok_or_else(|| ProviderError::Parse("No data-page attribute".into()))?;
+
+        serde_json::from_str(data_page)
+            .map_err(|e| ProviderError::Parse(format!("Invalid data-page JSON: {e}")))
     }
 
     async fn fetch_inertia_version(&self) -> ProviderResult<String> {
         let resp = self
             .client
-            .get(BASE_URL)
+            .get(&self.base_url)
             .send()
             .await
             .map_err(|e| ProviderError::Network(e.to_string()))?;
@@ -42,25 +99,7 @@ impl StreamingCommunityProvider {
             .await
             .map_err(|e| ProviderError::Network(e.to_string()))?;
 
-        Self::extract_version_from_html(&html)
-    }
-
-    fn extract_version_from_html(html: &str) -> ProviderResult<String> {
-        let document = Html::parse_document(html);
-        let selector = Selector::parse("div#app").unwrap();
-
-        let app_div = document
-            .select(&selector)
-            .next()
-            .ok_or_else(|| ProviderError::Parse("No #app div found".into()))?;
-
-        let data_page = app_div
-            .value()
-            .attr("data-page")
-            .ok_or_else(|| ProviderError::Parse("No data-page attribute".into()))?;
-
-        let page_data: serde_json::Value = serde_json::from_str(data_page)
-            .map_err(|e| ProviderError::Parse(format!("Invalid data-page JSON: {e}")))?;
+        let page_data = Self::parse_data_page(&html)?;
 
         page_data["version"]
             .as_str()
@@ -74,11 +113,12 @@ impl StreamingCommunityProvider {
         lang: &str,
         version: &str,
     ) -> ProviderResult<Vec<MediaEntry>> {
-        let url = format!("{BASE_URL}/{lang}/search?q={query}");
+        let url = format!("{}/{lang}/search", self.base_url);
 
         let resp = self
             .client
             .get(&url)
+            .query(&[("q", query)])
             .header("x-inertia", "true")
             .header("x-inertia-version", version)
             .send()
@@ -92,20 +132,18 @@ impl StreamingCommunityProvider {
 
         let titles = json["props"]["titles"]
             .as_array()
-            .unwrap_or(&Vec::new())
-            .clone();
+            .cloned()
+            .unwrap_or_default();
 
-        let mut entries = Vec::new();
-        for title in &titles {
-            if let Some(entry) = Self::parse_search_result(title) {
-                entries.push(entry);
-            }
-        }
+        let entries = titles
+            .iter()
+            .filter_map(|t| self.parse_search_result(t))
+            .collect();
 
         Ok(entries)
     }
 
-    fn parse_search_result(value: &serde_json::Value) -> Option<MediaEntry> {
+    fn parse_search_result(&self, value: &serde_json::Value) -> Option<MediaEntry> {
         let id = value["id"].as_u64()?;
         let name = value["name"].as_str()?.to_string();
         let slug = value["slug"].as_str().unwrap_or("").to_string();
@@ -117,7 +155,7 @@ impl StreamingCommunityProvider {
         };
 
         let year = Self::extract_year(value);
-        let image_url = Self::extract_image_url(value);
+        let image_url = self.extract_image_url(value);
 
         Some(MediaEntry {
             id,
@@ -130,14 +168,14 @@ impl StreamingCommunityProvider {
         })
     }
 
-    fn extract_year(value: &serde_json::Value) -> String {
+    fn extract_year(value: &serde_json::Value) -> Option<String> {
         if let Some(translations) = value["translations"].as_array() {
             for t in translations {
                 let key = t["key"].as_str().unwrap_or("");
                 if key == "first_air_date" || key == "release_date" {
                     if let Some(date) = t["value"].as_str() {
                         if date.len() >= 4 {
-                            return date[..4].to_string();
+                            return Some(date[..4].to_string());
                         }
                     }
                 }
@@ -147,17 +185,17 @@ impl StreamingCommunityProvider {
         for field in &["last_air_date", "release_date"] {
             if let Some(date) = value[field].as_str() {
                 if date.len() >= 4 {
-                    return date[..4].to_string();
+                    return Some(date[..4].to_string());
                 }
             }
         }
 
-        "9999".into()
+        None
     }
 
-    fn extract_image_url(value: &serde_json::Value) -> Option<String> {
+    fn extract_image_url(&self, value: &serde_json::Value) -> Option<String> {
         let images = value["images"].as_array()?;
-        let cdn_base = BASE_URL.replace("stream", "cdn.stream");
+        let cdn_base = self.base_url.replace("stream", "cdn.stream");
 
         for priority in IMAGE_PRIORITIES {
             for img in images {
@@ -180,7 +218,7 @@ impl StreamingCommunityProvider {
         &self,
         entry: &MediaEntry,
     ) -> ProviderResult<(serde_json::Value, String)> {
-        let url = format!("{BASE_URL}/titles/{}-{}", entry.id, entry.slug);
+        let url = format!("{}/titles/{}-{}", self.base_url, entry.id, entry.slug);
 
         let resp = self
             .client
@@ -194,22 +232,7 @@ impl StreamingCommunityProvider {
             .await
             .map_err(|e| ProviderError::Network(e.to_string()))?;
 
-        let document = Html::parse_document(&html);
-        let selector = Selector::parse("div#app").unwrap();
-
-        let app_div = document
-            .select(&selector)
-            .next()
-            .ok_or_else(|| ProviderError::Parse("No #app div on title page".into()))?;
-
-        let data_page = app_div
-            .value()
-            .attr("data-page")
-            .ok_or_else(|| ProviderError::Parse("No data-page on title page".into()))?;
-
-        let page_data: serde_json::Value = serde_json::from_str(data_page)
-            .map_err(|e| ProviderError::Parse(format!("Invalid title page JSON: {e}")))?;
-
+        let page_data = Self::parse_data_page(&html)?;
         let version = page_data["version"]
             .as_str()
             .unwrap_or("")
@@ -224,9 +247,12 @@ impl StreamingCommunityProvider {
         episode_id: Option<u64>,
     ) -> ProviderResult<String> {
         let url = if let Some(ep_id) = episode_id {
-            format!("{BASE_URL}/iframe/{media_id}?episode_id={ep_id}&next_episode=1")
+            format!(
+                "{}/iframe/{media_id}?episode_id={ep_id}&next_episode=1",
+                self.base_url
+            )
         } else {
-            format!("{BASE_URL}/iframe/{media_id}")
+            format!("{}/iframe/{media_id}", self.base_url)
         };
 
         let resp = self
@@ -242,10 +268,9 @@ impl StreamingCommunityProvider {
             .map_err(|e| ProviderError::Network(e.to_string()))?;
 
         let document = Html::parse_document(&html);
-        let selector = Selector::parse("iframe").unwrap();
 
         document
-            .select(&selector)
+            .select(&IFRAME_SELECTOR)
             .next()
             .and_then(|el| el.value().attr("src"))
             .map(String::from)
@@ -266,33 +291,41 @@ impl StreamingCommunityProvider {
             .map_err(|e| ProviderError::Network(e.to_string()))?;
 
         let document = Html::parse_document(&html);
-        let selector = Selector::parse("body script").unwrap();
 
         let script_text = document
-            .select(&selector)
+            .select(&BODY_SCRIPT_SELECTOR)
             .next()
             .map(|el| el.inner_html())
             .unwrap_or_default();
 
-        let token = Self::extract_regex(&script_text, r#"(?:['"]token['"]|token)\s*:\s*['"]([^'"]+)['"]"#)
+        let token = token_re()
+            .captures(&script_text)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
             .ok_or_else(|| ProviderError::StreamExtraction("No token found".into()))?;
 
-        let expires = Self::extract_regex(&script_text, r#"(?:['"]expires['"]|expires)\s*:\s*['"]([^'"]+)['"]"#)
+        let expires = expires_re()
+            .captures(&script_text)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
             .ok_or_else(|| ProviderError::StreamExtraction("No expires found".into()))?;
 
-        let base_url = Self::extract_regex(&script_text, r#"(?:['"]url['"]|url)\s*:\s*['"]([^'"]+)['"]"#)
+        let base_url = url_re()
+            .captures(&script_text)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
             .ok_or_else(|| ProviderError::StreamExtraction("No URL found".into()))?;
 
-        let can_play_fhd = Self::extract_regex(&script_text, r"window\.canPlayFHD\s*=\s*(true|false)")
-            .map(|v| v == "true")
+        let can_play_fhd = fhd_re()
+            .captures(&script_text)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str() == "true")
             .unwrap_or(false);
 
         let mut parsed = Url::parse(&base_url)
             .map_err(|e| ProviderError::Parse(format!("Invalid stream URL: {e}")))?;
 
-        let has_b_param = parsed
-            .query_pairs()
-            .any(|(k, v)| k == "b" && v == "1");
+        let has_b_param = parsed.query_pairs().any(|(k, v)| k == "b" && v == "1");
 
         parsed.set_query(None);
 
@@ -318,14 +351,6 @@ impl StreamingCommunityProvider {
             url: parsed.to_string(),
             headers: Vec::new(),
         })
-    }
-
-    fn extract_regex(text: &str, pattern: &str) -> Option<String> {
-        Regex::new(pattern)
-            .ok()?
-            .captures(text)?
-            .get(1)
-            .map(|m| m.as_str().to_string())
     }
 }
 
@@ -371,17 +396,19 @@ impl Provider for StreamingCommunityProvider {
                 .cloned()
                 .unwrap_or_default();
 
-            let mut seasons = Vec::new();
-            for s in &seasons_json {
-                if let (Some(id), Some(number)) = (s["id"].as_u64(), s["number"].as_u64()) {
-                    seasons.push(Season {
+            let mut seasons: Vec<Season> = seasons_json
+                .iter()
+                .filter_map(|s| {
+                    let id = s["id"].as_u64()?;
+                    let number = s["number"].as_u64()? as u32;
+                    Some(Season {
                         id,
-                        number: number as u32,
+                        number,
                         name: s["name"].as_str().map(String::from),
                         episodes: Vec::new(),
-                    });
-                }
-            }
+                    })
+                })
+                .collect();
 
             seasons.sort_by_key(|s| s.number);
             Ok(seasons)
@@ -398,8 +425,8 @@ impl Provider for StreamingCommunityProvider {
             let (_page_data, version) = self.fetch_title_page(&entry).await?;
 
             let url = format!(
-                "{BASE_URL}/titles/{}-{}/season-{season_number}",
-                entry.id, entry.slug
+                "{}/titles/{}-{}/season-{season_number}",
+                self.base_url, entry.id, entry.slug
             );
 
             let resp = self
@@ -421,17 +448,19 @@ impl Provider for StreamingCommunityProvider {
                 .cloned()
                 .unwrap_or_default();
 
-            let mut episodes = Vec::new();
-            for ep in &episodes_json {
-                if let (Some(id), Some(number)) = (ep["id"].as_u64(), ep["number"].as_u64()) {
-                    episodes.push(Episode {
+            let mut episodes: Vec<Episode> = episodes_json
+                .iter()
+                .filter_map(|ep| {
+                    let id = ep["id"].as_u64()?;
+                    let number = ep["number"].as_u64()? as u32;
+                    Some(Episode {
                         id,
-                        number: number as u32,
+                        number,
                         name: ep["name"].as_str().unwrap_or("").to_string(),
                         duration: ep["duration"].as_u64().map(|d| d as u32),
-                    });
-                }
-            }
+                    })
+                })
+                .collect();
 
             episodes.sort_by_key(|e| e.number);
             Ok(episodes)

@@ -1,5 +1,6 @@
 use super::progress::{DownloadProgress, DownloadStatus};
 use crate::config::AppConfig;
+use crate::util::find_binary;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -25,32 +26,6 @@ impl DownloadEngine {
         Self { config }
     }
 
-    fn find_binary(name: &str) -> Option<PathBuf> {
-        let candidates = [
-            PathBuf::from(format!("/usr/local/bin/{name}")),
-            PathBuf::from(format!("/opt/homebrew/bin/{name}")),
-            PathBuf::from(format!("/usr/bin/{name}")),
-            dirs::home_dir()
-                .unwrap_or_default()
-                .join(".local/bin")
-                .join(name),
-        ];
-
-        candidates.into_iter().find(|p| p.exists()).or_else(|| {
-            which::which(name).ok()
-        })
-    }
-
-    fn n_m3u8dl_path() -> PathBuf {
-        Self::find_binary("N_m3u8DL-RE")
-            .or_else(|| Self::find_binary("n_m3u8dl-re"))
-            .unwrap_or_else(|| PathBuf::from("N_m3u8DL-RE"))
-    }
-
-    fn ffmpeg_path() -> PathBuf {
-        Self::find_binary("ffmpeg").unwrap_or_else(|| PathBuf::from("ffmpeg"))
-    }
-
     pub async fn download(
         &self,
         request: DownloadRequest,
@@ -60,8 +35,8 @@ impl DownloadEngine {
         progress.status = DownloadStatus::Downloading;
         let _ = progress_tx.send(progress.clone());
 
-        let n_m3u8dl = Self::n_m3u8dl_path();
-        let ffmpeg = Self::ffmpeg_path();
+        let n_m3u8dl = find_binary("N_m3u8DL-RE");
+        let ffmpeg = find_binary("ffmpeg");
 
         let mut cmd = Command::new(&n_m3u8dl);
         cmd.arg(&request.stream_url)
@@ -119,7 +94,8 @@ impl DownloadEngine {
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                progress.status = DownloadStatus::Failed(format!("Failed to start N_m3u8DL-RE: {e}"));
+                progress.status =
+                    DownloadStatus::Failed(format!("Failed to start N_m3u8DL-RE: {e}"));
                 let _ = progress_tx.send(progress);
                 return;
             }
@@ -143,7 +119,7 @@ impl DownloadEngine {
             }
             Ok(exit) => {
                 progress.status =
-                    DownloadStatus::Failed(format!("N_m3u8DL-RE exited with code: {}", exit));
+                    DownloadStatus::Failed(format!("N_m3u8DL-RE exited with code: {exit}"));
             }
             Err(e) => {
                 progress.status = DownloadStatus::Failed(format!("Process error: {e}"));
