@@ -2,7 +2,7 @@ use crate::config::AppConfig;
 use crate::download::{DownloadEngine, DownloadProgress, DownloadRequest};
 use crate::gui::screens;
 use crate::gui::style;
-use crate::playback::{PlaybackEngine, PlaybackState};
+use crate::playback::PlaybackEngine;
 use crate::provider::{Episode, MediaEntry, Provider, Season, StreamUrl, StreamingCommunityProvider};
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Fill, Subscription, Task as IcedTask, Theme};

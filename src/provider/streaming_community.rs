@@ -1,6 +1,5 @@
 use super::models::{Episode, MediaEntry, MediaType, Season, StreamUrl};
 use super::traits::{Provider, ProviderError, ProviderResult};
-use crate::util::UNKNOWN_YEAR;
 use regex::Regex;
 use reqwest::Client;
 use scraper::{Html, Selector};

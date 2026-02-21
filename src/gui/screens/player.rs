@@ -4,7 +4,7 @@ use crate::playback::PlaybackState;
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Fill};
 
-pub fn player_view(state: &PlaybackState, title: &str) -> Element<'_, Message> {
+pub fn player_view<'a>(state: &'a PlaybackState, title: &'a str) -> Element<'a, Message> {
     let header = row![
         button(text("Back").size(14))
             .on_press(Message::NavigateSearch)
