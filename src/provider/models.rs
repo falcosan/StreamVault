@@ -55,3 +55,62 @@ impl MediaEntry {
         self.year.as_deref().unwrap_or("")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn movie_entry() -> MediaEntry {
+        MediaEntry {
+            id: 1,
+            name: "Inception".into(),
+            slug: "inception".into(),
+            media_type: MediaType::Movie,
+            year: Some("2010".into()),
+            image_url: None,
+            tmdb_id: None,
+        }
+    }
+
+    fn series_entry() -> MediaEntry {
+        MediaEntry {
+            id: 2,
+            name: "Lost".into(),
+            slug: "lost".into(),
+            media_type: MediaType::Series,
+            year: None,
+            image_url: None,
+            tmdb_id: None,
+        }
+    }
+
+    #[test]
+    fn is_movie_returns_true_for_movies() {
+        assert!(movie_entry().is_movie());
+    }
+
+    #[test]
+    fn is_movie_returns_false_for_series() {
+        assert!(!series_entry().is_movie());
+    }
+
+    #[test]
+    fn display_title_with_year() {
+        assert_eq!(movie_entry().display_title(), "Inception (2010)");
+    }
+
+    #[test]
+    fn display_title_without_year() {
+        assert_eq!(series_entry().display_title(), "Lost");
+    }
+
+    #[test]
+    fn year_display_with_year() {
+        assert_eq!(movie_entry().year_display(), "2010");
+    }
+
+    #[test]
+    fn year_display_without_year() {
+        assert_eq!(series_entry().year_display(), "");
+    }
+}

@@ -44,3 +44,20 @@ pub fn find_binary(name: &str) -> PathBuf {
         .find(|p| p.exists())
         .unwrap_or_else(|| PathBuf::from(name))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_binary_returns_path_for_missing_binary() {
+        let path = find_binary("definitely_not_a_real_binary_xyz");
+        assert_eq!(path, PathBuf::from("definitely_not_a_real_binary_xyz"));
+    }
+
+    #[test]
+    fn bundled_bin_dir_returns_option() {
+        // Should not panic regardless of environment
+        let _ = bundled_bin_dir();
+    }
+}

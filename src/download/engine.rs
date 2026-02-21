@@ -167,3 +167,54 @@ fn sanitize_filename(name: &str) -> String {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_replaces_illegal_chars() {
+        assert_eq!(sanitize_filename("hello/world"), "hello_world");
+        assert_eq!(sanitize_filename("a:b*c?d"), "a_b_c_d");
+        assert_eq!(sanitize_filename("clean"), "clean");
+    }
+
+    #[test]
+    fn sanitize_preserves_unicode() {
+        assert_eq!(sanitize_filename("café"), "café");
+        assert_eq!(sanitize_filename("日本語"), "日本語");
+    }
+
+    #[test]
+    fn format_episode_name_replaces_placeholders() {
+        let config = AppConfig::default();
+        let engine = DownloadEngine::new(config);
+        let result = engine.format_episode_name("Breaking Bad", 2, 5, "Mandala");
+        assert_eq!(result, "Mandala S02E05");
+    }
+
+    #[test]
+    fn format_episode_name_with_show_name_placeholder() {
+        let mut config = AppConfig::default();
+        config.output.map_episode_name = "%(show_name) - %(episode_name) S%(season)E%(episode)".into();
+        let engine = DownloadEngine::new(config);
+        let result = engine.format_episode_name("Lost", 1, 3, "Tabula Rasa");
+        assert_eq!(result, "Lost - Tabula Rasa S01E03");
+    }
+
+    #[test]
+    fn build_output_path_movie() {
+        let config = AppConfig::default();
+        let engine = DownloadEngine::new(config);
+        let path = engine.build_output_path("Inception", true);
+        assert!(path.ends_with("Movie/Inception"));
+    }
+
+    #[test]
+    fn build_output_path_series() {
+        let config = AppConfig::default();
+        let engine = DownloadEngine::new(config);
+        let path = engine.build_output_path("Breaking Bad", false);
+        assert!(path.ends_with("Serie/Breaking Bad"));
+    }
+}
