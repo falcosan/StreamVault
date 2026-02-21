@@ -51,6 +51,8 @@ impl DownloadEngine {
             .arg("--no-log")
             .arg("--binary-merge")
             .arg("--del-after-done")
+            .arg("--mux-after-done")
+            .arg(format!("format={}", self.config.process.extension))
             .arg("--auto-subtitle-fix")
             .arg("false")
             .arg("--check-segments-count")
