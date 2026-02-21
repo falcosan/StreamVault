@@ -2,7 +2,7 @@ use crate::config::AppConfig;
 use crate::download::{DownloadEngine, DownloadProgress, DownloadRequest};
 use crate::gui::screens;
 use crate::gui::style;
-use crate::playback::PlaybackEngine;
+use crate::playback::{PlaybackEngine, PlaybackState};
 use crate::provider::{Episode, MediaEntry, Provider, Season, StreamUrl, StreamingCommunityProvider};
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Fill, Subscription, Task as IcedTask, Theme};
@@ -39,6 +39,7 @@ pub enum Message {
     PlayMovie,
     PlayEpisode(u32, u32),
     StreamUrlResolved(Result<(StreamUrl, String), String>),
+    PlaybackStarted(Result<(), String>),
 
     PlayerPause,
     PlayerResume,
@@ -48,6 +49,8 @@ pub enum Message {
     PlayerVolumeUp,
     PlayerVolumeDown,
     PlayerCommandDone(Result<(), String>),
+
+    DismissError,
 
     DownloadMovie,
     DownloadEpisode(u32, u32),
@@ -95,8 +98,9 @@ pub struct App {
     selected_season: Option<u32>,
     is_loading_details: bool,
 
-    playback: PlaybackEngine,
+    playback_state: PlaybackState,
     playing_title: String,
+    error_message: Option<String>,
 
     downloads: Vec<DownloadProgress>,
     download_tx: mpsc::UnboundedSender<DownloadProgress>,
@@ -121,8 +125,9 @@ impl App {
             episodes: Vec::new(),
             selected_season: None,
             is_loading_details: false,
-            playback: PlaybackEngine::new(),
+            playback_state: PlaybackState::Stopped,
             playing_title: String::new(),
+            error_message: None,
             downloads: Vec::new(),
             download_tx: tx,
             download_rx: Some(rx),
@@ -282,8 +287,10 @@ impl App {
             }
             Message::PlayMovie => {
                 if let Some(entry) = self.selected_entry.clone() {
+                    self.error_message = None;
                     let title = entry.display_title();
                     let provider = self.provider.clone();
+                    eprintln!("[StreamVault] PlayMovie: resolving stream for '{title}'");
                     IcedTask::perform(
                         async move {
                             let stream = provider
@@ -300,6 +307,7 @@ impl App {
             }
             Message::PlayEpisode(season, ep_num) => {
                 if let Some(entry) = self.selected_entry.clone() {
+                    self.error_message = None;
                     let episode = self.episodes.iter().find(|e| e.number == ep_num).cloned();
                     let title = format!(
                         "{} S{:02}E{:02}",
@@ -320,12 +328,14 @@ impl App {
                     IcedTask::none()
                 }
             }
-            Message::StreamUrlResolved(result) => {
-                if let Ok((stream, title)) = result {
+            Message::StreamUrlResolved(result) => match result {
+                Ok((stream, title)) => {
                     self.playing_title = title;
                     self.screen = Screen::Player;
-                    self.playback = PlaybackEngine::new();
+                    self.playback_state = PlaybackState::Stopped;
+                    self.error_message = None;
                     let url = stream.url.clone();
+                    eprintln!("[StreamVault] Launching mpv with URL: {url}");
                     IcedTask::perform(
                         async move {
                             let mut engine = PlaybackEngine::new();
@@ -333,57 +343,95 @@ impl App {
                             std::mem::forget(engine);
                             Ok(())
                         },
-                        Message::PlayerCommandDone,
+                        Message::PlaybackStarted,
                     )
-                } else {
+                }
+                Err(e) => {
+                    eprintln!("[StreamVault] Stream URL error: {e}");
+                    self.error_message = Some(format!("Failed to get stream: {e}"));
                     IcedTask::none()
                 }
-            }
+            },
+
+            Message::PlaybackStarted(result) => match result {
+                Ok(()) => {
+                    eprintln!("[StreamVault] mpv launched successfully");
+                    self.playback_state =
+                        PlaybackState::Playing(self.playing_title.clone());
+                    IcedTask::none()
+                }
+                Err(e) => {
+                    eprintln!("[StreamVault] mpv launch error: {e}");
+                    self.error_message = Some(format!("Playback error: {e}"));
+                    self.playback_state = PlaybackState::Stopped;
+                    IcedTask::none()
+                }
+            },
 
             Message::PlayerPause => {
+                self.playback_state =
+                    PlaybackState::Paused(self.playing_title.clone());
                 IcedTask::perform(
-                    async { PlaybackEngine::send_ipc_static("\"set_property\", \"pause\", true").await },
+                    async {
+                        PlaybackEngine::send_ipc_static(
+                            "\"set_property\", \"pause\", true",
+                        )
+                        .await
+                    },
                     Message::PlayerCommandDone,
                 )
             }
             Message::PlayerResume => {
+                self.playback_state =
+                    PlaybackState::Playing(self.playing_title.clone());
                 IcedTask::perform(
-                    async { PlaybackEngine::send_ipc_static("\"set_property\", \"pause\", false").await },
+                    async {
+                        PlaybackEngine::send_ipc_static(
+                            "\"set_property\", \"pause\", false",
+                        )
+                        .await
+                    },
                     Message::PlayerCommandDone,
                 )
             }
             Message::PlayerStop => {
+                self.playback_state = PlaybackState::Stopped;
                 self.playing_title.clear();
                 IcedTask::perform(
                     async { PlaybackEngine::send_ipc_static("\"quit\"").await },
                     Message::PlayerCommandDone,
                 )
             }
-            Message::PlayerSeekForward => {
-                IcedTask::perform(
-                    async { PlaybackEngine::send_ipc_static("\"seek\", 10").await },
-                    Message::PlayerCommandDone,
-                )
+            Message::PlayerSeekForward => IcedTask::perform(
+                async { PlaybackEngine::send_ipc_static("\"seek\", 10").await },
+                Message::PlayerCommandDone,
+            ),
+            Message::PlayerSeekBackward => IcedTask::perform(
+                async {
+                    PlaybackEngine::send_ipc_static("\"seek\", -10").await
+                },
+                Message::PlayerCommandDone,
+            ),
+            Message::PlayerVolumeUp => IcedTask::perform(
+                async {
+                    PlaybackEngine::send_ipc_static("\"add\", \"volume\", 5")
+                        .await
+                },
+                Message::PlayerCommandDone,
+            ),
+            Message::PlayerVolumeDown => IcedTask::perform(
+                async {
+                    PlaybackEngine::send_ipc_static("\"add\", \"volume\", -5")
+                        .await
+                },
+                Message::PlayerCommandDone,
+            ),
+            Message::PlayerCommandDone(result) => {
+                if let Err(e) = result {
+                    eprintln!("[StreamVault] Player command error: {e}");
+                }
+                IcedTask::none()
             }
-            Message::PlayerSeekBackward => {
-                IcedTask::perform(
-                    async { PlaybackEngine::send_ipc_static("\"seek\", -10").await },
-                    Message::PlayerCommandDone,
-                )
-            }
-            Message::PlayerVolumeUp => {
-                IcedTask::perform(
-                    async { PlaybackEngine::send_ipc_static("\"add\", \"volume\", 5").await },
-                    Message::PlayerCommandDone,
-                )
-            }
-            Message::PlayerVolumeDown => {
-                IcedTask::perform(
-                    async { PlaybackEngine::send_ipc_static("\"add\", \"volume\", -5").await },
-                    Message::PlayerCommandDone,
-                )
-            }
-            Message::PlayerCommandDone(_) => IcedTask::none(),
 
             Message::DownloadMovie => {
                 if let Some(entry) = self.selected_entry.clone() {
@@ -556,6 +604,11 @@ impl App {
                 self.config.save();
                 IcedTask::none()
             }
+
+            Message::DismissError => {
+                self.error_message = None;
+                IcedTask::none()
+            }
         }
     }
 
@@ -590,21 +643,46 @@ impl App {
                 }
             }
             Screen::Player => {
-                screens::player_view(self.playback.state(), &self.playing_title)
+                screens::player_view(&self.playback_state, &self.playing_title)
             }
             Screen::Downloads => screens::downloads_view(&self.downloads),
             Screen::Settings => screens::settings_view(&self.config),
         };
 
-        let main_content = container(content)
+        let mut main_col = column![].width(Fill).height(Fill);
+
+        if let Some(ref err) = self.error_message {
+            let error_bar = container(
+                row![
+                    text(err.as_str()).size(13).color(style::TEXT_PRIMARY),
+                    Space::with_width(Fill),
+                    button(text("X").size(12))
+                        .on_press(Message::DismissError)
+                        .padding(4),
+                ]
+                .align_y(Alignment::Center)
+                .padding(10),
+            )
             .width(Fill)
-            .height(Fill)
             .style(|_: &_| container::Style {
-                background: Some(iced::Background::Color(style::BG_DARK)),
+                background: Some(iced::Background::Color(style::DANGER)),
                 ..Default::default()
             });
 
-        row![sidebar, main_content].into()
+            main_col = main_col.push(error_bar);
+        }
+
+        main_col = main_col.push(
+            container(content)
+                .width(Fill)
+                .height(Fill)
+                .style(|_: &_| container::Style {
+                    background: Some(iced::Background::Color(style::BG_DARK)),
+                    ..Default::default()
+                }),
+        );
+
+        row![sidebar, main_col].into()
     }
 
     fn sidebar(&self) -> Element<'_, Message> {
