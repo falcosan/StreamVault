@@ -14,6 +14,5 @@ pub fn find_binary(name: &str) -> PathBuf {
     candidates
         .into_iter()
         .find(|p| p.exists())
-        .or_else(|| which::which(name).ok())
         .unwrap_or_else(|| PathBuf::from(name))
 }

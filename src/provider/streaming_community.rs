@@ -39,7 +39,7 @@ fn expires_re() -> &'static Regex {
 
 fn url_re() -> &'static Regex {
     URL_RE.get_or_init(|| {
-        Regex::new(r#"(?:['"]url['"]|url)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
+        Regex::new(r#"(?:['"]url['"]|url)\s*:\s*['"](?P<url>https?://[^'"]+)['"]"#).unwrap()
     })
 }
 
@@ -311,7 +311,7 @@ impl StreamingCommunityProvider {
 
         let base_url = url_re()
             .captures(&script_text)
-            .and_then(|c| c.get(1))
+            .and_then(|c| c.name("url"))
             .map(|m| m.as_str().to_string())
             .ok_or_else(|| ProviderError::StreamExtraction("No URL found".into()))?;
 

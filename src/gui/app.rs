@@ -2,7 +2,7 @@ use crate::config::AppConfig;
 use crate::download::{DownloadEngine, DownloadProgress, DownloadRequest};
 use crate::gui::screens;
 use crate::gui::style;
-use crate::playback::{PlaybackEngine, PlaybackState};
+use crate::playback::NativeVideoPlayer;
 use crate::provider::{Episode, MediaEntry, Provider, Season, StreamUrl, StreamingCommunityProvider};
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Fill, Subscription, Task as IcedTask, Theme};
@@ -39,16 +39,10 @@ pub enum Message {
     PlayMovie,
     PlayEpisode(u32, u32),
     StreamUrlResolved(Result<(StreamUrl, String), String>),
-    PlaybackStarted(Result<(), String>),
 
     PlayerPause,
     PlayerResume,
     PlayerStop,
-    PlayerSeekForward,
-    PlayerSeekBackward,
-    PlayerVolumeUp,
-    PlayerVolumeDown,
-    PlayerCommandDone(Result<(), String>),
 
     DismissError,
 
@@ -98,7 +92,7 @@ pub struct App {
     selected_season: Option<u32>,
     is_loading_details: bool,
 
-    playback_state: PlaybackState,
+    native_player: Option<NativeVideoPlayer>,
     playing_title: String,
     error_message: Option<String>,
 
@@ -125,7 +119,7 @@ impl App {
             episodes: Vec::new(),
             selected_season: None,
             is_loading_details: false,
-            playback_state: PlaybackState::Stopped,
+            native_player: None,
             playing_title: String::new(),
             error_message: None,
             downloads: Vec::new(),
@@ -330,21 +324,29 @@ impl App {
             }
             Message::StreamUrlResolved(result) => match result {
                 Ok((stream, title)) => {
-                    self.playing_title = title;
-                    self.screen = Screen::Player;
-                    self.playback_state = PlaybackState::Stopped;
+                    eprintln!("[StreamVault] Playing with native player: {}", stream.url);
+                    self.playing_title = title.clone();
                     self.error_message = None;
-                    let url = stream.url.clone();
-                    eprintln!("[StreamVault] Launching mpv with URL: {url}");
-                    IcedTask::perform(
-                        async move {
-                            let mut engine = PlaybackEngine::new();
-                            engine.play(&url).await.map_err(|e| e.to_string())?;
-                            std::mem::forget(engine);
-                            Ok(())
-                        },
-                        Message::PlaybackStarted,
-                    )
+
+                    // Stop any existing player
+                    if let Some(ref mut p) = self.native_player {
+                        p.stop();
+                    }
+
+                    // Create native player directly on main thread
+                    let mtm = objc2::MainThreadMarker::new()
+                        .expect("update() runs on main thread");
+                    match NativeVideoPlayer::play(&stream.url, &title, mtm) {
+                        Ok(player) => {
+                            self.native_player = Some(player);
+                            self.screen = Screen::Player;
+                        }
+                        Err(e) => {
+                            eprintln!("[StreamVault] Native player error: {e}");
+                            self.error_message = Some(format!("Playback error: {e}"));
+                        }
+                    }
+                    IcedTask::none()
                 }
                 Err(e) => {
                     eprintln!("[StreamVault] Stream URL error: {e}");
@@ -353,83 +355,25 @@ impl App {
                 }
             },
 
-            Message::PlaybackStarted(result) => match result {
-                Ok(()) => {
-                    eprintln!("[StreamVault] mpv launched successfully");
-                    self.playback_state =
-                        PlaybackState::Playing(self.playing_title.clone());
-                    IcedTask::none()
-                }
-                Err(e) => {
-                    eprintln!("[StreamVault] mpv launch error: {e}");
-                    self.error_message = Some(format!("Playback error: {e}"));
-                    self.playback_state = PlaybackState::Stopped;
-                    IcedTask::none()
-                }
-            },
-
             Message::PlayerPause => {
-                self.playback_state =
-                    PlaybackState::Paused(self.playing_title.clone());
-                IcedTask::perform(
-                    async {
-                        PlaybackEngine::send_ipc_static(
-                            "\"set_property\", \"pause\", true",
-                        )
-                        .await
-                    },
-                    Message::PlayerCommandDone,
-                )
+                if let Some(ref mut player) = self.native_player {
+                    player.pause();
+                }
+                IcedTask::none()
             }
             Message::PlayerResume => {
-                self.playback_state =
-                    PlaybackState::Playing(self.playing_title.clone());
-                IcedTask::perform(
-                    async {
-                        PlaybackEngine::send_ipc_static(
-                            "\"set_property\", \"pause\", false",
-                        )
-                        .await
-                    },
-                    Message::PlayerCommandDone,
-                )
+                if let Some(ref mut player) = self.native_player {
+                    player.resume();
+                }
+                IcedTask::none()
             }
             Message::PlayerStop => {
-                self.playback_state = PlaybackState::Stopped;
-                self.playing_title.clear();
-                IcedTask::perform(
-                    async { PlaybackEngine::send_ipc_static("\"quit\"").await },
-                    Message::PlayerCommandDone,
-                )
-            }
-            Message::PlayerSeekForward => IcedTask::perform(
-                async { PlaybackEngine::send_ipc_static("\"seek\", 10").await },
-                Message::PlayerCommandDone,
-            ),
-            Message::PlayerSeekBackward => IcedTask::perform(
-                async {
-                    PlaybackEngine::send_ipc_static("\"seek\", -10").await
-                },
-                Message::PlayerCommandDone,
-            ),
-            Message::PlayerVolumeUp => IcedTask::perform(
-                async {
-                    PlaybackEngine::send_ipc_static("\"add\", \"volume\", 5")
-                        .await
-                },
-                Message::PlayerCommandDone,
-            ),
-            Message::PlayerVolumeDown => IcedTask::perform(
-                async {
-                    PlaybackEngine::send_ipc_static("\"add\", \"volume\", -5")
-                        .await
-                },
-                Message::PlayerCommandDone,
-            ),
-            Message::PlayerCommandDone(result) => {
-                if let Err(e) = result {
-                    eprintln!("[StreamVault] Player command error: {e}");
+                if let Some(ref mut player) = self.native_player {
+                    player.stop();
                 }
+                self.native_player = None;
+                self.playing_title.clear();
+                self.screen = Screen::Search;
                 IcedTask::none()
             }
 
@@ -643,7 +587,8 @@ impl App {
                 }
             }
             Screen::Player => {
-                screens::player_view(&self.playback_state, &self.playing_title)
+                let is_playing = self.native_player.as_ref().is_some_and(|p| p.is_playing());
+                screens::player_view(is_playing, &self.playing_title)
             }
             Screen::Downloads => screens::downloads_view(&self.downloads),
             Screen::Settings => screens::settings_view(&self.config),

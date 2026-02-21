@@ -1,13 +1,12 @@
 use crate::gui::app::Message;
 use crate::gui::style;
-use crate::playback::PlaybackState;
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Fill};
 
-pub fn player_view<'a>(state: &'a PlaybackState, title: &'a str) -> Element<'a, Message> {
+pub fn player_view<'a>(is_playing: bool, title: &'a str) -> Element<'a, Message> {
     let header = row![
         button(text("Back").size(14))
-            .on_press(Message::NavigateSearch)
+            .on_press(Message::PlayerStop)
             .padding(8),
         Space::with_width(16),
         text(title).size(20).color(style::TEXT_PRIMARY),
@@ -15,16 +14,10 @@ pub fn player_view<'a>(state: &'a PlaybackState, title: &'a str) -> Element<'a, 
     .align_y(Alignment::Center)
     .padding(20);
 
-    let status_text = match state {
-        PlaybackState::Stopped => "Stopped",
-        PlaybackState::Playing(_) => "Playing",
-        PlaybackState::Paused(_) => "Paused",
-    };
-
-    let status_color = match state {
-        PlaybackState::Stopped => style::TEXT_SECONDARY,
-        PlaybackState::Playing(_) => style::SUCCESS,
-        PlaybackState::Paused(_) => style::WARNING,
+    let (status_text, status_color) = if is_playing {
+        ("Playing", style::SUCCESS)
+    } else {
+        ("Paused", style::WARNING)
     };
 
     let status_display = container(
@@ -34,70 +27,20 @@ pub fn player_view<'a>(state: &'a PlaybackState, title: &'a str) -> Element<'a, 
             text(title).size(18).color(style::TEXT_PRIMARY),
             Space::with_height(4),
             text(status_text).size(14).color(status_color),
+            Space::with_height(8),
+            text("Use the video player window controls for playback")
+                .size(12)
+                .color(style::TEXT_SECONDARY),
         ]
         .padding(20),
     )
     .width(Fill)
     .style(style::card_style);
 
-    let is_active = !matches!(state, PlaybackState::Stopped);
-    let is_playing = matches!(state, PlaybackState::Playing(_));
-
-    let play_pause = if is_playing {
-        button(text("Pause").center().width(80))
-            .on_press(Message::PlayerPause)
-            .padding(10)
-    } else {
-        button(text("Resume").center().width(80))
-            .on_press(Message::PlayerResume)
-            .padding(10)
-    };
-
     let controls = row![
-        button(text("-10s").center().width(60))
-            .on_press_maybe(if is_active {
-                Some(Message::PlayerSeekBackward)
-            } else {
-                None
-            })
+        button(text("Stop & Close").center().width(120))
+            .on_press(Message::PlayerStop)
             .padding(10),
-        Space::with_width(8),
-        play_pause,
-        Space::with_width(8),
-        button(text("Stop").center().width(60))
-            .on_press_maybe(if is_active {
-                Some(Message::PlayerStop)
-            } else {
-                None
-            })
-            .padding(10),
-        Space::with_width(8),
-        button(text("+10s").center().width(60))
-            .on_press_maybe(if is_active {
-                Some(Message::PlayerSeekForward)
-            } else {
-                None
-            })
-            .padding(10),
-    ]
-    .align_y(Alignment::Center);
-
-    let volume_controls = row![
-        button(text("Vol -").center().width(60))
-            .on_press_maybe(if is_active {
-                Some(Message::PlayerVolumeDown)
-            } else {
-                None
-            })
-            .padding(8),
-        Space::with_width(8),
-        button(text("Vol +").center().width(60))
-            .on_press_maybe(if is_active {
-                Some(Message::PlayerVolumeUp)
-            } else {
-                None
-            })
-            .padding(8),
     ]
     .align_y(Alignment::Center);
 
@@ -107,8 +50,6 @@ pub fn player_view<'a>(state: &'a PlaybackState, title: &'a str) -> Element<'a, 
         status_display,
         Space::with_height(30),
         container(controls).width(Fill).center_x(Fill),
-        Space::with_height(16),
-        container(volume_controls).width(Fill).center_x(Fill),
     ]
     .padding(20);
 

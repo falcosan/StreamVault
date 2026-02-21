@@ -1,4 +1,5 @@
-mod player;
+#[cfg(target_os = "macos")]
+mod native_player;
 
-pub use player::PlaybackEngine;
-pub use player::PlaybackState;
+#[cfg(target_os = "macos")]
+pub use native_player::NativeVideoPlayer;
