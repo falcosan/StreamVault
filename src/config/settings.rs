@@ -45,8 +45,6 @@ pub struct RequestsConfig {
     pub proxy_url: String,
 }
 
-
-
 impl Default for OutputConfig {
     fn default() -> Self {
         Self {
