@@ -1,4 +1,5 @@
 mod app;
+pub mod messages;
 mod screens;
 mod style;
 

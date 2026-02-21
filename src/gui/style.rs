@@ -1,6 +1,8 @@
 use iced::color;
-use iced::widget::container;
-use iced::Theme;
+use iced::widget::{button, container, text};
+use iced::{Element, Fill, Theme};
+
+use crate::gui::messages::Message;
 
 pub const BG_DARK: iced::Color = color!(0x1a, 0x1a, 0x2e);
 pub const BG_CARD: iced::Color = color!(0x16, 0x21, 0x3e);
@@ -28,4 +30,19 @@ pub fn sidebar_style(_theme: &Theme) -> container::Style {
         background: Some(iced::Background::Color(color!(0x0f, 0x0f, 0x23))),
         ..Default::default()
     }
+}
+
+/// A navigation button for the sidebar.
+pub fn nav_button(label: &str, is_active: bool, msg: Message) -> Element<'_, Message> {
+    let color = if is_active {
+        TEXT_PRIMARY
+    } else {
+        TEXT_SECONDARY
+    };
+
+    button(text(label).size(14).color(color).width(Fill))
+        .on_press(msg)
+        .padding([10, 16])
+        .width(Fill)
+        .into()
 }

@@ -1,4 +1,4 @@
-use crate::gui::app::Message;
+use crate::gui::messages::Message;
 use crate::gui::style;
 use crate::provider::{Episode, MediaEntry, Season};
 use iced::widget::{button, column, container, row, scrollable, text, Space};

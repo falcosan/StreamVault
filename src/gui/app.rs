@@ -1,82 +1,14 @@
 use crate::config::AppConfig;
 use crate::download::{DownloadEngine, DownloadProgress, DownloadRequest};
+use crate::gui::messages::{Message, Screen};
 use crate::gui::screens;
 use crate::gui::style;
 use crate::playback::NativeVideoPlayer;
-use crate::provider::{
-    Episode, MediaEntry, Provider, Season, StreamUrl, StreamingCommunityProvider,
-};
+use crate::provider::{Episode, MediaEntry, Provider, Season, StreamingCommunityProvider};
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Fill, Subscription, Task as IcedTask, Theme};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-
-#[derive(Debug, Clone)]
-pub enum Screen {
-    Home,
-    Search,
-    Details,
-    Player,
-    Downloads,
-    Settings,
-}
-
-#[derive(Debug, Clone)]
-pub enum Message {
-    NavigateHome,
-    NavigateSearch,
-    NavigateDownloads,
-    NavigateSettings,
-
-    SearchInputChanged(String),
-    SearchSubmit,
-    SearchCompleted(Result<Vec<MediaEntry>, String>),
-
-    SelectEntry(usize),
-    SeasonsLoaded(Result<Vec<Season>, String>),
-    SelectSeason(u32),
-    EpisodesLoaded(Result<Vec<Episode>, String>),
-
-    PlayEntry(usize),
-    PlayMovie,
-    PlayEpisode(u32, u32),
-    StreamUrlResolved(Result<(StreamUrl, String), String>),
-
-    PlayerPause,
-    PlayerResume,
-    PlayerStop,
-
-    DismissError,
-
-    DownloadMovie,
-    DownloadEpisode(u32, u32),
-    DownloadStreamResolved(Result<(StreamUrl, String, bool), String>),
-
-
-    ProviderStatusChecked(bool),
-
-    SettingsUpdateRootPath(String),
-    SettingsUpdateMovieFolder(String),
-    SettingsUpdateSerieFolder(String),
-    SettingsUpdateEpisodeFormat(String),
-    SettingsUpdateThreadCount(String),
-    SettingsUpdateRetryCount(String),
-    SettingsUpdateSelectVideo(String),
-    SettingsUpdateSelectAudio(String),
-    SettingsUpdateSelectSubtitle(String),
-    SettingsUpdateMaxSpeed(String),
-    SettingsUpdateExtension(String),
-    SettingsUpdateTimeout(String),
-    SettingsUpdateProxyUrl(String),
-    SettingsToggleConcurrent(bool),
-    SettingsToggleMergeAudio(bool),
-    SettingsToggleMergeSubtitle(bool),
-    SettingsToggleGpu(bool),
-    SettingsToggleProxy(bool),
-    SettingsSave,
-
-    Tick,
-}
 
 pub struct App {
     screen: Screen,
@@ -107,12 +39,10 @@ impl App {
     pub fn new() -> (Self, IcedTask<Message>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let config = AppConfig::load();
-        let provider: Arc<dyn Provider> = Arc::new(
-            StreamingCommunityProvider::with_config(
-                StreamingCommunityProvider::default_base_url().to_string(),
-                config.requests.timeout,
-            ),
-        );
+        let provider: Arc<dyn Provider> = Arc::new(StreamingCommunityProvider::with_config(
+            StreamingCommunityProvider::default_base_url().to_string(),
+            config.requests.timeout,
+        ));
 
         let app = Self {
             screen: Screen::Home,
@@ -268,17 +198,7 @@ impl App {
             Message::PlayEntry(index) => {
                 if let Some(entry) = self.search_results.get(index).cloned() {
                     let title = entry.display_title();
-                    let provider = self.provider.clone();
-                    IcedTask::perform(
-                        async move {
-                            let stream = provider
-                                .get_stream_url(&entry, None, None)
-                                .await
-                                .map_err(|e| e.to_string())?;
-                            Ok((stream, title))
-                        },
-                        Message::StreamUrlResolved,
-                    )
+                    self.resolve_stream_for_play(entry, None, None, title)
                 } else {
                     IcedTask::none()
                 }
@@ -287,18 +207,7 @@ impl App {
                 if let Some(entry) = self.selected_entry.clone() {
                     self.error_message = None;
                     let title = entry.display_title();
-                    let provider = self.provider.clone();
-                    eprintln!("[StreamVault] PlayMovie: resolving stream for '{title}'");
-                    IcedTask::perform(
-                        async move {
-                            let stream = provider
-                                .get_stream_url(&entry, None, None)
-                                .await
-                                .map_err(|e| e.to_string())?;
-                            Ok((stream, title))
-                        },
-                        Message::StreamUrlResolved,
-                    )
+                    self.resolve_stream_for_play(entry, None, None, title)
                 } else {
                     IcedTask::none()
                 }
@@ -308,17 +217,7 @@ impl App {
                     self.error_message = None;
                     let episode = self.episodes.iter().find(|e| e.number == ep_num).cloned();
                     let title = format!("{} S{:02}E{:02}", entry.name, season, ep_num);
-                    let provider = self.provider.clone();
-                    IcedTask::perform(
-                        async move {
-                            let stream = provider
-                                .get_stream_url(&entry, episode.as_ref(), Some(season))
-                                .await
-                                .map_err(|e| e.to_string())?;
-                            Ok((stream, title))
-                        },
-                        Message::StreamUrlResolved,
-                    )
+                    self.resolve_stream_for_play(entry, episode, Some(season), title)
                 } else {
                     IcedTask::none()
                 }
@@ -329,12 +228,10 @@ impl App {
                     self.playing_title = title.clone();
                     self.error_message = None;
 
-                    // Stop any existing player
                     if let Some(ref mut p) = self.native_player {
                         p.stop();
                     }
 
-                    // Create native player directly on main thread
                     let mtm = objc2::MainThreadMarker::new().expect("update() runs on main thread");
                     match NativeVideoPlayer::play(&stream.url, &title, mtm) {
                         Ok(player) => {
@@ -559,6 +456,26 @@ impl App {
         }
     }
 
+    fn resolve_stream_for_play(
+        &self,
+        entry: crate::provider::MediaEntry,
+        episode: Option<Episode>,
+        season: Option<u32>,
+        title: String,
+    ) -> IcedTask<Message> {
+        let provider = self.provider.clone();
+        IcedTask::perform(
+            async move {
+                let stream = provider
+                    .get_stream_url(&entry, episode.as_ref(), season)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok((stream, title))
+            },
+            Message::StreamUrlResolved,
+        )
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
         let sidebar = self.sidebar();
         let content = match self.screen {
@@ -631,11 +548,11 @@ impl App {
             Space::with_height(20),
             text("SV").size(24).color(style::ACCENT_HOVER).center(),
             Space::with_height(30),
-            nav_button("Home", is_home, Message::NavigateHome),
-            nav_button("Search", is_search, Message::NavigateSearch),
-            nav_button("Player", is_player, Message::NavigateHome),
-            nav_button("Downloads", is_downloads, Message::NavigateDownloads),
-            nav_button("Settings", is_settings, Message::NavigateSettings),
+            style::nav_button("Home", is_home, Message::NavigateHome),
+            style::nav_button("Search", is_search, Message::NavigateSearch),
+            style::nav_button("Player", is_player, Message::NavigateHome),
+            style::nav_button("Downloads", is_downloads, Message::NavigateDownloads),
+            style::nav_button("Settings", is_settings, Message::NavigateSettings),
         ]
         .width(160)
         .align_x(Alignment::Center);
@@ -645,20 +562,6 @@ impl App {
             .style(style::sidebar_style)
             .into()
     }
-}
-
-fn nav_button(label: &str, is_active: bool, msg: Message) -> Element<'_, Message> {
-    let color = if is_active {
-        style::TEXT_PRIMARY
-    } else {
-        style::TEXT_SECONDARY
-    };
-
-    button(text(label).size(14).color(color).width(Fill))
-        .on_press(msg)
-        .padding([10, 16])
-        .width(Fill)
-        .into()
 }
 
 async fn check_provider(provider: Arc<dyn Provider>) -> bool {

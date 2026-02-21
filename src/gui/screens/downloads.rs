@@ -1,5 +1,5 @@
 use crate::download::{DownloadProgress, DownloadStatus};
-use crate::gui::app::Message;
+use crate::gui::messages::Message;
 use crate::gui::style;
 use iced::widget::{column, container, progress_bar, row, scrollable, text, Space};
 use iced::{Alignment, Element, Fill};
@@ -25,10 +25,7 @@ pub fn downloads_view(downloads: &[DownloadProgress]) -> Element<'_, Message> {
         .padding(60)
         .into()
     } else {
-        let cards: Vec<Element<'_, Message>> = downloads
-            .iter()
-            .map(download_card)
-            .collect();
+        let cards: Vec<Element<'_, Message>> = downloads.iter().map(download_card).collect();
 
         let mut col = column![].spacing(8).padding(20);
         for card in cards {

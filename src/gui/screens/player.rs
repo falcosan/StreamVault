@@ -1,4 +1,4 @@
-use crate::gui::app::Message;
+use crate::gui::messages::Message;
 use crate::gui::style;
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Fill};
@@ -65,8 +65,5 @@ pub fn player_view<'a>(is_playing: bool, title: &'a str) -> Element<'a, Message>
     ]
     .padding(20);
 
-    container(content)
-        .width(Fill)
-        .height(Fill)
-        .into()
+    container(content).width(Fill).height(Fill).into()
 }
