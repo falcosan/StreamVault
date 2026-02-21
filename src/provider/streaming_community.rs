@@ -10,6 +10,7 @@ use std::sync::{LazyLock, OnceLock};
 use url::Url;
 
 const DEFAULT_BASE_URL: &str = "https://streamingcommunityz.name";
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_LANG: &str = "it";
 const LANGUAGES: &[&str] = &["it", "en"];
 const IMAGE_PRIORITIES: &[&str] = &["poster", "cover", "cover_mobile", "background"];
@@ -54,14 +55,19 @@ pub struct StreamingCommunityProvider {
 }
 
 impl StreamingCommunityProvider {
+    #[allow(dead_code)]
     pub fn new() -> Self {
-        Self::with_base_url(DEFAULT_BASE_URL.to_string())
+        Self::with_config(DEFAULT_BASE_URL.to_string(), DEFAULT_TIMEOUT_SECS)
     }
 
-    pub fn with_base_url(base_url: String) -> Self {
+    pub fn default_base_url() -> &'static str {
+        DEFAULT_BASE_URL
+    }
+
+    pub fn with_config(base_url: String, timeout_secs: u64) -> Self {
         let client = Client::builder()
             .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(timeout_secs))
             .cookie_store(true)
             .build()
             .expect("reqwest client build");
@@ -404,7 +410,6 @@ impl Provider for StreamingCommunityProvider {
                         id,
                         number,
                         name: s["name"].as_str().map(String::from),
-                        episodes: Vec::new(),
                     })
                 })
                 .collect();

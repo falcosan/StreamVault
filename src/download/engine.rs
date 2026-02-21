@@ -85,6 +85,14 @@ impl DownloadEngine {
         cmd.arg("--select-subtitle")
             .arg(&self.config.download.select_subtitle);
 
+        if self.config.process.merge_audio {
+            cmd.arg("--mux-import").arg("audio");
+        }
+
+        if self.config.process.merge_subtitle {
+            cmd.arg("--mux-import").arg("subtitle");
+        }
+
         for (key, value) in &request.headers {
             cmd.arg("--header").arg(format!("{key}: {value}"));
         }

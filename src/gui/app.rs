@@ -106,11 +106,17 @@ pub struct App {
 impl App {
     pub fn new() -> (Self, IcedTask<Message>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let provider: Arc<dyn Provider> = Arc::new(StreamingCommunityProvider::new());
+        let config = AppConfig::load();
+        let provider: Arc<dyn Provider> = Arc::new(
+            StreamingCommunityProvider::with_config(
+                StreamingCommunityProvider::default_base_url().to_string(),
+                config.requests.timeout,
+            ),
+        );
 
         let app = Self {
             screen: Screen::Home,
-            config: AppConfig::load(),
+            config,
             provider: provider.clone(),
             provider_online: false,
             search_query: String::new(),

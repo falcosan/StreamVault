@@ -22,7 +22,6 @@ pub struct Season {
     pub id: u64,
     pub number: u32,
     pub name: Option<String>,
-    pub episodes: Vec<Episode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
