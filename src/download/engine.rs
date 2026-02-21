@@ -204,7 +204,8 @@ mod tests {
     #[test]
     fn format_episode_name_with_show_name_placeholder() {
         let mut config = AppConfig::default();
-        config.output.map_episode_name = "%(show_name) - %(episode_name) S%(season)E%(episode)".into();
+        config.output.map_episode_name =
+            "%(show_name) - %(episode_name) S%(season)E%(episode)".into();
         let engine = DownloadEngine::new(config);
         let result = engine.format_episode_name("Lost", 1, 3, "Tabula Rasa");
         assert_eq!(result, "Lost - Tabula Rasa S01E03");

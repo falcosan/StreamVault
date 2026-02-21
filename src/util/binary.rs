@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-pub fn bundled_bin_dir() -> Option<PathBuf> {
+fn bundled_bin_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
 
@@ -57,7 +57,6 @@ mod tests {
 
     #[test]
     fn bundled_bin_dir_returns_option() {
-        // Should not panic regardless of environment
         let _ = bundled_bin_dir();
     }
 }
