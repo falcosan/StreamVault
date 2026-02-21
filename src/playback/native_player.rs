@@ -19,14 +19,13 @@ pub struct NativeVideoPlayer {
 impl NativeVideoPlayer {
     pub fn play(url: &str, title: &str, mtm: MainThreadMarker) -> Result<Self, String> {
         let ns_url_string: Retained<NSString> = NSString::from_str(url);
-        let ns_url = NSURL::URLWithString(&ns_url_string)
-            .ok_or_else(|| format!("Invalid URL: {url}"))?;
+        let ns_url =
+            NSURL::URLWithString(&ns_url_string).ok_or_else(|| format!("Invalid URL: {url}"))?;
 
         let player = unsafe { AVPlayer::initWithURL(AVPlayer::alloc(mtm), &ns_url) };
 
         let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(960.0, 540.0));
-        let player_view =
-            unsafe { AVPlayerView::initWithFrame(AVPlayerView::alloc(mtm), frame) };
+        let player_view = unsafe { AVPlayerView::initWithFrame(AVPlayerView::alloc(mtm), frame) };
         unsafe { player_view.setPlayer(Some(&player)) };
 
         let style = NSWindowStyleMask::Titled
@@ -92,10 +91,6 @@ impl NativeVideoPlayer {
         }
         self.panel.orderOut(None);
         self.panel.close();
-    }
-
-    pub fn set_volume(&self, volume: f32) {
-        unsafe { self.player.setVolume(volume) };
     }
 
     pub fn is_playing(&self) -> bool {

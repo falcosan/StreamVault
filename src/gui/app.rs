@@ -3,7 +3,9 @@ use crate::download::{DownloadEngine, DownloadProgress, DownloadRequest};
 use crate::gui::screens;
 use crate::gui::style;
 use crate::playback::NativeVideoPlayer;
-use crate::provider::{Episode, MediaEntry, Provider, Season, StreamUrl, StreamingCommunityProvider};
+use crate::provider::{
+    Episode, MediaEntry, Provider, Season, StreamUrl, StreamingCommunityProvider,
+};
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Alignment, Element, Fill, Subscription, Task as IcedTask, Theme};
 use std::sync::Arc;
@@ -49,7 +51,7 @@ pub enum Message {
     DownloadMovie,
     DownloadEpisode(u32, u32),
     DownloadStreamResolved(Result<(StreamUrl, String, bool), String>),
-    DownloadProgressUpdate(DownloadProgress),
+
 
     ProviderStatusChecked(bool),
 
@@ -127,7 +129,8 @@ impl App {
             download_rx: Some(rx),
         };
 
-        let check_task = IcedTask::perform(check_provider(provider), Message::ProviderStatusChecked);
+        let check_task =
+            IcedTask::perform(check_provider(provider), Message::ProviderStatusChecked);
 
         (app, check_task)
     }
@@ -176,12 +179,7 @@ impl App {
                 let provider = self.provider.clone();
                 let query = self.search_query.clone();
                 IcedTask::perform(
-                    async move {
-                        provider
-                            .search(&query)
-                            .await
-                            .map_err(|e| e.to_string())
-                    },
+                    async move { provider.search(&query).await.map_err(|e| e.to_string()) },
                     Message::SearchCompleted,
                 )
             }
@@ -303,10 +301,7 @@ impl App {
                 if let Some(entry) = self.selected_entry.clone() {
                     self.error_message = None;
                     let episode = self.episodes.iter().find(|e| e.number == ep_num).cloned();
-                    let title = format!(
-                        "{} S{:02}E{:02}",
-                        entry.name, season, ep_num
-                    );
+                    let title = format!("{} S{:02}E{:02}", entry.name, season, ep_num);
                     let provider = self.provider.clone();
                     IcedTask::perform(
                         async move {
@@ -334,8 +329,7 @@ impl App {
                     }
 
                     // Create native player directly on main thread
-                    let mtm = objc2::MainThreadMarker::new()
-                        .expect("update() runs on main thread");
+                    let mtm = objc2::MainThreadMarker::new().expect("update() runs on main thread");
                     match NativeVideoPlayer::play(&stream.url, &title, mtm) {
                         Ok(player) => {
                             self.native_player = Some(player);
@@ -454,13 +448,6 @@ impl App {
                     IcedTask::none()
                 }
             }
-            Message::DownloadProgressUpdate(progress) => {
-                if let Some(existing) = self.downloads.iter_mut().find(|d| d.id == progress.id) {
-                    *existing = progress;
-                }
-                IcedTask::none()
-            }
-
             Message::ProviderStatusChecked(online) => {
                 self.provider_online = online;
                 IcedTask::none()
@@ -617,15 +604,12 @@ impl App {
             main_col = main_col.push(error_bar);
         }
 
-        main_col = main_col.push(
-            container(content)
-                .width(Fill)
-                .height(Fill)
-                .style(|_: &_| container::Style {
-                    background: Some(iced::Background::Color(style::BG_DARK)),
-                    ..Default::default()
-                }),
-        );
+        main_col = main_col.push(container(content).width(Fill).height(Fill).style(|_: &_| {
+            container::Style {
+                background: Some(iced::Background::Color(style::BG_DARK)),
+                ..Default::default()
+            }
+        }));
 
         row![sidebar, main_col].into()
     }

@@ -47,7 +47,7 @@ fn download_card(progress: &DownloadProgress) -> Element<'_, Message> {
         DownloadStatus::Downloading => ("Downloading", style::ACCENT_HOVER),
         DownloadStatus::Muxing => ("Muxing", style::WARNING),
         DownloadStatus::Completed => ("Completed", style::SUCCESS),
-        DownloadStatus::Failed(_) => ("Failed", style::DANGER),
+        DownloadStatus::Failed(ref err) => (err.as_str(), style::DANGER),
     };
 
     let speed_info = if progress.speed.is_empty() {

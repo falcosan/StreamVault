@@ -108,7 +108,11 @@ impl DownloadEngine {
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 progress.parse_n_m3u8dl_line(&line);
-                progress.status = DownloadStatus::Downloading;
+                if line.contains("Muxing") || line.contains("muxing") || line.contains("MUX") {
+                    progress.status = DownloadStatus::Muxing;
+                } else {
+                    progress.status = DownloadStatus::Downloading;
+                }
                 let _ = progress_tx.send(progress.clone());
             }
         }

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     pub output: OutputConfig,
     pub download: DownloadConfig,
@@ -45,16 +45,7 @@ pub struct RequestsConfig {
     pub proxy_url: String,
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            output: OutputConfig::default(),
-            download: DownloadConfig::default(),
-            process: ProcessConfig::default(),
-            requests: RequestsConfig::default(),
-        }
-    }
-}
+
 
 impl Default for OutputConfig {
     fn default() -> Self {

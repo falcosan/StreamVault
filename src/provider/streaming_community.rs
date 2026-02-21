@@ -358,10 +358,6 @@ impl StreamingCommunityProvider {
 }
 
 impl Provider for StreamingCommunityProvider {
-    fn name(&self) -> &str {
-        "StreamingCommunity"
-    }
-
     fn search(
         &self,
         query: &str,

@@ -8,7 +8,6 @@ pub type ProviderResult<T> = Result<T, ProviderError>;
 pub enum ProviderError {
     Network(String),
     Parse(String),
-    NotFound(String),
     StreamExtraction(String),
 }
 
@@ -17,7 +16,6 @@ impl std::fmt::Display for ProviderError {
         match self {
             Self::Network(msg) => write!(f, "Network error: {msg}"),
             Self::Parse(msg) => write!(f, "Parse error: {msg}"),
-            Self::NotFound(msg) => write!(f, "Not found: {msg}"),
             Self::StreamExtraction(msg) => write!(f, "Stream extraction error: {msg}"),
         }
     }
@@ -26,8 +24,6 @@ impl std::fmt::Display for ProviderError {
 impl std::error::Error for ProviderError {}
 
 pub trait Provider: Send + Sync {
-    fn name(&self) -> &str;
-
     fn search(
         &self,
         query: &str,

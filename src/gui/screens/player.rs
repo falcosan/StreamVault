@@ -37,7 +37,19 @@ pub fn player_view<'a>(is_playing: bool, title: &'a str) -> Element<'a, Message>
     .width(Fill)
     .style(style::card_style);
 
+    let toggle_btn = if is_playing {
+        button(text("Pause").center().width(120))
+            .on_press(Message::PlayerPause)
+            .padding(10)
+    } else {
+        button(text("Resume").center().width(120))
+            .on_press(Message::PlayerResume)
+            .padding(10)
+    };
+
     let controls = row![
+        toggle_btn,
+        Space::with_width(10),
         button(text("Stop & Close").center().width(120))
             .on_press(Message::PlayerStop)
             .padding(10),
