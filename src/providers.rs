@@ -320,10 +320,7 @@ impl StreamingCommunityProvider {
     ) -> ProviderResult<(serde_json::Value, String)> {
         let lang = Self::LANG;
         let base = self.base_url();
-        let url = format!(
-            "{base}/{lang}/titles/{}-{}",
-            entry.id, entry.slug
-        );
+        let url = format!("{base}/{lang}/titles/{}-{}", entry.id, entry.slug);
         let resp = self
             .client
             .get(&url)
@@ -346,9 +343,9 @@ impl StreamingCommunityProvider {
     ) -> ProviderResult<String> {
         let base = self.base_url();
         let url = match ep_id {
-            Some(eid) => format!(
-                "{base}/{lang}/iframe/{media_id}?episode_id={eid}&next_episode=1",
-            ),
+            Some(eid) => {
+                format!("{base}/{lang}/iframe/{media_id}?episode_id={eid}&next_episode=1",)
+            }
             None => format!("{base}/{lang}/iframe/{media_id}"),
         };
         let resp = self
