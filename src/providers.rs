@@ -654,6 +654,8 @@ impl RaiPlayProvider {
     async fn resolve_stream(&self, page_url: &str) -> ProviderResult<StreamUrl> {
         let json_url = if page_url.ends_with(".json") {
             page_url.to_string()
+        } else if let Some(base) = page_url.strip_suffix(".html") {
+            format!("{base}.json")
         } else {
             format!("{page_url}.json")
         };
