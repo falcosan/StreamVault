@@ -7,7 +7,6 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-// Searches bundled Resources/bin, then dev bin/, then common system paths
 #[inline]
 fn bundled_bin_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -25,7 +24,6 @@ fn bundled_bin_dir() -> Option<PathBuf> {
     None
 }
 
-// Resolves binary path: bundled → homebrew → /usr/local → /usr → ~/.local → fallback to name
 pub fn find_binary(name: &str) -> PathBuf {
     if let Some(bin_dir) = bundled_bin_dir() {
         let bundled = bin_dir.join(name);
@@ -48,7 +46,7 @@ pub fn find_binary(name: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DownloadStatus {
     Queued,
     Downloading,
@@ -57,7 +55,7 @@ pub enum DownloadStatus {
     Failed(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DownloadProgress {
     pub id: uuid::Uuid,
     pub title: String,
@@ -82,7 +80,6 @@ impl DownloadProgress {
         }
     }
 
-    // Parses N_m3u8DL-RE stdout lines for progress percentage, speed, and size info
     pub fn parse_line(&mut self, line: &str) {
         static PERCENT_RE: OnceLock<Regex> = OnceLock::new();
         static SPEED_RE: OnceLock<Regex> = OnceLock::new();
@@ -127,7 +124,6 @@ impl DownloadEngine {
         Self { config }
     }
 
-    // Spawns N_m3u8DL-RE subprocess with all config flags, streams progress via channel
     pub async fn download(
         &self,
         req: DownloadRequest,
@@ -199,8 +195,6 @@ impl DownloadEngine {
             }
         };
 
-        // Drain stderr in a background task to prevent pipe-buffer deadlock
-        // and collect output for error reporting.
         let stderr_handle = child.stderr.take().map(|stderr| {
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
@@ -215,7 +209,6 @@ impl DownloadEngine {
             })
         });
 
-        // Read stdout for progress updates (N_m3u8DL-RE writes progress here)
         if let Some(stdout) = child.stdout.take() {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {

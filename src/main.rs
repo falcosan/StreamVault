@@ -4,9 +4,12 @@ mod gui;
 mod providers;
 mod util;
 
-fn main() -> iced::Result {
-    iced::application("StreamVault", app::App::update, app::App::view)
-        .subscription(app::App::subscription)
-        .theme(app::App::theme)
-        .run_with(app::App::new)
+fn main() {
+    dioxus::LaunchBuilder::new()
+        .with_cfg(dioxus::desktop::Config::new().with_window(
+            dioxus::desktop::WindowBuilder::new()
+                .with_title("StreamVault")
+                .with_inner_size(dioxus::desktop::LogicalSize::new(1200.0, 800.0)),
+        ))
+        .launch(app::App);
 }

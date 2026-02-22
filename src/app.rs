@@ -1,9 +1,10 @@
 use crate::config::AppConfig;
-use crate::gui::{self, Msg, Pal, Screen};
-use crate::providers::{Episode, MediaEntry, Provider, StreamingCommunityProvider};
+use crate::gui::{self, Screen};
+use crate::providers::{Episode, MediaEntry, Provider, Season, StreamingCommunityProvider};
 use crate::util::{DownloadEngine, DownloadProgress, DownloadRequest};
-use iced::widget::{button, column, container, row, text, Space};
-use iced::{Alignment, Element, Fill, Subscription, Task as IcedTask, Theme};
+use dioxus::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -24,7 +25,6 @@ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{NSString, NSURL};
 
-const TICK_MS: u64 = 500;
 #[cfg(target_os = "macos")]
 const PLAYER_W: f64 = 960.0;
 #[cfg(target_os = "macos")]
@@ -118,535 +118,419 @@ impl NativePlayer {
     }
 }
 
-pub struct App {
-    screen: Screen,
-    config: AppConfig,
-    provider: Arc<dyn Provider>,
-    provider_online: bool,
-    search_query: String,
-    search_results: Vec<MediaEntry>,
-    is_searching: bool,
-    selected_entry: Option<MediaEntry>,
-    seasons: Vec<crate::providers::Season>,
-    episodes: Vec<Episode>,
-    selected_season: Option<u32>,
-    is_loading: bool,
-    #[cfg(target_os = "macos")]
-    native_player: Option<NativePlayer>,
-    playing_title: String,
-    error_msg: Option<String>,
-    downloads: Vec<DownloadProgress>,
-    dl_tx: mpsc::UnboundedSender<DownloadProgress>,
-    dl_rx: Option<mpsc::UnboundedReceiver<DownloadProgress>>,
-}
-
-impl App {
-    pub fn new() -> (Self, IcedTask<Msg>) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let cfg = AppConfig::load();
-        let p: Arc<dyn Provider> = Arc::new(StreamingCommunityProvider::with_config(
+#[component]
+pub fn App() -> Element {
+    let mut screen = use_signal(|| Screen::Home);
+    let config = use_hook(AppConfig::load);
+    let provider: Arc<dyn Provider> = use_hook(|| {
+        Arc::new(StreamingCommunityProvider::with_config(
             StreamingCommunityProvider::default_base_url().to_string(),
-            cfg.requests.timeout,
-        ));
-        let pc = p.clone();
-        (
-            Self {
-                screen: Screen::Home,
-                config: cfg,
-                provider: p,
-                provider_online: false,
-                search_query: String::new(),
-                search_results: Vec::new(),
-                is_searching: false,
-                selected_entry: None,
-                seasons: Vec::new(),
-                episodes: Vec::new(),
-                selected_season: None,
-                is_loading: false,
-                #[cfg(target_os = "macos")]
-                native_player: None,
-                playing_title: String::new(),
-                error_msg: None,
-                downloads: Vec::new(),
-                dl_tx: tx,
-                dl_rx: Some(rx),
-            },
-            IcedTask::perform(
-                async move { pc.search("test").await.is_ok() },
-                Msg::ProviderStatus,
-            ),
-        )
+            config.requests.timeout,
+        ))
+    });
+    let mut provider_online = use_signal(|| false);
+    let search_query = use_signal(String::new);
+    let mut search_results: Signal<Vec<MediaEntry>> = use_signal(Vec::new);
+    let mut is_searching = use_signal(|| false);
+    let mut selected_entry: Signal<Option<MediaEntry>> = use_signal(|| None);
+    let mut seasons: Signal<Vec<Season>> = use_signal(Vec::new);
+    let mut episodes: Signal<Vec<Episode>> = use_signal(Vec::new);
+    let mut selected_season: Signal<Option<u32>> = use_signal(|| None);
+    let mut is_loading = use_signal(|| false);
+    let mut error_msg: Signal<Option<String>> = use_signal(|| None);
+    let mut downloads: Signal<Vec<DownloadProgress>> = use_signal(Vec::new);
+    let mut playing_title = use_signal(String::new);
+    let mut native_playing = use_signal(|| false);
+
+    #[cfg(target_os = "macos")]
+    let native_player: Rc<RefCell<Option<NativePlayer>>> =
+        use_hook(|| Rc::new(RefCell::new(None::<NativePlayer>)));
+
+    let dl_tx: mpsc::UnboundedSender<DownloadProgress> = use_hook(|| {
+        let (tx, mut rx) = mpsc::unbounded_channel::<DownloadProgress>();
+        spawn(async move {
+            while let Some(p) = rx.recv().await {
+                let mut dls = downloads.write();
+                if let Some(existing) = dls.iter_mut().find(|d| d.id == p.id) {
+                    *existing = p;
+                }
+            }
+        });
+        tx
+    });
+
+    let config_clone = config.clone();
+
+    {
+        let provider = provider.clone();
+        use_future(move || {
+            let p = provider.clone();
+            async move {
+                provider_online.set(p.search("test").await.is_ok());
+            }
+        });
     }
 
-    #[inline]
-    pub fn theme(&self) -> Theme {
-        Pal::from_dark(self.config.dark_mode).theme()
-    }
-
-    #[inline]
-    pub fn subscription(&self) -> Subscription<Msg> {
-        iced::time::every(std::time::Duration::from_millis(TICK_MS)).map(|_| Msg::Tick)
-    }
-
-    pub fn update(&mut self, msg: Msg) -> IcedTask<Msg> {
-        match msg {
-            Msg::Tick => {
-                self.drain_progress();
-                IcedTask::none()
+    let on_search_submit = {
+        let provider = provider.clone();
+        move |q: String| {
+            if q.trim().is_empty() || is_searching() {
+                return;
             }
-
-            Msg::NavHome => {
-                self.screen = Screen::Home;
-                IcedTask::none()
-            }
-            Msg::NavSearch => {
-                self.screen = Screen::Search;
-                IcedTask::none()
-            }
-            Msg::NavDownloads => {
-                self.screen = Screen::Downloads;
-                IcedTask::none()
-            }
-            Msg::NavSettings => {
-                self.screen = Screen::Settings;
-                IcedTask::none()
-            }
-
-            Msg::SearchInput(q) => {
-                self.search_query = q;
-                IcedTask::none()
-            }
-            Msg::SearchSubmit => {
-                if self.search_query.trim().is_empty() || self.is_searching {
-                    return IcedTask::none();
+            is_searching.set(true);
+            screen.set(Screen::Search);
+            let p = provider.clone();
+            spawn(async move {
+                match p.search(&q).await {
+                    Ok(entries) => search_results.set(entries),
+                    Err(_) => search_results.set(Vec::new()),
                 }
-                self.is_searching = true;
-                self.screen = Screen::Search;
-                let (p, q) = (self.provider.clone(), self.search_query.clone());
-                IcedTask::perform(
-                    async move { p.search(&q).await.map_err(|e| e.to_string()) },
-                    Msg::SearchDone,
-                )
-            }
-            Msg::SearchDone(r) => {
-                self.is_searching = false;
-                match r {
-                    Ok(e) => self.search_results = e,
-                    Err(_) => self.search_results.clear(),
-                }
-                IcedTask::none()
-            }
+                is_searching.set(false);
+            });
+        }
+    };
 
-            Msg::SelectEntry(i) => {
-                if let Some(entry) = self.search_results.get(i).cloned() {
-                    let is_movie = entry.is_movie();
-                    self.selected_entry = Some(entry.clone());
-                    self.screen = Screen::Details;
-                    self.seasons.clear();
-                    self.episodes.clear();
-                    self.selected_season = None;
-                    self.is_loading = !is_movie;
-                    if is_movie {
-                        return IcedTask::none();
-                    }
-                    let p = self.provider.clone();
-                    IcedTask::perform(
-                        async move { p.get_seasons(&entry).await.map_err(|e| e.to_string()) },
-                        Msg::SeasonsLoaded,
-                    )
-                } else {
-                    IcedTask::none()
+    let on_select_entry = {
+        let provider = provider.clone();
+        move |idx: usize| {
+            let results = search_results();
+            if let Some(entry) = results.get(idx).cloned() {
+                let is_movie = entry.is_movie();
+                selected_entry.set(Some(entry.clone()));
+                screen.set(Screen::Details);
+                seasons.set(Vec::new());
+                episodes.set(Vec::new());
+                selected_season.set(None);
+                if !is_movie {
+                    is_loading.set(true);
+                    let p = provider.clone();
+                    spawn(async move {
+                        match p.get_seasons(&entry).await {
+                            Ok(s) => {
+                                let first_num = s.first().map(|f| f.number);
+                                seasons.set(s);
+                                if let Some(n) = first_num {
+                                    selected_season.set(Some(n));
+                                    if let Some(e) = selected_entry() {
+                                        is_loading.set(true);
+                                        match p.get_episodes(&e, n).await {
+                                            Ok(eps) => episodes.set(eps),
+                                            Err(_) => episodes.set(Vec::new()),
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => seasons.set(Vec::new()),
+                        }
+                        is_loading.set(false);
+                    });
                 }
             }
-            Msg::SeasonsLoaded(r) => {
-                self.is_loading = false;
-                if let Ok(s) = r {
-                    self.seasons = s;
-                    if let Some(first) = self.seasons.first() {
-                        let n = first.number;
-                        return self.update(Msg::SelectSeason(n));
+        }
+    };
+
+    let on_select_season = {
+        let provider = provider.clone();
+        move |n: u32| {
+            selected_season.set(Some(n));
+            episodes.set(Vec::new());
+            is_loading.set(true);
+            let p = provider.clone();
+            spawn(async move {
+                if let Some(entry) = selected_entry() {
+                    match p.get_episodes(&entry, n).await {
+                        Ok(eps) => episodes.set(eps),
+                        Err(_) => episodes.set(Vec::new()),
                     }
                 }
-                IcedTask::none()
-            }
-            Msg::SelectSeason(n) => {
-                self.selected_season = Some(n);
-                self.episodes.clear();
-                self.is_loading = true;
-                if let Some(entry) = self.selected_entry.clone() {
-                    let p = self.provider.clone();
-                    IcedTask::perform(
-                        async move { p.get_episodes(&entry, n).await.map_err(|e| e.to_string()) },
-                        Msg::EpisodesLoaded,
-                    )
-                } else {
-                    IcedTask::none()
-                }
-            }
-            Msg::EpisodesLoaded(r) => {
-                self.is_loading = false;
-                if let Ok(eps) = r {
-                    self.episodes = eps;
-                }
-                IcedTask::none()
-            }
+                is_loading.set(false);
+            });
+        }
+    };
 
-            Msg::PlayMovie => {
-                if let Some(e) = self.selected_entry.clone() {
-                    self.error_msg = None;
-                    let t = e.display_title();
-                    self.resolve_play(e, None, None, t)
-                } else {
-                    IcedTask::none()
-                }
-            }
-            Msg::PlayEpisode(s, ep) => {
-                if let Some(e) = self.selected_entry.clone() {
-                    self.error_msg = None;
-                    let episode = self.episodes.iter().find(|x| x.number == ep).cloned();
-                    let t = format!("{} S{s:02}E{ep:02}", e.name);
-                    self.resolve_play(e, episode, Some(s), t)
-                } else {
-                    IcedTask::none()
-                }
-            }
-            Msg::StreamResolved(r) => {
-                match r {
-                    Ok((stream, title)) => self.start_playback(&stream.url, &title),
-                    Err(e) => {
-                        self.error_msg = Some(format!("Failed to get stream: {e}"));
+    let on_play_movie = {
+        let provider = provider.clone();
+        #[cfg(target_os = "macos")]
+        let native_player = native_player.clone();
+        move |_: ()| {
+            if let Some(entry) = selected_entry() {
+                error_msg.set(None);
+                let title = entry.display_title();
+                let p = provider.clone();
+                #[cfg(target_os = "macos")]
+                let np_rc = native_player.clone();
+                spawn(async move {
+                    match p.get_stream_url(&entry, None, None).await {
+                        Ok(stream) => {
+                            #[cfg(target_os = "macos")]
+                            {
+                                eprintln!("[StreamVault] Playing: {}", stream.url);
+                                playing_title.set(title.clone());
+                                let mut np = np_rc.borrow_mut();
+                                if let Some(ref mut existing) = *np {
+                                    existing.stop();
+                                }
+                                let mtm = MainThreadMarker::new().expect("main thread");
+                                match NativePlayer::play(&stream.url, &title, mtm) {
+                                    Ok(player) => {
+                                        native_playing.set(player.is_playing());
+                                        *np = Some(player);
+                                        screen.set(Screen::Player);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[StreamVault] Player error: {e}");
+                                        error_msg.set(Some(format!("Playback error: {e}")));
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
                     }
-                }
-                IcedTask::none()
+                });
             }
+        }
+    };
 
-            Msg::Pause => {
+    let on_play_episode = {
+        let provider = provider.clone();
+        #[cfg(target_os = "macos")]
+        let native_player = native_player.clone();
+        move |(s, ep_num): (u32, u32)| {
+            if let Some(entry) = selected_entry() {
+                error_msg.set(None);
+                let episode = episodes().iter().find(|x| x.number == ep_num).cloned();
+                let title = format!("{} S{s:02}E{ep_num:02}", entry.name);
+                let p = provider.clone();
                 #[cfg(target_os = "macos")]
-                if let Some(ref mut p) = self.native_player {
-                    p.pause();
-                }
-                IcedTask::none()
+                let np_rc = native_player.clone();
+                spawn(async move {
+                    match p.get_stream_url(&entry, episode.as_ref(), Some(s)).await {
+                        Ok(stream) => {
+                            #[cfg(target_os = "macos")]
+                            {
+                                eprintln!("[StreamVault] Playing: {}", stream.url);
+                                playing_title.set(title.clone());
+                                let mut np = np_rc.borrow_mut();
+                                if let Some(ref mut existing) = *np {
+                                    existing.stop();
+                                }
+                                let mtm = MainThreadMarker::new().expect("main thread");
+                                match NativePlayer::play(&stream.url, &title, mtm) {
+                                    Ok(player) => {
+                                        native_playing.set(player.is_playing());
+                                        *np = Some(player);
+                                        screen.set(Screen::Player);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[StreamVault] Player error: {e}");
+                                        error_msg.set(Some(format!("Playback error: {e}")));
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
+                    }
+                });
             }
-            Msg::Resume => {
-                #[cfg(target_os = "macos")]
-                if let Some(ref mut p) = self.native_player {
-                    p.resume();
-                }
-                IcedTask::none()
-            }
-            Msg::Stop => {
-                #[cfg(target_os = "macos")]
-                if let Some(ref mut p) = self.native_player {
-                    p.stop();
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    self.native_player = None;
-                }
-                self.playing_title.clear();
-                self.screen = Screen::Search;
-                IcedTask::none()
-            }
+        }
+    };
 
-            Msg::DlMovie => {
-                if let Some(entry) = self.selected_entry.clone() {
-                    let (p, t) = (self.provider.clone(), entry.display_title());
-                    IcedTask::perform(
-                        async move {
-                            let s = p
-                                .get_stream_url(&entry, None, None)
-                                .await
-                                .map_err(|e| e.to_string())?;
-                            Ok((s, t, true))
-                        },
-                        Msg::DlStreamResolved,
-                    )
-                } else {
-                    IcedTask::none()
-                }
+    let on_dl_movie = {
+        let provider = provider.clone();
+        let config = config_clone.clone();
+        let dl_tx = dl_tx.clone();
+        move |_: ()| {
+            if let Some(entry) = selected_entry() {
+                let p = provider.clone();
+                let cfg = config.clone();
+                let tx = dl_tx.clone();
+                spawn(async move {
+                    match p.get_stream_url(&entry, None, None).await {
+                        Ok(stream) => {
+                            let title = entry.display_title();
+                            let id = uuid::Uuid::new_v4();
+                            let engine = DownloadEngine::new(cfg);
+                            let req = DownloadRequest {
+                                id,
+                                title: title.clone(),
+                                stream_url: stream.url,
+                                output_dir: engine.build_output_path(&title, true),
+                                filename: title.clone(),
+                                headers: stream.headers,
+                            };
+                            downloads.write().push(DownloadProgress::new(id, title));
+                            screen.set(Screen::Downloads);
+                            engine.download(req, tx).await;
+                        }
+                        Err(e) => error_msg.set(Some(format!("Download failed: {e}"))),
+                    }
+                });
             }
-            Msg::DlEpisode(season, ep_num) => {
-                if let Some(entry) = self.selected_entry.clone() {
-                    let ep = self.episodes.iter().find(|e| e.number == ep_num).cloned();
-                    let (p, cfg, show) = (
-                        self.provider.clone(),
-                        self.config.clone(),
-                        entry.name.clone(),
-                    );
-                    IcedTask::perform(
-                        async move {
-                            let ep_ref = ep.as_ref();
-                            let s = p
-                                .get_stream_url(&entry, ep_ref, Some(season))
-                                .await
-                                .map_err(|e| e.to_string())?;
+        }
+    };
+
+    let on_dl_episode = {
+        let provider = provider.clone();
+        let config = config_clone.clone();
+        let dl_tx = dl_tx.clone();
+        move |(season, ep_num): (u32, u32)| {
+            if let Some(entry) = selected_entry() {
+                let ep = episodes().iter().find(|e| e.number == ep_num).cloned();
+                let p = provider.clone();
+                let cfg = config.clone();
+                let tx = dl_tx.clone();
+                let show = entry.name.clone();
+                spawn(async move {
+                    match p.get_stream_url(&entry, ep.as_ref(), Some(season)).await {
+                        Ok(stream) => {
                             let engine = DownloadEngine::new(cfg);
                             let fname = engine.format_episode_name(
                                 &show,
                                 season,
                                 ep_num,
-                                ep_ref.map(|e| e.name.as_str()).unwrap_or(""),
+                                ep.as_ref().map(|e| e.name.as_str()).unwrap_or(""),
                             );
-                            Ok((s, fname, false))
-                        },
-                        Msg::DlStreamResolved,
-                    )
-                } else {
-                    IcedTask::none()
-                }
-            }
-            Msg::DlStreamResolved(r) => match r {
-                Ok((stream, fname, is_movie)) => {
-                    let id = uuid::Uuid::new_v4();
-                    let engine = DownloadEngine::new(self.config.clone());
-                    let req = DownloadRequest {
-                        id,
-                        title: fname.clone(),
-                        stream_url: stream.url,
-                        output_dir: engine.build_output_path(&fname, is_movie),
-                        filename: fname.clone(),
-                        headers: stream.headers,
-                    };
-                    self.downloads.push(DownloadProgress::new(id, fname));
-                    let tx = self.dl_tx.clone();
-                    self.screen = Screen::Downloads;
-                    IcedTask::perform(
-                        async move {
+                            let id = uuid::Uuid::new_v4();
+                            let req = DownloadRequest {
+                                id,
+                                title: fname.clone(),
+                                stream_url: stream.url,
+                                output_dir: engine.build_output_path(&fname, false),
+                                filename: fname.clone(),
+                                headers: stream.headers,
+                            };
+                            downloads.write().push(DownloadProgress::new(id, fname));
+                            screen.set(Screen::Downloads);
                             engine.download(req, tx).await;
-                        },
-                        |_: ()| Msg::Tick,
-                    )
-                }
-                Err(e) => {
-                    self.error_msg = Some(format!("Download failed: {e}"));
-                    IcedTask::none()
-                }
-            }
-
-            Msg::ProviderStatus(ok) => {
-                self.provider_online = ok;
-                IcedTask::none()
-            }
-
-            Msg::CfgDarkMode(v) => {
-                self.config.dark_mode = v;
-                IcedTask::none()
-            }
-            Msg::CfgRootPath(v) => {
-                self.config.output.root_path = v;
-                IcedTask::none()
-            }
-            Msg::CfgMovieFolder(v) => {
-                self.config.output.movie_folder_name = v;
-                IcedTask::none()
-            }
-            Msg::CfgSerieFolder(v) => {
-                self.config.output.serie_folder_name = v;
-                IcedTask::none()
-            }
-            Msg::CfgEpFormat(v) => {
-                self.config.output.map_episode_name = v;
-                IcedTask::none()
-            }
-            Msg::CfgThreads(v) => {
-                if let Ok(n) = v.parse() {
-                    self.config.download.thread_count = n;
-                }
-                IcedTask::none()
-            }
-            Msg::CfgRetry(v) => {
-                if let Ok(n) = v.parse() {
-                    self.config.download.retry_count = n;
-                }
-                IcedTask::none()
-            }
-            Msg::CfgSelVideo(v) => {
-                self.config.download.select_video = v;
-                IcedTask::none()
-            }
-            Msg::CfgSelAudio(v) => {
-                self.config.download.select_audio = v;
-                IcedTask::none()
-            }
-            Msg::CfgSelSub(v) => {
-                self.config.download.select_subtitle = v;
-                IcedTask::none()
-            }
-            Msg::CfgMaxSpeed(v) => {
-                self.config.download.max_speed = v;
-                IcedTask::none()
-            }
-            Msg::CfgExtension(v) => {
-                self.config.process.extension = v;
-                IcedTask::none()
-            }
-            Msg::CfgTimeout(v) => {
-                if let Ok(n) = v.parse() {
-                    self.config.requests.timeout = n;
-                }
-                IcedTask::none()
-            }
-            Msg::CfgProxyUrl(v) => {
-                self.config.requests.proxy_url = v;
-                IcedTask::none()
-            }
-            Msg::CfgConcurrent(v) => {
-                self.config.download.concurrent_download = v;
-                IcedTask::none()
-            }
-            Msg::CfgMergeAudio(v) => {
-                self.config.process.merge_audio = v;
-                IcedTask::none()
-            }
-            Msg::CfgMergeSub(v) => {
-                self.config.process.merge_subtitle = v;
-                IcedTask::none()
-            }
-            Msg::CfgGpu(v) => {
-                self.config.process.use_gpu = v;
-                IcedTask::none()
-            }
-            Msg::CfgProxy(v) => {
-                self.config.requests.use_proxy = v;
-                IcedTask::none()
-            }
-            Msg::CfgSave => {
-                self.config.save();
-                IcedTask::none()
-            }
-
-            Msg::DismissError => {
-                self.error_msg = None;
-                IcedTask::none()
+                        }
+                        Err(e) => error_msg.set(Some(format!("Download failed: {e}"))),
+                    }
+                });
             }
         }
-    }
+    };
 
-    #[inline]
-    fn drain_progress(&mut self) {
-        if let Some(ref mut rx) = self.dl_rx {
-            while let Ok(p) = rx.try_recv() {
-                if let Some(existing) = self.downloads.iter_mut().find(|d| d.id == p.id) {
-                    *existing = p;
+    let on_pause = {
+        #[cfg(target_os = "macos")]
+        let native_player = native_player.clone();
+        move |_: ()| {
+            #[cfg(target_os = "macos")]
+            {
+                let mut np = native_player.borrow_mut();
+                if let Some(ref mut p) = *np {
+                    p.pause();
+                    native_playing.set(false);
                 }
             }
         }
-    }
+    };
 
-    fn resolve_play(
-        &self,
-        entry: MediaEntry,
-        ep: Option<Episode>,
-        season: Option<u32>,
-        title: String,
-    ) -> IcedTask<Msg> {
-        let p = self.provider.clone();
-        IcedTask::perform(
-            async move {
-                let s = p
-                    .get_stream_url(&entry, ep.as_ref(), season)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok((s, title))
-            },
-            Msg::StreamResolved,
-        )
-    }
-
-    #[cfg(target_os = "macos")]
-    fn start_playback(&mut self, url: &str, title: &str) {
-        eprintln!("[StreamVault] Playing: {url}");
-        self.playing_title = title.to_string();
-        self.error_msg = None;
-        if let Some(ref mut p) = self.native_player {
-            p.stop();
-        }
-        let mtm = MainThreadMarker::new().expect("update() runs on main thread");
-        match NativePlayer::play(url, title, mtm) {
-            Ok(player) => {
-                self.native_player = Some(player);
-                self.screen = Screen::Player;
-            }
-            Err(e) => {
-                eprintln!("[StreamVault] Player error: {e}");
-                self.error_msg = Some(format!("Playback error: {e}"));
-            }
-        }
-    }
-
-    pub fn view(&self) -> Element<'_, Msg> {
-        let p = Pal::from_dark(self.config.dark_mode);
-        let nav = gui::navbar(p, &self.screen, &self.search_query, self.is_searching);
-
-        let content: Element<'_, Msg> = match self.screen {
-            Screen::Home => gui::home_view(p, self.provider_online, &self.search_results),
-            Screen::Search => gui::search_view(
-                p,
-                &self.search_query,
-                &self.search_results,
-                self.is_searching,
-            ),
-            Screen::Details => {
-                if let Some(ref e) = self.selected_entry {
-                    gui::details_view(
-                        p,
-                        e,
-                        &self.seasons,
-                        &self.episodes,
-                        self.selected_season,
-                        self.is_loading,
-                    )
-                } else {
-                    gui::home_view(p, self.provider_online, &self.search_results)
+    let on_resume = {
+        #[cfg(target_os = "macos")]
+        let native_player = native_player.clone();
+        move |_: ()| {
+            #[cfg(target_os = "macos")]
+            {
+                let mut np = native_player.borrow_mut();
+                if let Some(ref mut p) = *np {
+                    p.resume();
+                    native_playing.set(true);
                 }
             }
-            Screen::Player => {
-                #[cfg(target_os = "macos")]
-                let playing = self
-                    .native_player
-                    .as_ref()
-                    .is_some_and(|np| np.is_playing());
-                gui::player_view(p, playing, &self.playing_title)
-            }
-            Screen::Downloads => gui::downloads_view(p, &self.downloads),
-            Screen::Settings => gui::settings_view(p, &self.config),
-        };
-
-        let mut main_col = column![nav].width(Fill).height(Fill);
-
-        if let Some(ref err) = self.error_msg {
-            main_col = main_col.push(
-                container(
-                    row![
-                        text(err.as_str()).size(13).color(iced::Color::WHITE),
-                        Space::with_width(Fill),
-                        button(text("✕").size(12).color(iced::Color::WHITE))
-                            .on_press(Msg::DismissError)
-                            .padding([4, 8])
-                            .style(move |_, _| button::Style {
-                                background: None,
-                                text_color: iced::Color::WHITE,
-                                ..Default::default()
-                            }),
-                    ]
-                    .align_y(Alignment::Center)
-                    .padding([8, 20]),
-                )
-                .width(Fill)
-                .style(move |_: &_| container::Style {
-                    background: Some(iced::Background::Color(p.danger)),
-                    ..Default::default()
-                }),
-            );
         }
+    };
 
-        main_col = main_col.push(container(content).width(Fill).height(Fill).style(
-            move |_: &_| container::Style {
-                background: Some(iced::Background::Color(p.bg)),
-                ..Default::default()
-            },
-        ));
+    let on_stop = {
+        #[cfg(target_os = "macos")]
+        let native_player = native_player.clone();
+        move |_: ()| {
+            #[cfg(target_os = "macos")]
+            {
+                let mut np = native_player.borrow_mut();
+                if let Some(ref mut p) = *np {
+                    p.stop();
+                }
+                *np = None;
+            }
+            native_playing.set(false);
+            playing_title.set(String::new());
+            screen.set(Screen::Search);
+        }
+    };
 
-        main_col.into()
+    let current_entry = selected_entry();
+
+    rsx! {
+        style { dangerous_inner_html: gui::GLOBAL_CSS }
+        div { class: "app",
+            gui::Navbar { screen, search_query, is_searching: ReadOnlySignal::from(is_searching), on_search_submit }
+            if let Some(ref err) = error_msg() {
+                div { class: "error-bar",
+                    span { "{err}" }
+                    div { class: "fill", style: "flex:1;" }
+                    button { class: "dismiss", onclick: move |_| error_msg.set(None), "✕" }
+                }
+            }
+            div { class: "content",
+                match screen() {
+                    Screen::Home => rsx! {
+                        gui::HomeView {
+                            provider_online: ReadOnlySignal::from(provider_online),
+                            search_results: ReadOnlySignal::from(search_results),
+                            on_select: on_select_entry,
+                        }
+                    },
+                    Screen::Search => rsx! {
+                        gui::SearchView {
+                            search_query: ReadOnlySignal::from(search_query),
+                            search_results: ReadOnlySignal::from(search_results),
+                            is_searching: ReadOnlySignal::from(is_searching),
+                            on_select: on_select_entry,
+                        }
+                    },
+                    Screen::Details => {
+                        if let Some(ref entry) = current_entry {
+                            rsx! {
+                                gui::DetailsView {
+                                    entry: entry.clone(),
+                                    seasons: ReadOnlySignal::from(seasons),
+                                    episodes: ReadOnlySignal::from(episodes),
+                                    selected_season: ReadOnlySignal::from(selected_season),
+                                    is_loading: ReadOnlySignal::from(is_loading),
+                                    on_select_season,
+                                    on_play_movie,
+                                    on_play_episode,
+                                    on_dl_movie,
+                                    on_dl_episode,
+                                    on_back: move |_| screen.set(Screen::Search),
+                                }
+                            }
+                        } else {
+                            rsx! {
+                                gui::HomeView {
+                                    provider_online: ReadOnlySignal::from(provider_online),
+                                    search_results: ReadOnlySignal::from(search_results),
+                                    on_select: on_select_entry,
+                                }
+                            }
+                        }
+                    },
+                    Screen::Player => rsx! {
+                        gui::PlayerView {
+                            playing: ReadOnlySignal::from(native_playing),
+                            playing_title: ReadOnlySignal::from(playing_title),
+                            on_pause,
+                            on_resume,
+                            on_stop,
+                        }
+                    },
+                    Screen::Downloads => rsx! {
+                        gui::DownloadsView {
+                            downloads: ReadOnlySignal::from(downloads),
+                        }
+                    },
+                }
+            }
+        }
     }
 }

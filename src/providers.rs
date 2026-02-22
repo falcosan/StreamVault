@@ -51,7 +51,7 @@ pub enum MediaType {
     Series,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MediaEntry {
     pub id: u64,
     pub name: String,
@@ -166,7 +166,6 @@ impl StreamingCommunityProvider {
         Self { client, base_url }
     }
 
-    // Extracts the JSON payload from the data-page attribute on #app div
     fn parse_data_page(html: &str) -> ProviderResult<serde_json::Value> {
         let doc = Html::parse_document(html);
         let app = doc
@@ -180,7 +179,6 @@ impl StreamingCommunityProvider {
         serde_json::from_str(data).map_err(|e| ProviderError::Parse(format!("Invalid JSON: {e}")))
     }
 
-    // Fetches homepage to get the Inertia.js protocol version for XHR requests
     async fn fetch_inertia_version(&self) -> ProviderResult<String> {
         let resp = self
             .client
@@ -199,7 +197,6 @@ impl StreamingCommunityProvider {
             .ok_or_else(|| ProviderError::Parse("No version in data-page".into()))
     }
 
-    // Searches a single language endpoint and parses Inertia props into MediaEntry list
     async fn search_lang(
         &self,
         query: &str,
@@ -246,7 +243,6 @@ impl StreamingCommunityProvider {
         })
     }
 
-    // Tries translations array first (first_air_date/release_date), then top-level date fields
     fn extract_year(v: &serde_json::Value) -> Option<String> {
         if let Some(translations) = v["translations"].as_array() {
             for t in translations {
@@ -270,7 +266,6 @@ impl StreamingCommunityProvider {
         None
     }
 
-    // Picks best image by priority order: poster > cover > cover_mobile > background > first
     fn extract_image_url(&self, v: &serde_json::Value) -> Option<String> {
         let images = v["images"].as_array()?;
         let cdn = self.base_url.replace("stream", "cdn.stream");
@@ -290,7 +285,6 @@ impl StreamingCommunityProvider {
         })
     }
 
-    // Loads full title page HTML, extracts Inertia data-page JSON + version
     async fn fetch_title_page(
         &self,
         entry: &MediaEntry,
@@ -315,7 +309,6 @@ impl StreamingCommunityProvider {
     }
 }
 
-// Fetches the VixCloud iframe URL that contains the embedded player
 async fn fetch_iframe_url(
     client: &Client,
     base_url: &str,
@@ -344,7 +337,6 @@ async fn fetch_iframe_url(
         .ok_or_else(|| ProviderError::Parse("No iframe src found".into()))
 }
 
-// Extracts M3U8 stream URL from VixCloud player page by parsing token/expires/url from inline JS
 async fn extract_stream_url(client: &Client, iframe_url: &str) -> ProviderResult<StreamUrl> {
     let resp = client
         .get(iframe_url)
@@ -388,7 +380,6 @@ async fn extract_stream_url(client: &Client, iframe_url: &str) -> ProviderResult
     let has_b = parsed.query_pairs().any(|(k, v)| k == "b" && v == "1");
     parsed.set_query(None);
 
-    // Build query string with optional FHD flag, b param, and required auth tokens
     let mut params: Vec<(&str, String)> = Vec::with_capacity(4);
     if fhd {
         params.push(("h", "1".into()));
@@ -421,7 +412,6 @@ impl Provider for StreamingCommunityProvider {
             let version = self.fetch_inertia_version().await?;
             let mut all = Vec::new();
             let mut seen = HashSet::new();
-            // Search across all configured languages, dedup by id
             for lang in LANGS {
                 if let Ok(entries) = self.search_lang(&query, lang, &version).await {
                     for e in entries {
