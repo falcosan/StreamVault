@@ -325,7 +325,7 @@ pub fn HomeView(
         div { class: "catalog-view",
             div { class: "media-grid",
                 for entry in items.iter() {
-                    PosterCard { key: "{entry.id}", entry: entry.clone(), on_select }
+                    PosterCard { key: "{entry.provider}-{entry.id}", entry: entry.clone(), on_select }
                 }
             }
         }
@@ -371,7 +371,7 @@ pub fn SearchView(
             }
             div { class: "media-grid",
                 for entry in results.iter() {
-                    PosterCard { key: "{entry.id}", entry: entry.clone(), on_select }
+                    PosterCard { key: "{entry.provider}-{entry.id}", entry: entry.clone(), on_select }
                 }
             }
         }
