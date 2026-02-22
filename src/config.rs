@@ -91,7 +91,7 @@ impl Default for ProcessConfig {
             use_gpu: false,
             merge_audio: true,
             merge_subtitle: true,
-            extension: "mkv".into(),
+            extension: "mp4".into(),
         }
     }
 }
@@ -184,7 +184,7 @@ mod tests {
         assert_eq!(c.download.thread_count, 8);
         assert_eq!(c.download.retry_count, 30);
         assert!(c.download.concurrent_download);
-        assert_eq!(c.process.extension, "mkv");
+        assert_eq!(c.process.extension, "mp4");
         assert!(!c.process.use_gpu);
         assert!(c.process.merge_audio);
         assert_eq!(c.requests.timeout, 30);

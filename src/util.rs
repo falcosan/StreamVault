@@ -61,9 +61,6 @@ pub struct DownloadProgress {
     pub title: String,
     pub status: DownloadStatus,
     pub percent: f64,
-    pub speed: String,
-    pub downloaded: String,
-    pub total: String,
 }
 
 impl DownloadProgress {
@@ -74,32 +71,16 @@ impl DownloadProgress {
             title,
             status: DownloadStatus::Queued,
             percent: 0.0,
-            speed: String::new(),
-            downloaded: String::new(),
-            total: String::new(),
         }
     }
 
     pub fn parse_line(&mut self, line: &str) {
         static PERCENT_RE: OnceLock<Regex> = OnceLock::new();
-        static SPEED_RE: OnceLock<Regex> = OnceLock::new();
-        static SIZE_RE: OnceLock<Regex> = OnceLock::new();
         let pct = PERCENT_RE.get_or_init(|| Regex::new(r"(\d+(?:\.\d+)?)%").unwrap());
-        let spd = SPEED_RE.get_or_init(|| Regex::new(r"(\d+(?:\.\d+)?(?:MB|KB|GB|B)ps)").unwrap());
-        let sz = SIZE_RE.get_or_init(|| {
-            Regex::new(r"(\d+(?:\.\d+)?(?:MB|GB|KB|B))/(\d+(?:\.\d+)?(?:MB|GB|KB|B))").unwrap()
-        });
         if let Some(c) = pct.captures(line) {
             if let Ok(p) = c[1].parse::<f64>() {
                 self.percent = p;
             }
-        }
-        if let Some(c) = spd.captures(line) {
-            self.speed = c[1].to_string();
-        }
-        if let Some(c) = sz.captures(line) {
-            self.downloaded = c[1].to_string();
-            self.total = c[2].to_string();
         }
     }
 }
@@ -139,7 +120,7 @@ impl DownloadEngine {
         let mut cmd = Command::new(&n_m3u8dl);
         cmd.arg(&req.stream_url)
             .arg("--save-name")
-            .arg(&req.filename)
+            .arg(sanitize_filename(&req.filename))
             .arg("--save-dir")
             .arg(&req.output_dir)
             .arg("--tmp-dir")
@@ -353,7 +334,6 @@ mod tests {
         let p = make_progress();
         assert!(matches!(p.status, DownloadStatus::Queued));
         assert_eq!(p.percent, 0.0);
-        assert!(p.speed.is_empty());
     }
 
     #[test]
@@ -364,28 +344,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_speed() {
-        let mut p = make_progress();
-        p.parse_line("Speed: 12.5MBps");
-        assert_eq!(p.speed, "12.5MBps");
-    }
-
-    #[test]
-    fn parse_size() {
-        let mut p = make_progress();
-        p.parse_line("Downloaded 150MB/500MB");
-        assert_eq!(p.downloaded, "150MB");
-        assert_eq!(p.total, "500MB");
-    }
-
-    #[test]
     fn parse_combined_line() {
         let mut p = make_progress();
         p.parse_line("50.0% 200MB/400MB 10MBps");
         assert!((p.percent - 50.0).abs() < 0.01);
-        assert_eq!(p.speed, "10MBps");
-        assert_eq!(p.downloaded, "200MB");
-        assert_eq!(p.total, "400MB");
     }
 
     #[test]
@@ -393,6 +355,5 @@ mod tests {
         let mut p = make_progress();
         p.parse_line("Some random log line");
         assert_eq!(p.percent, 0.0);
-        assert!(p.speed.is_empty());
     }
 }

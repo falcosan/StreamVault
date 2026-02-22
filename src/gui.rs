@@ -211,8 +211,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .dl-progress { width: 100%; height: 3px; background: var(--surface2); border-radius: 2px; margin-top: 8px; overflow: hidden; }
 .dl-progress-bar { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; }
 .dl-card-bottom { display: flex; align-items: center; margin-top: 5px; }
-.dl-pct { font-size: 11px; color: var(--text2); flex: 1; }
-.dl-speed { font-size: 11px; color: var(--text3); }
+.dl-pct { font-size: 11px; color: var(--text2); }
 
 .loading-msg { font-size: 13px; color: var(--text3); padding: 10px 24px; }
 "#;
@@ -569,14 +568,6 @@ fn DlCard(progress: DownloadProgress) -> Element {
         DownloadStatus::Completed => ("Completed".to_string(), "var(--success)"),
         DownloadStatus::Failed(ref e) => (e.clone(), "var(--danger)"),
     };
-    let speed_str = if progress.speed.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "{}  ·  {} / {}",
-            progress.speed, progress.downloaded, progress.total
-        )
-    };
     let pct = progress.percent;
     let pct_str = format!("{pct:.1}%");
     let width_str = format!("{pct}%");
@@ -592,7 +583,6 @@ fn DlCard(progress: DownloadProgress) -> Element {
             }
             div { class: "dl-card-bottom",
                 span { class: "dl-pct", "{pct_str}" }
-                span { class: "dl-speed", "{speed_str}" }
             }
         }
     }
