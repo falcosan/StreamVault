@@ -75,25 +75,39 @@ impl Default for DownloadConfig {
 impl Default for ProcessConfig {
     #[inline]
     fn default() -> Self {
-        Self { use_gpu: false, merge_audio: true, merge_subtitle: true, extension: "mkv".into() }
+        Self {
+            use_gpu: false,
+            merge_audio: true,
+            merge_subtitle: true,
+            extension: "mkv".into(),
+        }
     }
 }
 
 impl Default for RequestsConfig {
     #[inline]
     fn default() -> Self {
-        Self { timeout: 30, max_retry: 8, use_proxy: false, proxy_url: String::new() }
+        Self {
+            timeout: 30,
+            max_retry: 8,
+            use_proxy: false,
+            proxy_url: String::new(),
+        }
     }
 }
 
 impl AppConfig {
     #[inline]
     pub fn config_dir() -> PathBuf {
-        dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("StreamVault")
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("StreamVault")
     }
 
     #[inline]
-    pub fn config_path() -> PathBuf { Self::config_dir().join("config.json") }
+    pub fn config_path() -> PathBuf {
+        Self::config_dir().join("config.json")
+    }
 
     pub fn load() -> Self {
         let path = Self::config_path();
@@ -129,14 +143,20 @@ impl AppConfig {
 
     #[inline]
     pub fn download_dir(&self) -> PathBuf {
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(&self.output.root_path)
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(&self.output.root_path)
     }
 
     #[inline]
-    pub fn movie_dir(&self) -> PathBuf { self.download_dir().join(&self.output.movie_folder_name) }
+    pub fn movie_dir(&self) -> PathBuf {
+        self.download_dir().join(&self.output.movie_folder_name)
+    }
 
     #[inline]
-    pub fn serie_dir(&self) -> PathBuf { self.download_dir().join(&self.output.serie_folder_name) }
+    pub fn serie_dir(&self) -> PathBuf {
+        self.download_dir().join(&self.output.serie_folder_name)
+    }
 }
 
 #[cfg(test)]
