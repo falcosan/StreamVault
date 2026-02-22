@@ -55,7 +55,6 @@ impl MediaEntry {
         self.media_type == MediaType::Movie
     }
 
-    #[inline]
     pub fn display_title(&self) -> String {
         match &self.year {
             Some(y) => format!("{} ({y})", self.name),
@@ -187,7 +186,7 @@ impl StreamingCommunityProvider {
     async fn fetch_inertia_version(&self) -> ProviderResult<String> {
         let resp = self
             .client
-            .get(&self.base_url())
+            .get(self.base_url())
             .send()
             .await
             .map_err(|e| ProviderError::Network(e.to_string()))?;
@@ -574,7 +573,7 @@ impl Provider for StreamingCommunityProvider {
         Box::pin(async move {
             let resp = self
                 .client
-                .get(&self.base_url())
+                .get(self.base_url())
                 .send()
                 .await
                 .map_err(|e| ProviderError::Network(e.to_string()))?;
