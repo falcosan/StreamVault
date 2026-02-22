@@ -247,6 +247,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 #[component]
 pub fn Navbar(
     screen: Signal<Screen>,
+    history: Signal<Vec<Screen>>,
     search_query: Signal<String>,
     is_searching: ReadOnlySignal<bool>,
     on_search_submit: EventHandler<String>,
@@ -255,18 +256,24 @@ pub fn Navbar(
     let searching = is_searching();
     rsx! {
         nav { class: "navbar",
-            button { class: "logo", onclick: move |_| screen.set(Screen::Home),
+            button { class: "logo", onclick: move |_| {
+                    if screen() != Screen::Home { history.write().push(screen()); screen.set(Screen::Home); }
+                },
                 div { class: "logo-icon", dangerous_inner_html: LOGO_SVG }
             }
             div { class: "nav-spacer" }
             button {
                 class: if current == Screen::Home { "nav-link active" } else { "nav-link" },
-                onclick: move |_| screen.set(Screen::Home),
+                onclick: move |_| {
+                    if screen() != Screen::Home { history.write().push(screen()); screen.set(Screen::Home); }
+                },
                 "Home"
             }
             button {
                 class: if current == Screen::Downloads { "nav-link active" } else { "nav-link" },
-                onclick: move |_| screen.set(Screen::Downloads),
+                onclick: move |_| {
+                    if screen() != Screen::Downloads { history.write().push(screen()); screen.set(Screen::Downloads); }
+                },
                 "Downloads"
             }
             div { class: "nav-fill" }

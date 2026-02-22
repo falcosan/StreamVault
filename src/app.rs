@@ -36,7 +36,7 @@ pub fn App() -> Element {
     let mut stream_url: Signal<Option<String>> = use_signal(|| None);
     let mut catalog: Signal<Vec<MediaEntry>> = use_signal(Vec::new);
     let mut catalog_loading = use_signal(|| true);
-    let mut prev_screen = use_signal(|| Screen::Home);
+    let mut history: Signal<Vec<Screen>> = use_signal(Vec::new);
 
     let dl_tx: mpsc::UnboundedSender<DownloadProgress> = use_hook(|| {
         let (tx, mut rx) = mpsc::unbounded_channel::<DownloadProgress>();
@@ -88,6 +88,7 @@ pub fn App() -> Element {
             }
             is_searching.set(true);
             search_results.set(Vec::new());
+            history.write().push(screen());
             screen.set(Screen::Search);
             search_pending.set(providers.len());
             for (idx, p) in providers.iter().enumerate() {
@@ -116,7 +117,7 @@ pub fn App() -> Element {
         move |entry: MediaEntry| {
             let is_movie = entry.is_movie();
             selected_entry.set(Some(entry.clone()));
-            prev_screen.set(screen());
+            history.write().push(screen());
             screen.set(Screen::Details);
             seasons.set(Vec::new());
             episodes.set(Vec::new());
@@ -175,12 +176,14 @@ pub fn App() -> Element {
                 error_msg.set(None);
                 let title = entry.display_title();
                 let p = providers[entry.provider].clone();
+                let current = screen();
                 spawn(async move {
                     match p.get_stream_url(&entry, None, None).await {
                         Ok(stream) => {
                             eprintln!("[StreamVault] Playing: {}", stream.url);
                             playing_title.set(title);
                             stream_url.set(Some(stream.url));
+                            history.write().push(current);
                             screen.set(Screen::Player);
                         }
                         Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
@@ -198,12 +201,14 @@ pub fn App() -> Element {
                 let episode = episodes().iter().find(|x| x.number == ep_num).cloned();
                 let title = format!("{} S{s:02}E{ep_num:02}", entry.name);
                 let p = providers[entry.provider].clone();
+                let current = screen();
                 spawn(async move {
                     match p.get_stream_url(&entry, episode.as_ref(), Some(s)).await {
                         Ok(stream) => {
                             eprintln!("[StreamVault] Playing: {}", stream.url);
                             playing_title.set(title);
                             stream_url.set(Some(stream.url));
+                            history.write().push(current);
                             screen.set(Screen::Player);
                         }
                         Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
@@ -222,6 +227,7 @@ pub fn App() -> Element {
                 let p = providers[entry.provider].clone();
                 let cfg = config.clone();
                 let tx = dl_tx.clone();
+                let current = screen();
                 spawn(async move {
                     match p.get_stream_url(&entry, None, None).await {
                         Ok(stream) => {
@@ -237,6 +243,7 @@ pub fn App() -> Element {
                                 headers: stream.headers,
                             };
                             downloads.write().push(DownloadProgress::new(id, title));
+                            history.write().push(current);
                             screen.set(Screen::Downloads);
                             engine.download(req, tx).await;
                         }
@@ -258,6 +265,7 @@ pub fn App() -> Element {
                 let cfg = config.clone();
                 let tx = dl_tx.clone();
                 let show = entry.name.clone();
+                let current = screen();
                 spawn(async move {
                     match p.get_stream_url(&entry, ep.as_ref(), Some(season)).await {
                         Ok(stream) => {
@@ -278,6 +286,7 @@ pub fn App() -> Element {
                                 headers: stream.headers,
                             };
                             downloads.write().push(DownloadProgress::new(id, fname));
+                            history.write().push(current);
                             screen.set(Screen::Downloads);
                             engine.download(req, tx).await;
                         }
@@ -291,7 +300,8 @@ pub fn App() -> Element {
     let on_stop = move |_: ()| {
         stream_url.set(None);
         playing_title.set(String::new());
-        screen.set(Screen::Home);
+        let prev = history.write().pop().unwrap_or(Screen::Home);
+        screen.set(prev);
     };
 
     let current_entry = selected_entry();
@@ -299,7 +309,7 @@ pub fn App() -> Element {
     rsx! {
         style { dangerous_inner_html: gui::GLOBAL_CSS }
         div { class: "app",
-            gui::Navbar { screen, search_query, is_searching: ReadOnlySignal::from(is_searching), on_search_submit }
+            gui::Navbar { screen, history, search_query, is_searching: ReadOnlySignal::from(is_searching), on_search_submit }
             if let Some(ref err) = error_msg() {
                 div { class: "error-bar",
                     span { "{err}" }
@@ -338,7 +348,10 @@ pub fn App() -> Element {
                                     on_play_episode,
                                     on_dl_movie,
                                     on_dl_episode,
-                                    on_back: move |_| screen.set(prev_screen()),
+                                    on_back: move |_| {
+                                        let prev = history.write().pop().unwrap_or(Screen::Home);
+                                        screen.set(prev);
+                                    },
                                 }
                             }
                         } else {
