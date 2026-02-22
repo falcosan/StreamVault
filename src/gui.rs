@@ -40,13 +40,16 @@ fn poster_color(name: &str) -> String {
     format!("rgb({r},{g},{b})")
 }
 
+pub const LOGO_DATA_URI: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAlgAAAJYBAMAAABMSIXvAAAAHlBMVEVHcEz0/Tf0/jf0/Tf0/jf0/jf1/jf0/jf0/jf0/Tcx66TBAAAACXRSTlMAlndYObQc0OhXbbSTAAAIJklEQVR42u3dvW7iahhFYfObltYdrTtaOsq4oxrJXZoRuQIk9zQuB4LC3O25gCHSPopQ1ofXuoQ3jyKKbbuqaHV/oV1wp6om1Fv93fCOVVNv9SGsvJ2w4k7CirsJq2hYU2HlNcIqH9ansPKOwsphvfGOtRVW3ExYwhKWsO73S1hxV96tqpZ6rD3vVnNh5b0KK4c1CEtYD2hJhfUHCOtAhbUCwuqFJSxh/WwvwsrrhBW3oMJaCyvuLCxhjQXWRFh5tbCEJSxh3W0DPFYDvRVwxs2dgghLWMISlrC+0xZ6K+CDJ9wpyE5YcSdhxd2EVTasubDyWmHlsAZhxVE3RkdhxRFn3NW7sOKWwso7CCuH1QureFh74K0qKCzijBs7BUHC6oQlLGEJqxhYNfNWxLUtdgqyEpawhCUsYX2nRlhx1CnIWlhxZ2EJazSwZsLK2wpLWMIS1r02woojzrix4zUkrFZYOaxBWHGvwopbCisPOl77QMLqmcfaEY8F3RidhBWHnHFTX5CFhFUJK28hrLyOCetNWHFHYcV9Cqt0WLWw4ibCKh3WVVh5e2HlsJC3mgorrxGWsIQlrDuthBWHXNtSpyBMWFthCUtYwioGViusOOh4bY08FnNjdGbCGoQlrAe0FFbeQVg5rF5YhcO6CCtvgzzWi7DyOmHFLYQlLGEJqxhYzCnIBxNWjTzWTlhxJ2HF3YQlrBHBmgorryHeijnjhsI6CktYI4K1FVbcTFiFw7oKK28vrBxWJazSYbXCipsLK+9VWDmsgXislbDimGtb6HgNCusgrBxWLyxhCetnWwgrryMeay2suLOwhDUmWLWw4ibCEpawhPVvG2HFQWfczCkIFNZUWMISlrCE9Z2gD54wpyA75q2QU5CTsOJuwhLWmGDNhZXXAm8FnXEzN0bQGTdyYySsJ4D1Lqw45BSECou4MboKK28vrBwW9FaVsPIWwsrrhCWsscBaCSuOurZFTkGosCbCEpawhFUMrKmw8hrgsdbCijsLS1jCEtbdZsLK2wqraFgXYeVthFU+rFZYcXNhCeshsAZhxb0KK474gizqgyfI8dqOCqvn3Yo64yZujG7CEtaoYBGnIFhYwCkIdcaNhHUUlrBGBWsirLxaWCXDugorby+sHFYlrPJhTYWV1whLWCOBtRJWHHZtS5yCYGHNhCUsYQlLWM8Iq+Uda029FXC8hp1xEzdGXFiDsIT1gJbCyjsIK4fV4251EVbeRlhPAOu3sPI6YcUthCWskcDaCSsO++AJcArCnXEDpyAnYQlLWML6okZYcbwpCHfGDYR1FJawhCWsL9oKK443BbkKK28vrBxWJawngDUXVl4rrBzWIKw43sZoJay4P8J6BlhLYeUdhJXD6oUlrEeEg8Vd2wKnIGvusTphCUtYwioGVi2suImwCoZ1EVbeRljCGhmsRlhx/wGXx1DS3akARwAAAABJRU5ErkJggg==";
+
 pub const GLOBAL_CSS: &str = r#"
 :root {
-    --bg: #141414; --surface: #1a1a1a; --surface2: #252525;
-    --border: #303030; --accent: #e50914; --accent-hover: #b80710;
-    --warn: #f5b014; --danger: #e50914; --success: #46d369;
+    --bg: #151515; --surface: #1c1c1c; --surface2: #272727;
+    --border: #333333; --accent: #f4fd37; --accent-hover: #d4dd17;
+    --accent-text: #151515;
+    --warn: #f5b014; --danger: #e53935; --success: #46d369;
     --text: #e5e5e5; --text2: #a0a0a0; --text3: #686868;
-    --navbar: #0c0c0c;
+    --navbar: #0d0d0d;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -58,15 +61,16 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
     display: flex; align-items: center; gap: 2px; padding: 0 20px;
     height: 48px; min-height: 48px; background: var(--navbar);
 }
-.logo { background: none; border: none; color: var(--accent); font-size: 20px; font-weight: bold; cursor: pointer; padding: 0; }
+.logo { background: none; border: none; cursor: pointer; padding: 0; display: flex; align-items: center; }
 .logo:hover { opacity: 0.8; }
+.logo-img { height: 24px; width: auto; }
 .nav-spacer { width: 24px; }
 .nav-link {
     background: none; border: none; color: #808080; font-size: 13px;
     padding: 4px 10px; cursor: pointer; border-radius: 3px;
 }
 .nav-link:hover { background: #303030; color: #b0b0b0; }
-.nav-link.active { color: white; }
+.nav-link.active { color: var(--accent); }
 .nav-fill { flex: 1; }
 .search-input {
     background: var(--surface2); border: 1px solid var(--border); color: var(--text);
@@ -74,8 +78,8 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 }
 .search-input:focus { border-color: var(--accent); }
 .search-go {
-    background: var(--accent); border: none; color: white; font-size: 12px;
-    padding: 5px 8px; min-width: 32px; cursor: pointer; border-radius: 3px;
+    background: var(--accent); border: none; color: var(--accent-text); font-size: 12px;
+    padding: 5px 8px; min-width: 32px; cursor: pointer; border-radius: 3px; font-weight: 600;
 }
 .search-go:hover { background: var(--accent-hover); }
 .search-go:disabled { opacity: 0.5; cursor: default; }
@@ -93,6 +97,13 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     height: 100%; text-align: center; padding: 20px;
 }
+
+.splash-screen {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100%; gap: 16px;
+}
+.splash-logo { width: 80px; height: 80px; }
+.splash-text { font-size: 22px; font-weight: bold; color: var(--accent); letter-spacing: 2px; }
 
 .catalog-view { padding: 16px 0; }
 .section-header { display: flex; align-items: center; gap: 10px; padding: 0 20px 12px; }
@@ -121,11 +132,11 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .poster-title { font-size: 12px; color: white; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .poster-meta { display: flex; align-items: center; gap: 6px; }
 .badge {
-    font-size: 8px; color: white; padding: 1px 6px; border-radius: 2px;
+    font-size: 8px; padding: 1px 6px; border-radius: 2px;
     text-transform: uppercase; font-weight: bold;
 }
-.badge-movie { background: var(--accent); }
-.badge-series { background: #0091d5; }
+.badge-movie { background: var(--accent); color: var(--accent-text); }
+.badge-series { background: #0091d5; color: white; }
 .poster-year { font-size: 10px; color: #b0b0b0; }
 
 .empty-msg { font-size: 16px; color: var(--text3); }
@@ -138,8 +149,8 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 }
 .btn-ghost:hover { background: var(--surface2); }
 .btn-accent {
-    background: var(--accent); border: none; color: white;
-    padding: 10px 20px; font-size: 14px; cursor: pointer; border-radius: 3px; min-width: 140px; text-align: center;
+    background: var(--accent); border: none; color: var(--accent-text);
+    padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; border-radius: 3px; min-width: 140px; text-align: center;
 }
 .btn-accent:hover { background: var(--accent-hover); }
 
@@ -155,7 +166,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .details-meta {
     display: flex; align-items: center; gap: 10px;
 }
-.details-kind-badge { font-size: 10px; color: white; padding: 2px 10px; border-radius: 3px; }
+.details-kind-badge { font-size: 10px; padding: 2px 10px; border-radius: 3px; }
 .details-year { font-size: 13px; color: #bbbbbb; }
 .details-actions { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
 .details-desc {
@@ -179,7 +190,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
     border: 1px solid var(--border); background: transparent; color: var(--text2);
 }
 .season-tab:hover { background: var(--surface2); }
-.season-tab.active { background: var(--accent); border-color: var(--accent); color: white; cursor: default; }
+.season-tab.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; cursor: default; }
 
 .episodes-list { padding: 4px 24px; display: flex; flex-direction: column; gap: 3px; }
 .episode-row {
@@ -193,8 +204,8 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .ep-name { font-size: 13px; color: var(--text); }
 .ep-dur { font-size: 11px; color: var(--text3); margin-top: 2px; }
 .ep-play {
-    background: var(--accent); border: none; color: white;
-    padding: 7px 14px; font-size: 12px; cursor: pointer; border-radius: 3px;
+    background: var(--accent); border: none; color: var(--accent-text);
+    padding: 7px 14px; font-size: 12px; font-weight: 600; cursor: pointer; border-radius: 3px;
 }
 .ep-play:hover { background: var(--accent-hover); }
 .ep-dl {
@@ -242,7 +253,9 @@ pub fn Navbar(
     let searching = is_searching();
     rsx! {
         nav { class: "navbar",
-            button { class: "logo", onclick: move |_| screen.set(Screen::Home), "STREAMVAULT" }
+            button { class: "logo", onclick: move |_| screen.set(Screen::Home),
+                img { class: "logo-img", src: LOGO_DATA_URI }
+            }
             div { class: "nav-spacer" }
             button {
                 class: if current == Screen::Home { "nav-link active" } else { "nav-link" },
@@ -293,7 +306,10 @@ pub fn HomeView(
 
     if items.is_empty() && loading {
         return rsx! {
-            div { class: "center-msg", span { class: "searching-msg", "Loading..." } }
+            div { class: "splash-screen",
+                img { class: "splash-logo", src: LOGO_DATA_URI }
+                span { class: "splash-text", "StreamVault" }
+            }
         };
     }
 
@@ -411,6 +427,7 @@ pub fn DetailsView(
     let bg = poster_color(&entry.name);
     let is_movie = entry.is_movie();
     let kind_color = if is_movie { "var(--accent)" } else { "#0091d5" };
+    let kind_text = if is_movie { "var(--accent-text)" } else { "white" };
     let kind_label = if is_movie { "MOVIE" } else { "SERIES" };
     let yr = entry.year_display().to_string();
     let name = entry.name.clone();
@@ -431,7 +448,7 @@ pub fn DetailsView(
                 div { class: "details-info",
                     div { class: "details-title", "{name}" }
                     div { class: "details-meta",
-                        span { class: "details-kind-badge", style: "background: {kind_color};", "{kind_label}" }
+                        span { class: "details-kind-badge", style: "background: {kind_color}; color: {kind_text};", "{kind_label}" }
                         span { class: "details-year", "{yr}" }
                     }
                     if is_movie {

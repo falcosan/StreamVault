@@ -8,9 +8,9 @@ use std::pin::Pin;
 use std::sync::{LazyLock, OnceLock};
 use url::Url;
 
-const BASE_URL: &str = "https://streamingcommunityz.name";
 const LANG: &str = "it";
 const LANGS: &[&str] = &["it", "en"];
+const BASE_URL: &str = "https://streamingcommunityz.name";
 const IMG_PRIORITY: &[&str] = &["poster", "cover", "cover_mobile", "background"];
 
 static APP_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("div#app").unwrap());
