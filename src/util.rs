@@ -7,7 +7,6 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-#[inline]
 fn bundled_bin_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
@@ -248,7 +247,6 @@ impl DownloadEngine {
         base.join(sanitize_filename(title))
     }
 
-    #[inline]
     pub fn format_episode_name(&self, show: &str, season: u32, ep: u32, ep_name: &str) -> String {
         self.config
             .output

@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod gui;
 mod providers;
+mod style;
 mod util;
 
 fn main() {

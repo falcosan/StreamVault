@@ -2,24 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     pub output: OutputConfig,
     pub download: DownloadConfig,
     pub process: ProcessConfig,
     pub requests: RequestsConfig,
-}
-
-impl Default for AppConfig {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            output: OutputConfig::default(),
-            download: DownloadConfig::default(),
-            process: ProcessConfig::default(),
-            requests: RequestsConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,7 +97,6 @@ impl Default for RequestsConfig {
 }
 
 impl AppConfig {
-    #[inline]
     pub fn config_dir() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -153,7 +140,6 @@ impl AppConfig {
         }
     }
 
-    #[inline]
     pub fn download_dir(&self) -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))

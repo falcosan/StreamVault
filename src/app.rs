@@ -355,9 +355,9 @@ pub fn App() -> Element {
     let current_entry = selected_entry();
 
     rsx! {
-        style { dangerous_inner_html: gui::GLOBAL_CSS }
+        style { dangerous_inner_html: crate::style::GLOBAL_CSS }
         div { class: "app",
-            gui::Navbar { screen, history, search_query, is_searching: ReadOnlySignal::from(is_searching), on_search_submit }
+            gui::Navbar { screen, history, search_query, is_searching: ReadSignal::from(is_searching), on_search_submit }
             if let Some(ref err) = error_msg() {
                 div { class: "error-bar",
                     span { "{err}" }
@@ -369,16 +369,16 @@ pub fn App() -> Element {
                 match screen() {
                     Screen::Home => rsx! {
                         gui::HomeView {
-                            catalog: ReadOnlySignal::from(catalog),
-                            is_loading: ReadOnlySignal::from(catalog_loading),
+                            catalog: ReadSignal::from(catalog),
+                            is_loading: ReadSignal::from(catalog_loading),
                             on_select: on_select_entry,
                         }
                     },
                     Screen::Search => rsx! {
                         gui::SearchView {
-                            search_query: ReadOnlySignal::from(search_query),
-                            search_results: ReadOnlySignal::from(search_results),
-                            is_searching: ReadOnlySignal::from(is_searching),
+                            search_query: ReadSignal::from(search_query),
+                            search_results: ReadSignal::from(search_results),
+                            is_searching: ReadSignal::from(is_searching),
                             on_select: on_select_entry,
                         }
                     },
@@ -387,10 +387,10 @@ pub fn App() -> Element {
                             rsx! {
                                 gui::DetailsView {
                                     entry: entry.clone(),
-                                    seasons: ReadOnlySignal::from(seasons),
-                                    episodes: ReadOnlySignal::from(episodes),
-                                    selected_season: ReadOnlySignal::from(selected_season),
-                                    is_loading: ReadOnlySignal::from(is_loading),
+                                    seasons: ReadSignal::from(seasons),
+                                    episodes: ReadSignal::from(episodes),
+                                    selected_season: ReadSignal::from(selected_season),
+                                    is_loading: ReadSignal::from(is_loading),
                                     on_select_season,
                                     on_play_movie,
                                     on_play_episode,
@@ -405,8 +405,8 @@ pub fn App() -> Element {
                         } else {
                             rsx! {
                                 gui::HomeView {
-                                    catalog: ReadOnlySignal::from(catalog),
-                                    is_loading: ReadOnlySignal::from(catalog_loading),
+                                    catalog: ReadSignal::from(catalog),
+                                    is_loading: ReadSignal::from(catalog_loading),
                                     on_select: on_select_entry,
                                 }
                             }
@@ -414,16 +414,16 @@ pub fn App() -> Element {
                     },
                     Screen::Player => rsx! {
                         gui::PlayerView {
-                            stream_url: ReadOnlySignal::from(stream_url),
-                            playing_title: ReadOnlySignal::from(playing_title),
-                            has_next_episode: ReadOnlySignal::from(has_next_episode),
+                            stream_url: ReadSignal::from(stream_url),
+                            playing_title: ReadSignal::from(playing_title),
+                            has_next_episode: ReadSignal::from(has_next_episode),
                             on_stop,
                             on_next_episode,
                         }
                     },
                     Screen::Downloads => rsx! {
                         gui::DownloadsView {
-                            downloads: ReadOnlySignal::from(downloads),
+                            downloads: ReadSignal::from(downloads),
                         }
                     },
                 }
