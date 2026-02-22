@@ -14,12 +14,3 @@ regex = "1"
 url = { version = "2", features = ["serde"] }
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSURL"] }
-objc2-app-kit = { version = "0.3", features = ["NSView", "NSWindow", "NSPanel", "NSResponder", "NSApplication", "NSGraphics", "NSScreen", "NSRunningApplication"] }
-objc2-av-foundation = { version = "0.3", features = ["AVPlayer", "AVPlayerItem", "AVAsset"] }
-objc2-av-kit = { version = "0.3", features = ["AVPlayerView"] }
-objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }
-objc2-core-media = { version = "0.3", features = ["CMTime"] }

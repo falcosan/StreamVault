@@ -3,120 +3,8 @@ use crate::gui::{self, Screen};
 use crate::providers::{MediaEntry, Provider, StreamingCommunityProvider};
 use crate::util::{DownloadEngine, DownloadProgress, DownloadRequest};
 use dioxus::prelude::*;
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-
-#[cfg(target_os = "macos")]
-use objc2::rc::Retained;
-#[cfg(target_os = "macos")]
-use objc2::{MainThreadMarker, MainThreadOnly};
-#[cfg(target_os = "macos")]
-use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSPanel, NSWindowOrderingMode, NSWindowStyleMask,
-};
-#[cfg(target_os = "macos")]
-use objc2_av_foundation::AVPlayer;
-#[cfg(target_os = "macos")]
-use objc2_av_kit::AVPlayerView;
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-#[cfg(target_os = "macos")]
-use objc2_foundation::{NSString, NSURL};
-
-#[cfg(target_os = "macos")]
-const PLAYER_W: f64 = 960.0;
-#[cfg(target_os = "macos")]
-const PLAYER_H: f64 = 540.0;
-
-#[cfg(target_os = "macos")]
-pub struct NativePlayer {
-    player: Retained<AVPlayer>,
-    panel: Retained<NSPanel>,
-    _view: Retained<AVPlayerView>,
-    mtm: MainThreadMarker,
-    playing: bool,
-}
-
-#[cfg(target_os = "macos")]
-impl NativePlayer {
-    fn play(url: &str, title: &str, mtm: MainThreadMarker) -> Result<Self, String> {
-        let ns_url_str: Retained<NSString> = NSString::from_str(url);
-        let ns_url =
-            NSURL::URLWithString(&ns_url_str).ok_or_else(|| format!("Invalid URL: {url}"))?;
-        let player = unsafe { AVPlayer::initWithURL(AVPlayer::alloc(mtm), &ns_url) };
-        let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(PLAYER_W, PLAYER_H));
-        let pv = unsafe { AVPlayerView::initWithFrame(AVPlayerView::alloc(mtm), frame) };
-        unsafe { pv.setPlayer(Some(&player)) };
-
-        let style = NSWindowStyleMask::Titled
-            | NSWindowStyleMask::Closable
-            | NSWindowStyleMask::Resizable
-            | NSWindowStyleMask::Miniaturizable;
-        let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
-            NSPanel::alloc(mtm),
-            frame,
-            style,
-            NSBackingStoreType::Buffered,
-            false,
-        );
-        panel.setContentView(Some(&pv));
-        panel.setTitle(&NSString::from_str(title));
-
-        let app = NSApplication::sharedApplication(mtm);
-        if let Some(main_win) = app.mainWindow() {
-            unsafe {
-                main_win.addChildWindow_ordered(&panel, NSWindowOrderingMode::Above);
-            }
-            let mf = main_win.frame();
-            let pf = CGRect::new(
-                CGPoint::new(
-                    mf.origin.x + (mf.size.width - PLAYER_W) / 2.0,
-                    mf.origin.y + (mf.size.height - PLAYER_H) / 2.0,
-                ),
-                CGSize::new(PLAYER_W, PLAYER_H),
-            );
-            panel.setFrame_display(pf, true);
-        }
-        panel.makeKeyAndOrderFront(None);
-        unsafe { player.play() };
-        Ok(Self {
-            player,
-            panel,
-            _view: pv,
-            mtm,
-            playing: true,
-        })
-    }
-
-    #[inline]
-    fn pause(&mut self) {
-        unsafe { self.player.pause() };
-        self.playing = false;
-    }
-    #[inline]
-    fn resume(&mut self) {
-        unsafe { self.player.play() };
-        self.playing = true;
-    }
-
-    fn stop(&mut self) {
-        unsafe { self.player.pause() };
-        self.playing = false;
-        let app = NSApplication::sharedApplication(self.mtm);
-        if let Some(w) = app.mainWindow() {
-            w.removeChildWindow(&self.panel);
-        }
-        self.panel.orderOut(None);
-        self.panel.close();
-    }
-
-    #[inline]
-    fn is_playing(&self) -> bool {
-        self.playing
-    }
-}
 
 #[component]
 pub fn App() -> Element {
@@ -140,14 +28,10 @@ pub fn App() -> Element {
     let mut error_msg: Signal<Option<String>> = use_signal(|| None);
     let mut downloads: Signal<Vec<DownloadProgress>> = use_signal(Vec::new);
     let mut playing_title = use_signal(String::new);
-    let mut native_playing = use_signal(|| false);
+    let mut stream_url: Signal<Option<String>> = use_signal(|| None);
     let mut catalog: Signal<Vec<MediaEntry>> = use_signal(Vec::new);
     let mut catalog_loading = use_signal(|| true);
     let mut prev_screen = use_signal(|| Screen::Home);
-
-    #[cfg(target_os = "macos")]
-    let native_player: Rc<RefCell<Option<NativePlayer>>> =
-        use_hook(|| Rc::new(RefCell::new(None::<NativePlayer>)));
 
     let dl_tx: mpsc::UnboundedSender<DownloadProgress> = use_hook(|| {
         let (tx, mut rx) = mpsc::unbounded_channel::<DownloadProgress>();
@@ -258,39 +142,18 @@ pub fn App() -> Element {
 
     let on_play_movie = {
         let provider = provider.clone();
-        #[cfg(target_os = "macos")]
-        let native_player = native_player.clone();
         move |_: ()| {
             if let Some(entry) = selected_entry() {
                 error_msg.set(None);
                 let title = entry.display_title();
                 let p = provider.clone();
-                #[cfg(target_os = "macos")]
-                let np_rc = native_player.clone();
                 spawn(async move {
                     match p.get_stream_url(&entry, None, None).await {
                         Ok(stream) => {
-                            #[cfg(target_os = "macos")]
-                            {
-                                eprintln!("[StreamVault] Playing: {}", stream.url);
-                                playing_title.set(title.clone());
-                                let mut np = np_rc.borrow_mut();
-                                if let Some(ref mut existing) = *np {
-                                    existing.stop();
-                                }
-                                let mtm = MainThreadMarker::new().expect("main thread");
-                                match NativePlayer::play(&stream.url, &title, mtm) {
-                                    Ok(player) => {
-                                        native_playing.set(player.is_playing());
-                                        *np = Some(player);
-                                        screen.set(Screen::Player);
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[StreamVault] Player error: {e}");
-                                        error_msg.set(Some(format!("Playback error: {e}")));
-                                    }
-                                }
-                            }
+                            eprintln!("[StreamVault] Playing: {}", stream.url);
+                            playing_title.set(title);
+                            stream_url.set(Some(stream.url));
+                            screen.set(Screen::Player);
                         }
                         Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
                     }
@@ -301,40 +164,19 @@ pub fn App() -> Element {
 
     let on_play_episode = {
         let provider = provider.clone();
-        #[cfg(target_os = "macos")]
-        let native_player = native_player.clone();
         move |(s, ep_num): (u32, u32)| {
             if let Some(entry) = selected_entry() {
                 error_msg.set(None);
                 let episode = episodes().iter().find(|x| x.number == ep_num).cloned();
                 let title = format!("{} S{s:02}E{ep_num:02}", entry.name);
                 let p = provider.clone();
-                #[cfg(target_os = "macos")]
-                let np_rc = native_player.clone();
                 spawn(async move {
                     match p.get_stream_url(&entry, episode.as_ref(), Some(s)).await {
                         Ok(stream) => {
-                            #[cfg(target_os = "macos")]
-                            {
-                                eprintln!("[StreamVault] Playing: {}", stream.url);
-                                playing_title.set(title.clone());
-                                let mut np = np_rc.borrow_mut();
-                                if let Some(ref mut existing) = *np {
-                                    existing.stop();
-                                }
-                                let mtm = MainThreadMarker::new().expect("main thread");
-                                match NativePlayer::play(&stream.url, &title, mtm) {
-                                    Ok(player) => {
-                                        native_playing.set(player.is_playing());
-                                        *np = Some(player);
-                                        screen.set(Screen::Player);
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[StreamVault] Player error: {e}");
-                                        error_msg.set(Some(format!("Playback error: {e}")));
-                                    }
-                                }
-                            }
+                            eprintln!("[StreamVault] Playing: {}", stream.url);
+                            playing_title.set(title);
+                            stream_url.set(Some(stream.url));
+                            screen.set(Screen::Player);
                         }
                         Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
                     }
@@ -418,52 +260,10 @@ pub fn App() -> Element {
         }
     };
 
-    let on_pause = {
-        #[cfg(target_os = "macos")]
-        let native_player = native_player.clone();
-        move |_: ()| {
-            #[cfg(target_os = "macos")]
-            {
-                let mut np = native_player.borrow_mut();
-                if let Some(ref mut p) = *np {
-                    p.pause();
-                    native_playing.set(false);
-                }
-            }
-        }
-    };
-
-    let on_resume = {
-        #[cfg(target_os = "macos")]
-        let native_player = native_player.clone();
-        move |_: ()| {
-            #[cfg(target_os = "macos")]
-            {
-                let mut np = native_player.borrow_mut();
-                if let Some(ref mut p) = *np {
-                    p.resume();
-                    native_playing.set(true);
-                }
-            }
-        }
-    };
-
-    let on_stop = {
-        #[cfg(target_os = "macos")]
-        let native_player = native_player.clone();
-        move |_: ()| {
-            #[cfg(target_os = "macos")]
-            {
-                let mut np = native_player.borrow_mut();
-                if let Some(ref mut p) = *np {
-                    p.stop();
-                }
-                *np = None;
-            }
-            native_playing.set(false);
-            playing_title.set(String::new());
-            screen.set(Screen::Home);
-        }
+    let on_stop = move |_: ()| {
+        stream_url.set(None);
+        playing_title.set(String::new());
+        screen.set(Screen::Home);
     };
 
     let current_entry = selected_entry();
@@ -525,10 +325,8 @@ pub fn App() -> Element {
                     },
                     Screen::Player => rsx! {
                         gui::PlayerView {
-                            playing: ReadOnlySignal::from(native_playing),
+                            stream_url: ReadOnlySignal::from(stream_url),
                             playing_title: ReadOnlySignal::from(playing_title),
-                            on_pause,
-                            on_resume,
                             on_stop,
                         }
                     },

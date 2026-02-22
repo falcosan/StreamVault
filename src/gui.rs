@@ -188,18 +188,14 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 }
 .ep-dl:hover { background: var(--surface2); }
 
-.player-wrap { padding: 20px; }
-.player-card { background: var(--surface); border-radius: 4px; padding: 20px; margin-top: 40px; }
-.player-top { display: flex; align-items: center; justify-content: space-between; }
-.player-label { font-size: 10px; color: var(--text3); text-transform: uppercase; }
-.player-status { display: flex; align-items: center; gap: 6px; }
-.player-dot { width: 8px; height: 8px; border-radius: 4px; }
-.player-dot.playing { background: var(--success); }
-.player-dot.paused { background: var(--warn); }
-.player-status-text { font-size: 11px; }
-.player-title { font-size: 22px; color: var(--text); margin-top: 14px; }
-.player-hint { font-size: 12px; color: var(--text3); margin-top: 10px; }
-.player-controls { display: flex; justify-content: center; gap: 10px; margin-top: 20px; }
+.player-screen { display: flex; flex-direction: column; height: 100%; background: #000; }
+.player-top-bar {
+    display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+    background: rgba(20,20,20,0.95); z-index: 1;
+}
+.player-title-text { font-size: 14px; color: var(--text); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.player-video-container { flex: 1; display: flex; align-items: center; justify-content: center; background: #000; min-height: 0; }
+.player-video { width: 100%; height: 100%; object-fit: contain; outline: none; }
 
 .dl-header { display: flex; align-items: center; padding: 14px 20px; }
 .dl-title { font-size: 18px; color: var(--text); flex: 1; }
@@ -507,40 +503,28 @@ fn EpisodeRow(
 
 #[component]
 pub fn PlayerView(
-    playing: ReadOnlySignal<bool>,
+    stream_url: ReadOnlySignal<Option<String>>,
     playing_title: ReadOnlySignal<String>,
-    on_pause: EventHandler<()>,
-    on_resume: EventHandler<()>,
     on_stop: EventHandler<()>,
 ) -> Element {
-    let is_playing = playing();
     let title = playing_title();
-    let (status_text, dot_class, status_color) = if is_playing {
-        ("Playing", "player-dot playing", "var(--success)")
-    } else {
-        ("Paused", "player-dot paused", "var(--warn)")
-    };
+    let url = stream_url();
 
     rsx! {
-        div { class: "player-wrap",
-            div { class: "player-card",
-                div { class: "player-top",
-                    span { class: "player-label", "NOW PLAYING" }
-                    div { class: "player-status",
-                        div { class: "{dot_class}" }
-                        span { class: "player-status-text", color: "{status_color}", "{status_text}" }
+        div { class: "player-screen",
+            div { class: "player-top-bar",
+                button { class: "btn-ghost", onclick: move |_| on_stop.call(()), "← Stop" }
+                span { class: "player-title-text", "{title}" }
+            }
+            div { class: "player-video-container",
+                if let Some(ref src) = url {
+                    video {
+                        class: "player-video",
+                        src: "{src}",
+                        controls: true,
+                        autoplay: true,
                     }
                 }
-                div { class: "player-title", "{title}" }
-                div { class: "player-hint", "Use the external player window for video controls" }
-            }
-            div { class: "player-controls",
-                if is_playing {
-                    button { class: "btn-accent", onclick: move |_| on_pause.call(()), "⏸  Pause" }
-                } else {
-                    button { class: "btn-accent", onclick: move |_| on_resume.call(()), "▶  Resume" }
-                }
-                button { class: "btn-ghost", style: "padding: 10px 20px; font-size: 14px; min-width: 140px; text-align: center;", onclick: move |_| on_stop.call(()), "■  Stop" }
             }
         }
     }
