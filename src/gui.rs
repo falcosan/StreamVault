@@ -41,13 +41,12 @@ fn poster_color(name: &str) -> String {
     format!("rgb({r},{g},{b})")
 }
 
-
 #[component]
 pub fn Navbar(
     screen: Signal<Screen>,
     history: Signal<Vec<Screen>>,
     search_query: Signal<String>,
-    is_searching: ReadOnlySignal<bool>,
+    is_searching: ReadSignal<bool>,
     on_search_submit: EventHandler<String>,
 ) -> Element {
     let current = screen();
@@ -104,8 +103,8 @@ pub fn Navbar(
 
 #[component]
 pub fn HomeView(
-    catalog: ReadOnlySignal<Vec<MediaEntry>>,
-    is_loading: ReadOnlySignal<bool>,
+    catalog: ReadSignal<Vec<MediaEntry>>,
+    is_loading: ReadSignal<bool>,
     on_select: EventHandler<MediaEntry>,
 ) -> Element {
     let items = catalog();
@@ -139,9 +138,9 @@ pub fn HomeView(
 
 #[component]
 pub fn SearchView(
-    search_query: ReadOnlySignal<String>,
-    search_results: ReadOnlySignal<Vec<MediaEntry>>,
-    is_searching: ReadOnlySignal<bool>,
+    search_query: ReadSignal<String>,
+    search_results: ReadSignal<Vec<MediaEntry>>,
+    is_searching: ReadSignal<bool>,
     on_select: EventHandler<MediaEntry>,
 ) -> Element {
     let results = search_results();
@@ -220,10 +219,10 @@ fn PosterCard(entry: MediaEntry, on_select: EventHandler<MediaEntry>) -> Element
 #[component]
 pub fn DetailsView(
     entry: MediaEntry,
-    seasons: ReadOnlySignal<Vec<crate::providers::Season>>,
-    episodes: ReadOnlySignal<Vec<crate::providers::Episode>>,
-    selected_season: ReadOnlySignal<Option<u32>>,
-    is_loading: ReadOnlySignal<bool>,
+    seasons: ReadSignal<Vec<crate::providers::Season>>,
+    episodes: ReadSignal<Vec<crate::providers::Episode>>,
+    selected_season: ReadSignal<Option<u32>>,
+    is_loading: ReadSignal<bool>,
     on_select_season: EventHandler<u32>,
     on_play_movie: EventHandler<()>,
     on_play_episode: EventHandler<(u32, u32)>,
@@ -352,9 +351,9 @@ fn EpisodeRow(
 
 #[component]
 pub fn PlayerView(
-    stream_url: ReadOnlySignal<Option<String>>,
-    playing_title: ReadOnlySignal<String>,
-    has_next_episode: ReadOnlySignal<bool>,
+    stream_url: ReadSignal<Option<String>>,
+    playing_title: ReadSignal<String>,
+    has_next_episode: ReadSignal<bool>,
     on_stop: EventHandler<()>,
     on_next_episode: EventHandler<()>,
 ) -> Element {
@@ -386,7 +385,7 @@ pub fn PlayerView(
 }
 
 #[component]
-pub fn DownloadsView(downloads: ReadOnlySignal<Vec<DownloadProgress>>) -> Element {
+pub fn DownloadsView(downloads: ReadSignal<Vec<DownloadProgress>>) -> Element {
     let dls = downloads();
     let count_str = format!(
         "{} item{}",

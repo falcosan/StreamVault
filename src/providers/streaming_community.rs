@@ -269,8 +269,7 @@ impl StreamingCommunityProvider {
             .ok_or_else(|| ProviderError::StreamExtraction("No expires".into()))?;
         let base = URL_RE
             .get_or_init(|| {
-                Regex::new(r#"(?:['"]url['"]|url)\s*:\s*['"](?P<url>https?://[^'"]+)['"]"#)
-                    .unwrap()
+                Regex::new(r#"(?:['"]url['"]|url)\s*:\s*['"](?P<url>https?://[^'"]+)['"]"#).unwrap()
             })
             .captures(&script)
             .and_then(|c| c.name("url"))

@@ -171,5 +171,4 @@ mod tests {
     fn fallback_url_is_https() {
         assert!(StreamingCommunityProvider::FALLBACK_URL.starts_with("https://"));
     }
-
 }

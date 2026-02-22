@@ -120,8 +120,7 @@ impl RaiPlayProvider {
 
         static QUALITY_RE: OnceLock<Regex> = OnceLock::new();
         let final_url = if !stream.contains(".mpd") {
-            let re =
-                QUALITY_RE.get_or_init(|| Regex::new(r"(_,[\d,]+)(/playlist\.m3u8)").unwrap());
+            let re = QUALITY_RE.get_or_init(|| Regex::new(r"(_,[\d,]+)(/playlist\.m3u8)").unwrap());
             re.replace(stream, "_1200,1800,2400,3600,5000$2")
                 .to_string()
         } else {
@@ -218,21 +217,20 @@ impl Provider for RaiPlayProvider {
         let resp = self.client.get(&url).send().await?;
         let json: serde_json::Value = resp.json().await?;
 
-        let items: Vec<serde_json::Value> =
-            if let Some(seasons_arr) = json["seasons"].as_array() {
-                seasons_arr
-                    .iter()
-                    .flat_map(|s| {
-                        s["episodes"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .flat_map(|ep| ep["cards"].as_array().into_iter().flatten().cloned())
-                    })
-                    .collect()
-            } else {
-                json["cards"].as_array().cloned().unwrap_or_default()
-            };
+        let items: Vec<serde_json::Value> = if let Some(seasons_arr) = json["seasons"].as_array() {
+            seasons_arr
+                .iter()
+                .flat_map(|s| {
+                    s["episodes"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .flat_map(|ep| ep["cards"].as_array().into_iter().flatten().cloned())
+                })
+                .collect()
+        } else {
+            json["cards"].as_array().cloned().unwrap_or_default()
+        };
 
         let mut episodes = Vec::new();
         let mut ep_urls = HashMap::new();
