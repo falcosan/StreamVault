@@ -224,6 +224,12 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .player-title-text { font-size: 14px; color: var(--text); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .player-video-container { flex: 1; display: flex; align-items: center; justify-content: center; background: #000; min-height: 0; }
 .player-video { width: 100%; height: 100%; object-fit: contain; outline: none; }
+.btn-next-episode {
+    background: var(--accent); border: none; color: var(--accent-text);
+    padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; border-radius: 3px;
+    white-space: nowrap;
+}
+.btn-next-episode:hover { background: var(--accent-hover); }
 
 .dl-header { display: flex; align-items: center; padding: 14px 20px; }
 .dl-title { font-size: 18px; color: var(--text); flex: 1; }
@@ -556,16 +562,22 @@ fn EpisodeRow(
 pub fn PlayerView(
     stream_url: ReadOnlySignal<Option<String>>,
     playing_title: ReadOnlySignal<String>,
+    has_next_episode: ReadOnlySignal<bool>,
     on_stop: EventHandler<()>,
+    on_next_episode: EventHandler<()>,
 ) -> Element {
     let title = playing_title();
     let url = stream_url();
+    let show_next = has_next_episode();
 
     rsx! {
         div { class: "player-screen",
             div { class: "player-top-bar",
                 button { class: "btn-ghost", onclick: move |_| on_stop.call(()), "← Stop" }
                 span { class: "player-title-text", "{title}" }
+                if show_next {
+                    button { class: "btn-next-episode", onclick: move |_| on_next_episode.call(()), "Next →" }
+                }
             }
             div { class: "player-video-container",
                 if let Some(ref src) = url {

@@ -13,7 +13,6 @@ pub fn App() -> Element {
     let providers: Vec<Arc<dyn Provider>> = use_hook(|| {
         vec![
             Arc::new(StreamingCommunityProvider::with_config(
-                StreamingCommunityProvider::default_base_url().to_string(),
                 config.requests.timeout,
             )) as Arc<dyn Provider>,
             Arc::new(RaiPlayProvider::with_config(config.requests.timeout)),
@@ -34,6 +33,8 @@ pub fn App() -> Element {
     let mut downloads: Signal<Vec<DownloadProgress>> = use_signal(Vec::new);
     let mut playing_title = use_signal(String::new);
     let mut stream_url: Signal<Option<String>> = use_signal(|| None);
+    let mut playing_season: Signal<Option<u32>> = use_signal(|| None);
+    let mut playing_episode_num: Signal<Option<u32>> = use_signal(|| None);
     let mut catalog: Signal<Vec<MediaEntry>> = use_signal(Vec::new);
     let mut catalog_loading = use_signal(|| true);
     let mut history: Signal<Vec<Screen>> = use_signal(Vec::new);
@@ -58,6 +59,9 @@ pub fn App() -> Element {
         use_future(move || {
             let providers = providers.clone();
             async move {
+                for p in &providers {
+                    p.init().await;
+                }
                 for (idx, p) in providers.iter().enumerate() {
                     let p = p.clone();
                     spawn(async move {
@@ -208,6 +212,8 @@ pub fn App() -> Element {
                             eprintln!("[StreamVault] Playing: {}", stream.url);
                             playing_title.set(title);
                             stream_url.set(Some(stream.url));
+                            playing_season.set(Some(s));
+                            playing_episode_num.set(Some(ep_num));
                             history.write().push(current);
                             screen.set(Screen::Player);
                         }
@@ -300,8 +306,50 @@ pub fn App() -> Element {
     let on_stop = move |_: ()| {
         stream_url.set(None);
         playing_title.set(String::new());
+        playing_season.set(None);
+        playing_episode_num.set(None);
         let prev = history.write().pop().unwrap_or(Screen::Home);
         screen.set(prev);
+    };
+
+    let has_next_episode = use_memo(move || {
+        let Some(cur) = playing_episode_num() else {
+            return false;
+        };
+        episodes().iter().any(|e| e.number > cur)
+    });
+
+    let on_next_episode = {
+        let providers = providers.clone();
+        move |_: ()| {
+            let Some(cur) = playing_episode_num() else {
+                return;
+            };
+            let Some(s) = playing_season() else { return };
+            let eps = episodes();
+            let next = eps
+                .iter()
+                .filter(|e| e.number > cur)
+                .min_by_key(|e| e.number);
+            if let (Some(next_ep), Some(entry)) = (next, selected_entry()) {
+                error_msg.set(None);
+                let ep_num = next_ep.number;
+                let episode = next_ep.clone();
+                let title = format!("{} S{s:02}E{ep_num:02}", entry.name);
+                let p = providers[entry.provider].clone();
+                spawn(async move {
+                    match p.get_stream_url(&entry, Some(&episode), Some(s)).await {
+                        Ok(stream) => {
+                            eprintln!("[StreamVault] Playing: {}", stream.url);
+                            playing_title.set(title);
+                            stream_url.set(Some(stream.url));
+                            playing_episode_num.set(Some(ep_num));
+                        }
+                        Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
+                    }
+                });
+            }
+        }
     };
 
     let current_entry = selected_entry();
@@ -368,7 +416,9 @@ pub fn App() -> Element {
                         gui::PlayerView {
                             stream_url: ReadOnlySignal::from(stream_url),
                             playing_title: ReadOnlySignal::from(playing_title),
+                            has_next_episode: ReadOnlySignal::from(has_next_episode),
                             on_stop,
+                            on_next_episode,
                         }
                     },
                     Screen::Downloads => rsx! {

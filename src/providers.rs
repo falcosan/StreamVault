@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, OnceLock, RwLock};
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,6 +90,9 @@ impl std::error::Error for ProviderError {}
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
 pub trait Provider: Send + Sync {
+    fn init(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async {})
+    }
     fn search(
         &self,
         query: &str,
@@ -116,28 +119,55 @@ pub trait Provider: Send + Sync {
 
 pub struct StreamingCommunityProvider {
     client: Client,
-    base_url: String,
+    base_url: RwLock<String>,
 }
+
+const SC_DOMAINS_URL: &str =
+    "https://raw.githubusercontent.com/Arrowar/SC_Domains/refs/heads/main/domains.json";
 
 impl StreamingCommunityProvider {
     const LANG: &str = "it";
     const LANGS: &[&str] = &["it", "en"];
-    const BASE_URL: &str = "https://streamingcommunityz.name";
+    const FALLBACK_URL: &str = "https://streamingcommunityz.name";
     const IMG_PRIORITY: &[&str] = &["poster", "cover", "cover_mobile", "background"];
 
-    #[inline]
-    pub fn default_base_url() -> &'static str {
-        Self::BASE_URL
-    }
-
-    pub fn with_config(base_url: String, timeout: u64) -> Self {
+    pub fn with_config(timeout: u64) -> Self {
         let client = Client::builder()
             .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
             .timeout(std::time::Duration::from_secs(timeout))
             .cookie_store(true)
             .build()
             .expect("reqwest client");
-        Self { client, base_url }
+        Self {
+            client,
+            base_url: RwLock::new(Self::FALLBACK_URL.to_string()),
+        }
+    }
+
+    fn base_url(&self) -> String {
+        self.base_url.read().unwrap().clone()
+    }
+
+    async fn resolve_domain(&self) {
+        let resp = match self.client.get(SC_DOMAINS_URL).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[StreamVault] Domain resolve failed: {e}");
+                return;
+            }
+        };
+        let json: serde_json::Value = match resp.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                eprintln!("[StreamVault] Domain JSON parse failed: {e}");
+                return;
+            }
+        };
+        if let Some(url) = json["streamingcommunity"]["full_url"].as_str() {
+            let url = url.trim_end_matches('/').to_string();
+            eprintln!("[StreamVault] Resolved SC domain: {url}");
+            *self.base_url.write().unwrap() = url;
+        }
     }
 
     fn parse_data_page(html: &str) -> ProviderResult<serde_json::Value> {
@@ -157,7 +187,7 @@ impl StreamingCommunityProvider {
     async fn fetch_inertia_version(&self) -> ProviderResult<String> {
         let resp = self
             .client
-            .get(&self.base_url)
+            .get(&self.base_url())
             .send()
             .await
             .map_err(|e| ProviderError::Network(e.to_string()))?;
@@ -178,7 +208,7 @@ impl StreamingCommunityProvider {
         lang: &str,
         version: &str,
     ) -> ProviderResult<Vec<MediaEntry>> {
-        let url = format!("{}/{lang}/search", self.base_url);
+        let url = format!("{}/{lang}/search", self.base_url());
         let resp = self
             .client
             .get(&url)
@@ -267,7 +297,7 @@ impl StreamingCommunityProvider {
 
     fn extract_image_url(&self, v: &serde_json::Value) -> Option<String> {
         let images = v["images"].as_array()?;
-        let cdn = self.base_url.replace("stream", "cdn.stream");
+        let cdn = self.base_url().replace("stream", "cdn.stream");
         for prio in Self::IMG_PRIORITY {
             for img in images {
                 if img["type"].as_str() == Some(prio) {
@@ -289,9 +319,10 @@ impl StreamingCommunityProvider {
         entry: &MediaEntry,
     ) -> ProviderResult<(serde_json::Value, String)> {
         let lang = Self::LANG;
+        let base = self.base_url();
         let url = format!(
-            "{}/{lang}/titles/{}-{}",
-            self.base_url, entry.id, entry.slug
+            "{base}/{lang}/titles/{}-{}",
+            entry.id, entry.slug
         );
         let resp = self
             .client
@@ -313,12 +344,12 @@ impl StreamingCommunityProvider {
         media_id: u64,
         ep_id: Option<u64>,
     ) -> ProviderResult<String> {
+        let base = self.base_url();
         let url = match ep_id {
             Some(eid) => format!(
-                "{}/{lang}/iframe/{media_id}?episode_id={eid}&next_episode=1",
-                self.base_url
+                "{base}/{lang}/iframe/{media_id}?episode_id={eid}&next_episode=1",
             ),
-            None => format!("{}/{lang}/iframe/{media_id}", self.base_url),
+            None => format!("{base}/{lang}/iframe/{media_id}"),
         };
         let resp = self
             .client
@@ -425,6 +456,10 @@ impl StreamingCommunityProvider {
 }
 
 impl Provider for StreamingCommunityProvider {
+    fn init(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async { self.resolve_domain().await })
+    }
+
     fn search(
         &self,
         query: &str,
@@ -482,9 +517,10 @@ impl Provider for StreamingCommunityProvider {
         Box::pin(async move {
             let (_, version) = self.fetch_title_page(&entry).await?;
             let lang = Self::LANG;
+            let base = self.base_url();
             let url = format!(
-                "{}/{lang}/titles/{}-{}/season-{season}",
-                self.base_url, entry.id, entry.slug
+                "{base}/{lang}/titles/{}-{}/season-{season}",
+                entry.id, entry.slug
             );
             let resp = self
                 .client
@@ -541,7 +577,7 @@ impl Provider for StreamingCommunityProvider {
         Box::pin(async move {
             let resp = self
                 .client
-                .get(&self.base_url)
+                .get(&self.base_url())
                 .send()
                 .await
                 .map_err(|e| ProviderError::Network(e.to_string()))?;
@@ -1056,7 +1092,7 @@ mod tests {
     }
 
     #[test]
-    fn default_base_url_is_https() {
-        assert!(StreamingCommunityProvider::default_base_url().starts_with("https://"));
+    fn fallback_url_is_https() {
+        assert!(StreamingCommunityProvider::FALLBACK_URL.starts_with("https://"));
     }
 }
