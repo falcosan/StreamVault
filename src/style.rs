@@ -17,7 +17,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 
 .navbar {
     display: flex; align-items: center; gap: 2px; padding: 0 20px;
-    height: 48px; min-height: 48px; background: var(--navbar);
+    height: 56px; min-height: 56px; background: var(--navbar);
     -webkit-app-region: drag;
 }
 .navbar button, .navbar input, .navbar .search-bar { -webkit-app-region: no-drag; }
@@ -75,7 +75,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .splash-logo { width: 100px; height: 100px; }
 .splash-logo svg { width: 100%; height: 100%; display: block; }
 
-.catalog-view { padding: 16px 0; }
+.catalog-view { padding: 16px 0 20px; }
 .section-header { display: flex; align-items: center; gap: 10px; padding: 0 20px 12px; }
 .section-title { font-size: 18px; color: var(--text); }
 .section-count { font-size: 12px; color: var(--text3); }
@@ -186,7 +186,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 
 .player-screen { display: flex; flex-direction: column; height: 100%; background: #000; }
 .player-top-bar {
-    display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+    display: flex; align-items: center; gap: 12px; padding: 10px 24px;
     background: rgba(20,20,20,0.95); z-index: 1;
 }
 .player-title-text { font-size: 14px; color: var(--text); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
