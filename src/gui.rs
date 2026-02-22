@@ -40,7 +40,7 @@ fn poster_color(name: &str) -> String {
     format!("rgb({r},{g},{b})")
 }
 
-pub const LOGO_DATA_URI: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAlgAAAJYBAMAAABMSIXvAAAAHlBMVEVHcEz0/Tf0/jf0/Tf0/jf0/jf1/jf0/jf0/jf0/Tcx66TBAAAACXRSTlMAlndYObQc0OhXbbSTAAAIJklEQVR42u3dvW7iahhFYfObltYdrTtaOsq4oxrJXZoRuQIk9zQuB4LC3O25gCHSPopQ1ofXuoQ3jyKKbbuqaHV/oV1wp6om1Fv93fCOVVNv9SGsvJ2w4k7CirsJq2hYU2HlNcIqH9ansPKOwsphvfGOtRVW3ExYwhKWsO73S1hxV96tqpZ6rD3vVnNh5b0KK4c1CEtYD2hJhfUHCOtAhbUCwuqFJSxh/WwvwsrrhBW3oMJaCyvuLCxhjQXWRFh5tbCEJSxh3W0DPFYDvRVwxs2dgghLWMISlrC+0xZ6K+CDJ9wpyE5YcSdhxd2EVTasubDyWmHlsAZhxVE3RkdhxRFn3NW7sOKWwso7CCuH1QureFh74K0qKCzijBs7BUHC6oQlLGEJqxhYNfNWxLUtdgqyEpawhCUsYX2nRlhx1CnIWlhxZ2EJazSwZsLK2wpLWMIS1r02woojzrix4zUkrFZYOaxBWHGvwopbCisPOl77QMLqmcfaEY8F3RidhBWHnHFTX5CFhFUJK28hrLyOCetNWHFHYcV9Cqt0WLWw4ibCKh3WVVh5e2HlsJC3mgorrxGWsIQlrDuthBWHXNtSpyBMWFthCUtYwioGViusOOh4bY08FnNjdGbCGoQlrAe0FFbeQVg5rF5YhcO6CCtvgzzWi7DyOmHFLYQlLGEJqxhYzCnIBxNWjTzWTlhxJ2HF3YQlrBHBmgorryHeijnjhsI6CktYI4K1FVbcTFiFw7oKK28vrBxWJazSYbXCipsLK+9VWDmsgXislbDimGtb6HgNCusgrBxWLyxhCetnWwgrryMeay2suLOwhDUmWLWw4ibCEpawhPVvG2HFQWfczCkIFNZUWMISlrCE9Z2gD54wpyA75q2QU5CTsOJuwhLWmGDNhZXXAm8FnXEzN0bQGTdyYySsJ4D1Lqw45BSECou4MboKK28vrBwW9FaVsPIWwsrrhCWsscBaCSuOurZFTkGosCbCEpawhFUMrKmw8hrgsdbCijsLS1jCEtbdZsLK2wqraFgXYeVthFU+rFZYcXNhCeshsAZhxb0KK474gizqgyfI8dqOCqvn3Yo64yZujG7CEtaoYBGnIFhYwCkIdcaNhHUUlrBGBWsirLxaWCXDugorby+sHFYlrPJhTYWV1whLWCOBtRJWHHZtS5yCYGHNhCUsYQlLWM8Iq+Uda029FXC8hp1xEzdGXFiDsIT1gJbCyjsIK4fV4251EVbeRlhPAOu3sPI6YcUthCWskcDaCSsO++AJcArCnXEDpyAnYQlLWML6okZYcbwpCHfGDYR1FJawhCWsL9oKK443BbkKK28vrBxWJawngDUXVl4rrBzWIKw43sZoJay4P8J6BlhLYeUdhJXD6oUlrEeEg8Vd2wKnIGvusTphCUtYwioGVi2suImwCoZ1EVbeRljCGhmsRlhx/wGXx1DS3akARwAAAABJRU5ErkJggg==";
+pub const LOGO_SVG: &str = r##"<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><polygon points="32,0 100,0 68,47 0,47" fill="#f4fd37"/><polygon points="32,53 100,53 68,100 0,100" fill="#f4fd37"/></svg>"##;
 
 pub const GLOBAL_CSS: &str = r#"
 :root {
@@ -63,7 +63,8 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 }
 .logo { background: none; border: none; cursor: pointer; padding: 0; display: flex; align-items: center; }
 .logo:hover { opacity: 0.8; }
-.logo-img { height: 24px; width: auto; }
+.logo-icon { height: 24px; width: 24px; }
+.logo-icon svg { width: 100%; height: 100%; display: block; }
 .nav-spacer { width: 24px; }
 .nav-link {
     background: none; border: none; color: #808080; font-size: 13px;
@@ -103,6 +104,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
     height: 100%; gap: 16px;
 }
 .splash-logo { width: 80px; height: 80px; }
+.splash-logo svg { width: 100%; height: 100%; display: block; }
 .splash-text { font-size: 22px; font-weight: bold; color: var(--accent); letter-spacing: 2px; }
 
 .catalog-view { padding: 16px 0; }
@@ -254,7 +256,7 @@ pub fn Navbar(
     rsx! {
         nav { class: "navbar",
             button { class: "logo", onclick: move |_| screen.set(Screen::Home),
-                img { class: "logo-img", src: LOGO_DATA_URI }
+                div { class: "logo-icon", dangerous_inner_html: LOGO_SVG }
             }
             div { class: "nav-spacer" }
             button {
@@ -307,7 +309,7 @@ pub fn HomeView(
     if items.is_empty() && loading {
         return rsx! {
             div { class: "splash-screen",
-                img { class: "splash-logo", src: LOGO_DATA_URI }
+                div { class: "splash-logo", dangerous_inner_html: LOGO_SVG }
                 span { class: "splash-text", "StreamVault" }
             }
         };
@@ -427,7 +429,11 @@ pub fn DetailsView(
     let bg = poster_color(&entry.name);
     let is_movie = entry.is_movie();
     let kind_color = if is_movie { "var(--accent)" } else { "#0091d5" };
-    let kind_text = if is_movie { "var(--accent-text)" } else { "white" };
+    let kind_text = if is_movie {
+        "var(--accent-text)"
+    } else {
+        "white"
+    };
     let kind_label = if is_movie { "MOVIE" } else { "SERIES" };
     let yr = entry.year_display().to_string();
     let name = entry.name.clone();
