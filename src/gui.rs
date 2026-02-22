@@ -131,18 +131,6 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .empty-msg { font-size: 16px; color: var(--text3); }
 .searching-msg { font-size: 16px; color: var(--text3); }
 
-.details-hero {
-    width: 100%; height: 160px; position: relative; display: flex;
-    flex-direction: column; justify-content: flex-end;
-}
-.details-hero-overlay {
-    background: rgba(0,0,0,0.6); padding: 16px 24px; width: 100%;
-}
-.details-kind-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-.details-kind-badge { font-size: 10px; color: white; padding: 2px 10px; border-radius: 3px; }
-.details-year { font-size: 13px; color: #bbbbbb; }
-.details-name { font-size: 30px; color: white; font-weight: bold; }
-
 .details-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 24px; }
 .btn-ghost {
     background: transparent; border: 1px solid var(--border); color: var(--text);
@@ -155,8 +143,35 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 }
 .btn-accent:hover { background: var(--accent-hover); }
 
-.movie-actions { display: flex; align-items: center; gap: 8px; padding: 14px 24px; }
-.movie-actions .fill { flex: 1; }
+.details-header {
+    display: flex; gap: 32px; padding: 8px 32px 24px;
+}
+.details-info {
+    flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0;
+}
+.details-title {
+    font-size: 34px; font-weight: bold; color: white; line-height: 1.15;
+}
+.details-meta {
+    display: flex; align-items: center; gap: 10px;
+}
+.details-kind-badge { font-size: 10px; color: white; padding: 2px 10px; border-radius: 3px; }
+.details-year { font-size: 13px; color: #bbbbbb; }
+.details-actions { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.details-desc {
+    font-size: 14px; color: var(--text2); line-height: 1.6; margin-top: 4px; max-width: 600px;
+}
+.details-poster {
+    width: 200px; flex-shrink: 0;
+}
+.details-poster img {
+    width: 100%; border-radius: 8px; display: block;
+}
+.details-poster-placeholder {
+    width: 100%; aspect-ratio: 2/3; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 48px; color: rgba(255,255,255,0.3);
+}
 
 .season-tabs { display: flex; gap: 6px; padding: 6px 24px; flex-wrap: wrap; }
 .season-tab {
@@ -394,15 +409,13 @@ pub fn DetailsView(
     on_back: EventHandler<()>,
 ) -> Element {
     let bg = poster_color(&entry.name);
-    let hero_style = match &entry.image_url {
-        Some(url) => format!("background: url('{url}') center/cover;"),
-        None => format!("background: {bg};"),
-    };
     let is_movie = entry.is_movie();
     let kind_color = if is_movie { "var(--accent)" } else { "#0091d5" };
     let kind_label = if is_movie { "MOVIE" } else { "SERIES" };
     let yr = entry.year_display().to_string();
     let name = entry.name.clone();
+    let description = entry.description.clone();
+    let image_url = entry.image_url.clone();
     let loading = is_loading();
     let sel = selected_season();
     let seasons_list = seasons();
@@ -410,28 +423,37 @@ pub fn DetailsView(
 
     rsx! {
         div { style: "overflow-y: auto; height: 100%;",
-            div { class: "details-hero", style: "{hero_style}",
-                div { class: "details-hero-overlay",
-                    div { class: "details-kind-row",
+            div { class: "details-toolbar",
+                button { class: "btn-ghost", onclick: move |_| on_back.call(()), "← Back" }
+            }
+
+            div { class: "details-header",
+                div { class: "details-info",
+                    div { class: "details-title", "{name}" }
+                    div { class: "details-meta",
                         span { class: "details-kind-badge", style: "background: {kind_color};", "{kind_label}" }
                         span { class: "details-year", "{yr}" }
                     }
-                    div { class: "details-name", "{name}" }
+                    if is_movie {
+                        div { class: "details-actions",
+                            button { class: "btn-accent", onclick: move |_| on_play_movie.call(()), "▶  Play Now" }
+                            button { class: "btn-ghost", style: "padding: 10px 20px; font-size: 14px;", onclick: move |_| on_dl_movie.call(()), "⬇  Download" }
+                        }
+                    }
+                    if let Some(ref desc) = description {
+                        p { class: "details-desc", "{desc}" }
+                    }
+                }
+                div { class: "details-poster",
+                    if let Some(ref url) = image_url {
+                        img { src: "{url}", alt: "{name}" }
+                    } else {
+                        div { class: "details-poster-placeholder", style: "background: {bg};", "🎬" }
+                    }
                 }
             }
 
-            if is_movie {
-                div { class: "movie-actions",
-                    button { class: "btn-ghost", onclick: move |_| on_back.call(()), "← Back" }
-                    div { class: "fill", style: "flex:1;" }
-                    button { class: "btn-accent", onclick: move |_| on_play_movie.call(()), "▶  Play Now" }
-                    button { class: "btn-ghost", style: "padding: 10px 20px; font-size: 14px;", onclick: move |_| on_dl_movie.call(()), "⬇  Download" }
-                }
-            } else {
-                div { class: "details-toolbar",
-                    button { class: "btn-ghost", onclick: move |_| on_back.call(()), "← Back" }
-                }
-
+            if !is_movie {
                 if seasons_list.is_empty() && loading {
                     div { class: "loading-msg", "Loading seasons..." }
                 } else {

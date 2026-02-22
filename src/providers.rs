@@ -60,6 +60,7 @@ pub struct MediaEntry {
     pub year: Option<String>,
     pub image_url: Option<String>,
     pub tmdb_id: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,6 +244,7 @@ impl StreamingCommunityProvider {
             year: Self::extract_year(v),
             image_url: self.extract_image_url(v),
             tmdb_id: v["tmdb_id"].as_u64().map(|n| n.to_string()),
+            description: Self::extract_description(v),
         })
     }
 
@@ -267,6 +269,28 @@ impl StreamingCommunityProvider {
             }
         }
         None
+    }
+
+    fn extract_description(v: &serde_json::Value) -> Option<String> {
+        if let Some(translations) = v["translations"].as_array() {
+            for t in translations {
+                let key = t["key"].as_str().unwrap_or("");
+                if key == "description" || key == "overview" || key == "plot" {
+                    if let Some(desc) = t["value"].as_str() {
+                        let trimmed = desc.trim();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        v["plot"]
+            .as_str()
+            .or_else(|| v["description"].as_str())
+            .or_else(|| v["overview"].as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_string())
     }
 
     fn extract_image_url(&self, v: &serde_json::Value) -> Option<String> {
@@ -575,6 +599,7 @@ mod tests {
             year: Some("2010".into()),
             image_url: None,
             tmdb_id: None,
+            description: None,
         }
     }
 
@@ -587,6 +612,7 @@ mod tests {
             year: None,
             image_url: None,
             tmdb_id: None,
+            description: None,
         }
     }
 
