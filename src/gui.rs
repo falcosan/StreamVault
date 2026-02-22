@@ -74,28 +74,30 @@ pub fn Navbar(
                 "Downloads"
             }
             div { class: "nav-fill" }
-            input {
-                class: "search-input",
-                placeholder: "Search...",
-                value: "{search_query}",
-                oninput: move |e| search_query.set(e.value()),
-                onkeypress: {
-                    let q = search_query;
-                    move |e: KeyboardEvent| {
-                        if e.key() == Key::Enter {
-                            on_search_submit.call(q());
+            div { class: "search-bar",
+                input {
+                    class: "search-input",
+                    placeholder: "Search...",
+                    value: "{search_query}",
+                    oninput: move |e| search_query.set(e.value()),
+                    onkeypress: {
+                        let q = search_query;
+                        move |e: KeyboardEvent| {
+                            if e.key() == Key::Enter {
+                                on_search_submit.call(q());
+                            }
                         }
-                    }
-                },
-            }
-            button {
-                class: "search-go",
-                disabled: searching,
-                onclick: {
-                    let q = search_query;
-                    move |_| on_search_submit.call(q())
-                },
-                if searching { "..." } else { "Go" }
+                    },
+                }
+                button {
+                    class: "search-go",
+                    disabled: searching,
+                    onclick: {
+                        let q = search_query;
+                        move |_| on_search_submit.call(q())
+                    },
+                    div { class: "search-icon", dangerous_inner_html: r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>"# }
+                }
             }
         }
     }
@@ -114,7 +116,6 @@ pub fn HomeView(
         return rsx! {
             div { class: "splash-screen",
                 div { class: "splash-logo", dangerous_inner_html: LOGO_SVG }
-                span { class: "splash-text", "StreamVault" }
             }
         };
     }
