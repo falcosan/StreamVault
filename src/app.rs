@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::gui::{self, Msg, Screen};
+use crate::gui::{self, Msg, Pal, Screen};
 use crate::providers::{Episode, MediaEntry, Provider, StreamingCommunityProvider};
 use crate::util::{DownloadEngine, DownloadProgress, DownloadRequest};
 use iced::widget::{button, column, container, row, text, Space};
@@ -41,7 +41,6 @@ pub struct NativePlayer {
 
 #[cfg(target_os = "macos")]
 impl NativePlayer {
-    // Creates AVPlayer + AVPlayerView, attaches to a floating NSPanel centered on the main window
     fn play(url: &str, title: &str, mtm: MainThreadMarker) -> Result<Self, String> {
         let ns_url_str: Retained<NSString> = NSString::from_str(url);
         let ns_url =
@@ -181,7 +180,7 @@ impl App {
 
     #[inline]
     pub fn theme(&self) -> Theme {
-        Theme::CatppuccinMocha
+        Pal::from_dark(self.config.dark_mode).theme()
     }
 
     #[inline]
@@ -434,6 +433,10 @@ impl App {
                 IcedTask::none()
             }
 
+            Msg::CfgDarkMode(v) => {
+                self.config.dark_mode = v;
+                IcedTask::none()
+            }
             Msg::CfgRootPath(v) => {
                 self.config.output.root_path = v;
                 IcedTask::none()
@@ -583,15 +586,17 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, Msg> {
-        let sidebar = self.sidebar();
+        let p = Pal::from_dark(self.config.dark_mode);
+        let sidebar = self.sidebar(p);
         let content = match self.screen {
-            Screen::Home => gui::home_view(self.provider_online),
+            Screen::Home => gui::home_view(p, self.provider_online),
             Screen::Search => {
-                gui::search_view(&self.search_query, &self.search_results, self.is_searching)
+                gui::search_view(p, &self.search_query, &self.search_results, self.is_searching)
             }
             Screen::Details => {
                 if let Some(ref e) = self.selected_entry {
                     gui::details_view(
+                        p,
                         e,
                         &self.seasons,
                         &self.episodes,
@@ -599,18 +604,18 @@ impl App {
                         self.is_loading,
                     )
                 } else {
-                    gui::home_view(self.provider_online)
+                    gui::home_view(p, self.provider_online)
                 }
             }
             Screen::Player => {
                 #[cfg(target_os = "macos")]
-                let playing = self.native_player.as_ref().is_some_and(|p| p.is_playing());
+                let playing = self.native_player.as_ref().is_some_and(|np| np.is_playing());
                 #[cfg(not(target_os = "macos"))]
                 let playing = false;
-                gui::player_view(playing, &self.playing_title)
+                gui::player_view(p, playing, &self.playing_title)
             }
-            Screen::Downloads => gui::downloads_view(&self.downloads),
-            Screen::Settings => gui::settings_view(&self.config),
+            Screen::Downloads => gui::downloads_view(p, &self.downloads),
+            Screen::Settings => gui::settings_view(p, &self.config),
         };
 
         let mut main_col = column![].width(Fill).height(Fill);
@@ -618,7 +623,7 @@ impl App {
             main_col = main_col.push(
                 container(
                     row![
-                        text(err.as_str()).size(13).color(gui::TEXT_PRI),
+                        text(err.as_str()).size(13).color(iced::Color::WHITE),
                         Space::with_width(Fill),
                         button(text("X").size(12))
                             .on_press(Msg::DismissError)
@@ -628,26 +633,28 @@ impl App {
                     .padding(10),
                 )
                 .width(Fill)
-                .style(|_: &_| container::Style {
-                    background: Some(iced::Background::Color(gui::DANGER)),
+                .style(move |_: &_| container::Style {
+                    background: Some(iced::Background::Color(p.danger)),
                     ..Default::default()
                 }),
             );
         }
-        main_col = main_col.push(container(content).width(Fill).height(Fill).style(|_: &_| {
-            container::Style {
-                background: Some(iced::Background::Color(gui::BG_DARK)),
+        main_col = main_col.push(container(content).width(Fill).height(Fill).style(
+            move |_: &_| container::Style {
+                background: Some(iced::Background::Color(p.bg)),
                 ..Default::default()
-            }
-        }));
+            },
+        ));
         row![sidebar, main_col].into()
     }
 
-    fn sidebar(&self) -> Element<'_, Msg> {
+    fn sidebar(&self, p: Pal) -> Element<'_, Msg> {
         let s = &self.screen;
+        let dark = self.config.dark_mode;
+        let theme_label = if dark { "Light Mode" } else { "Dark Mode" };
         let content = column![
             Space::with_height(20),
-            text("SV").size(24).color(gui::ACCENT).center(),
+            text("SV").size(24).color(p.accent).center(),
             Space::with_height(30),
             gui::nav_button("Home", matches!(s, Screen::Home), Msg::NavHome),
             gui::nav_button(
@@ -662,12 +669,24 @@ impl App {
                 Msg::NavDownloads
             ),
             gui::nav_button("Settings", matches!(s, Screen::Settings), Msg::NavSettings),
+            Space::with_height(Fill),
+            button(
+                text(theme_label)
+                    .size(12)
+                    .color(gui::SB_DIM)
+                    .width(Fill)
+                    .center()
+            )
+            .on_press(Msg::CfgDarkMode(!dark))
+            .padding([6, 12])
+            .width(Fill),
+            Space::with_height(12),
         ]
         .width(gui::SIDEBAR_W)
         .align_x(Alignment::Center);
         container(content)
             .height(Fill)
-            .style(gui::sidebar_style)
+            .style(gui::sidebar_style(p))
             .into()
     }
 }

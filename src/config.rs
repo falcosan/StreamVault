@@ -2,12 +2,27 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
+    pub dark_mode: bool,
     pub output: OutputConfig,
     pub download: DownloadConfig,
     pub process: ProcessConfig,
     pub requests: RequestsConfig,
+}
+
+impl Default for AppConfig {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            dark_mode: false,
+            output: OutputConfig::default(),
+            download: DownloadConfig::default(),
+            process: ProcessConfig::default(),
+            requests: RequestsConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
