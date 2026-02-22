@@ -2,11 +2,10 @@ use super::{
     Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, Season, StreamUrl,
     USER_AGENT,
 };
+use async_trait::async_trait;
 use regex::Regex;
 use reqwest::Client;
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::OnceLock;
 
 const RAIPLAY_BASE: &str = "https://www.raiplay.it";
@@ -136,109 +135,91 @@ impl RaiPlayProvider {
     }
 }
 
+#[async_trait]
 impl Provider for RaiPlayProvider {
-    fn search(
-        &self,
-        query: &str,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<MediaEntry>>> + Send + '_>> {
-        let query = query.to_string();
-        Box::pin(async move {
-            let body = serde_json::json!({
-                "templateIn": "6470a982e4e0301afe1f81f1",
-                "templateOut": "6516ac5d40da6c377b151642",
-                "params": {
-                    "param": query,
-                    "from": null,
-                    "sort": "relevance",
-                    "onlyVideoQuery": false
-                }
-            });
-            let resp = self.client.post(RAIPLAY_SEARCH).json(&body).send().await?;
-            let json: serde_json::Value = resp.json().await?;
-            let cards = json["agg"]["titoli"]["cards"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let mut seen = HashSet::new();
-            Ok(cards
-                .iter()
-                .take(15)
-                .filter_map(Self::parse_search_card)
-                .filter(|e| seen.insert(e.id))
-                .collect())
-        })
+    async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>> {
+        let body = serde_json::json!({
+            "templateIn": "6470a982e4e0301afe1f81f1",
+            "templateOut": "6516ac5d40da6c377b151642",
+            "params": {
+                "param": query,
+                "from": null,
+                "sort": "relevance",
+                "onlyVideoQuery": false
+            }
+        });
+        let resp = self.client.post(RAIPLAY_SEARCH).json(&body).send().await?;
+        let json: serde_json::Value = resp.json().await?;
+        let cards = json["agg"]["titoli"]["cards"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut seen = HashSet::new();
+        Ok(cards
+            .iter()
+            .take(15)
+            .filter_map(Self::parse_search_card)
+            .filter(|e| seen.insert(e.id))
+            .collect())
     }
 
-    fn get_seasons(
-        &self,
-        entry: &MediaEntry,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<Season>>> + Send + '_>> {
-        let entry = entry.clone();
-        Box::pin(async move {
-            let path = entry.slug.trim_start_matches('/');
-            let url = format!("{RAIPLAY_BASE}/{path}");
-            let resp = self.client.get(&url).send().await?;
-            let json: serde_json::Value = resp.json().await?;
-            let blocks = json["blocks"].as_array().cloned().unwrap_or_default();
-            let mut seasons = Vec::new();
-            let mut mappings = Vec::new();
-            let mut num = 1u32;
-            for block in &blocks {
-                if block["type"].as_str() != Some("RaiPlay Multimedia Block") {
-                    continue;
-                }
-                let block_name = block["name"].as_str().unwrap_or("").to_lowercase();
-                if block_name == "clip" || block_name == "extra" {
-                    continue;
-                }
-                let block_id = block["id"].as_str().unwrap_or("").to_string();
-                if let Some(sets) = block["sets"].as_array() {
-                    for set in sets {
-                        let ep_count = set["episode_size"]["number"].as_u64().unwrap_or(0);
-                        if ep_count == 0 {
-                            continue;
-                        }
-                        let set_id = set["id"].as_str().unwrap_or("").to_string();
-                        let set_name = set["name"].as_str().map(String::from);
-                        seasons.push(Season {
-                            id: num as u64,
-                            number: num,
-                            name: set_name,
-                        });
-                        mappings.push((block_id.clone(), set_id));
-                        num += 1;
+    async fn get_seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<Season>> {
+        let path = entry.slug.trim_start_matches('/');
+        let url = format!("{RAIPLAY_BASE}/{path}");
+        let resp = self.client.get(&url).send().await?;
+        let json: serde_json::Value = resp.json().await?;
+        let blocks = json["blocks"].as_array().cloned().unwrap_or_default();
+        let mut seasons = Vec::new();
+        let mut mappings = Vec::new();
+        let mut num = 1u32;
+        for block in &blocks {
+            if block["type"].as_str() != Some("RaiPlay Multimedia Block") {
+                continue;
+            }
+            let block_name = block["name"].as_str().unwrap_or("").to_lowercase();
+            if block_name == "clip" || block_name == "extra" {
+                continue;
+            }
+            let block_id = block["id"].as_str().unwrap_or("").to_string();
+            if let Some(sets) = block["sets"].as_array() {
+                for set in sets {
+                    let ep_count = set["episode_size"]["number"].as_u64().unwrap_or(0);
+                    if ep_count == 0 {
+                        continue;
                     }
+                    let set_id = set["id"].as_str().unwrap_or("").to_string();
+                    let set_name = set["name"].as_str().map(String::from);
+                    seasons.push(Season {
+                        id: num as u64,
+                        number: num,
+                        name: set_name,
+                    });
+                    mappings.push((block_id.clone(), set_id));
+                    num += 1;
                 }
             }
-            self.season_data.lock().await.insert(entry.id, mappings);
-            Ok(seasons)
-        })
+        }
+        self.season_data.lock().await.insert(entry.id, mappings);
+        Ok(seasons)
     }
 
-    fn get_episodes(
-        &self,
-        entry: &MediaEntry,
-        season: u32,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<Episode>>> + Send + '_>> {
-        let entry = entry.clone();
-        Box::pin(async move {
-            let idx = (season - 1) as usize;
-            let lock = self.season_data.lock().await;
-            let (block_id, set_id) = lock
-                .get(&entry.id)
-                .and_then(|m| m.get(idx))
-                .cloned()
-                .ok_or_else(|| ProviderError::Parse("Season mapping not found".into()))?;
-            drop(lock);
+    async fn get_episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>> {
+        let idx = (season - 1) as usize;
+        let lock = self.season_data.lock().await;
+        let (block_id, set_id) = lock
+            .get(&entry.id)
+            .and_then(|m| m.get(idx))
+            .cloned()
+            .ok_or_else(|| ProviderError::Parse("Season mapping not found".into()))?;
+        drop(lock);
 
-            let base_path = entry.slug.trim_start_matches('/').trim_end_matches(".json");
-            let url = format!("{RAIPLAY_BASE}/{base_path}/{block_id}/{set_id}/episodes.json");
-            let resp = self.client.get(&url).send().await?;
-            let json: serde_json::Value = resp.json().await?;
+        let base_path = entry.slug.trim_start_matches('/').trim_end_matches(".json");
+        let url = format!("{RAIPLAY_BASE}/{base_path}/{block_id}/{set_id}/episodes.json");
+        let resp = self.client.get(&url).send().await?;
+        let json: serde_json::Value = resp.json().await?;
 
-            let items: Vec<serde_json::Value> = if let Some(seasons_arr) =
-                json["seasons"].as_array()
-            {
+        let items: Vec<serde_json::Value> =
+            if let Some(seasons_arr) = json["seasons"].as_array() {
                 seasons_arr
                     .iter()
                     .flat_map(|s| {
@@ -253,75 +234,68 @@ impl Provider for RaiPlayProvider {
                 json["cards"].as_array().cloned().unwrap_or_default()
             };
 
-            let mut episodes = Vec::new();
-            let mut ep_urls = HashMap::new();
-            for (i, card) in items.iter().enumerate() {
-                let ep_num = card["episode"]
-                    .as_str()
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .unwrap_or((i + 1) as u32);
-                let name = card["episode_title"]
-                    .as_str()
-                    .or_else(|| card["name"].as_str())
-                    .or_else(|| card["toptitle"].as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let duration = card["duration_in_minutes"]
-                    .as_str()
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .or_else(|| {
-                        card["duration"]
-                            .as_str()
-                            .and_then(|s| s.parse::<u32>().ok())
-                    });
-                let weblink = card["weblink"]
-                    .as_str()
-                    .or_else(|| card["url"].as_str())
-                    .unwrap_or("");
-                let ep_id = raiplay_hash(&format!("{}{}", entry.slug, weblink));
-                if !weblink.is_empty() {
-                    ep_urls.insert(ep_id, raiplay_abs_url(weblink));
-                }
-                episodes.push(Episode {
-                    id: ep_id,
-                    number: ep_num,
-                    name,
-                    duration,
+        let mut episodes = Vec::new();
+        let mut ep_urls = HashMap::new();
+        for (i, card) in items.iter().enumerate() {
+            let ep_num = card["episode"]
+                .as_str()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or((i + 1) as u32);
+            let name = card["episode_title"]
+                .as_str()
+                .or_else(|| card["name"].as_str())
+                .or_else(|| card["toptitle"].as_str())
+                .unwrap_or("")
+                .to_string();
+            let duration = card["duration_in_minutes"]
+                .as_str()
+                .and_then(|s| s.parse::<u32>().ok())
+                .or_else(|| {
+                    card["duration"]
+                        .as_str()
+                        .and_then(|s| s.parse::<u32>().ok())
                 });
+            let weblink = card["weblink"]
+                .as_str()
+                .or_else(|| card["url"].as_str())
+                .unwrap_or("");
+            let ep_id = raiplay_hash(&format!("{}{}", entry.slug, weblink));
+            if !weblink.is_empty() {
+                ep_urls.insert(ep_id, raiplay_abs_url(weblink));
             }
-            self.episode_data.lock().await.extend(ep_urls);
-            episodes.sort_unstable_by_key(|e| e.number);
-            Ok(episodes)
-        })
+            episodes.push(Episode {
+                id: ep_id,
+                number: ep_num,
+                name,
+                duration,
+            });
+        }
+        self.episode_data.lock().await.extend(ep_urls);
+        episodes.sort_unstable_by_key(|e| e.number);
+        Ok(episodes)
     }
 
-    fn get_stream_url(
+    async fn get_stream_url(
         &self,
         entry: &MediaEntry,
         episode: Option<&Episode>,
         _season: Option<u32>,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<StreamUrl>> + Send + '_>> {
-        let entry = entry.clone();
-        let episode = episode.cloned();
-        Box::pin(async move {
-            let page_url = if let Some(ref ep) = episode {
-                self.episode_data
-                    .lock()
-                    .await
-                    .get(&ep.id)
-                    .cloned()
-                    .ok_or_else(|| ProviderError::Parse("Episode URL not cached".into()))?
-            } else {
-                let path = entry.slug.trim_start_matches('/');
-                format!("{RAIPLAY_BASE}/{path}")
-            };
-            self.resolve_stream(&page_url).await
-        })
+    ) -> ProviderResult<StreamUrl> {
+        let page_url = if let Some(ep) = episode {
+            self.episode_data
+                .lock()
+                .await
+                .get(&ep.id)
+                .cloned()
+                .ok_or_else(|| ProviderError::Parse("Episode URL not cached".into()))?
+        } else {
+            let path = entry.slug.trim_start_matches('/');
+            format!("{RAIPLAY_BASE}/{path}")
+        };
+        self.resolve_stream(&page_url).await
     }
 
-    fn get_catalog(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<MediaEntry>>> + Send + '_>> {
-        Box::pin(async move { Ok(Vec::new()) })
+    async fn get_catalog(&self) -> ProviderResult<Vec<MediaEntry>> {
+        Ok(Vec::new())
     }
 }

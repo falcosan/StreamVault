@@ -2,12 +2,11 @@ use super::{
     Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, Season, StreamUrl,
     USER_AGENT,
 };
+use async_trait::async_trait;
 use regex::Regex;
 use reqwest::Client;
 use scraper::{Html, Selector};
 use std::collections::HashSet;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{LazyLock, OnceLock, RwLock};
 use url::Url;
 
@@ -312,142 +311,105 @@ impl StreamingCommunityProvider {
     }
 }
 
+#[async_trait]
 impl Provider for StreamingCommunityProvider {
-    fn init(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        Box::pin(async { self.resolve_domain().await })
+    async fn init(&self) {
+        self.resolve_domain().await;
     }
 
-    fn search(
-        &self,
-        query: &str,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<MediaEntry>>> + Send + '_>> {
-        let query = query.to_string();
-        Box::pin(async move {
-            let version = self.fetch_inertia_version().await?;
-            let mut all = Vec::new();
-            let mut seen = HashSet::new();
-            for lang in Self::LANGS {
-                if let Ok(entries) = self.search_lang(&query, lang, &version).await {
-                    for e in entries {
-                        if seen.insert(e.id) {
-                            all.push(e);
-                        }
+    async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>> {
+        let version = self.fetch_inertia_version().await?;
+        let mut all = Vec::new();
+        let mut seen = HashSet::new();
+        for lang in Self::LANGS {
+            if let Ok(entries) = self.search_lang(query, lang, &version).await {
+                for e in entries {
+                    if seen.insert(e.id) {
+                        all.push(e);
                     }
                 }
             }
-            Ok(all)
-        })
+        }
+        Ok(all)
     }
 
-    fn get_seasons(
-        &self,
-        entry: &MediaEntry,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<Season>>> + Send + '_>> {
-        let entry = entry.clone();
-        Box::pin(async move {
-            let (page, _) = self.fetch_title_page(&entry).await?;
-            let arr = page["props"]["title"]["seasons"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let mut seasons: Vec<Season> = arr
-                .iter()
-                .filter_map(|s| {
-                    Some(Season {
-                        id: s["id"].as_u64()?,
-                        number: s["number"].as_u64()? as u32,
-                        name: s["name"].as_str().map(String::from),
-                    })
+    async fn get_seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<Season>> {
+        let (page, _) = self.fetch_title_page(entry).await?;
+        let arr = page["props"]["title"]["seasons"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut seasons: Vec<Season> = arr
+            .iter()
+            .filter_map(|s| {
+                Some(Season {
+                    id: s["id"].as_u64()?,
+                    number: s["number"].as_u64()? as u32,
+                    name: s["name"].as_str().map(String::from),
                 })
-                .collect();
-            seasons.sort_unstable_by_key(|s| s.number);
-            Ok(seasons)
-        })
+            })
+            .collect();
+        seasons.sort_unstable_by_key(|s| s.number);
+        Ok(seasons)
     }
 
-    fn get_episodes(
-        &self,
-        entry: &MediaEntry,
-        season: u32,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<Episode>>> + Send + '_>> {
-        let entry = entry.clone();
-        Box::pin(async move {
-            let (_, version) = self.fetch_title_page(&entry).await?;
-            let lang = Self::LANG;
-            let base = self.base_url();
-            let url = format!(
-                "{base}/{lang}/titles/{}-{}/season-{season}",
-                entry.id, entry.slug
-            );
-            let resp = self
-                .client
-                .get(&url)
-                .header("x-inertia", "true")
-                .header("x-inertia-version", &version)
-                .send()
-                .await?;
-            let json: serde_json::Value = resp.json().await?;
-            let arr = json["props"]["loadedSeason"]["episodes"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let mut eps: Vec<Episode> = arr
-                .iter()
-                .filter_map(|ep| {
-                    Some(Episode {
-                        id: ep["id"].as_u64()?,
-                        number: ep["number"].as_u64()? as u32,
-                        name: ep["name"].as_str().unwrap_or("").to_string(),
-                        duration: ep["duration"].as_u64().map(|d| d as u32),
-                    })
+    async fn get_episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>> {
+        let (_, version) = self.fetch_title_page(entry).await?;
+        let lang = Self::LANG;
+        let base = self.base_url();
+        let url = format!(
+            "{base}/{lang}/titles/{}-{}/season-{season}",
+            entry.id, entry.slug
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .header("x-inertia", "true")
+            .header("x-inertia-version", &version)
+            .send()
+            .await?;
+        let json: serde_json::Value = resp.json().await?;
+        let arr = json["props"]["loadedSeason"]["episodes"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut eps: Vec<Episode> = arr
+            .iter()
+            .filter_map(|ep| {
+                Some(Episode {
+                    id: ep["id"].as_u64()?,
+                    number: ep["number"].as_u64()? as u32,
+                    name: ep["name"].as_str().unwrap_or("").to_string(),
+                    duration: ep["duration"].as_u64().map(|d| d as u32),
                 })
-                .collect();
-            eps.sort_unstable_by_key(|e| e.number);
-            Ok(eps)
-        })
+            })
+            .collect();
+        eps.sort_unstable_by_key(|e| e.number);
+        Ok(eps)
     }
 
-    fn get_stream_url(
+    async fn get_stream_url(
         &self,
         entry: &MediaEntry,
         episode: Option<&Episode>,
         _season: Option<u32>,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<StreamUrl>> + Send + '_>> {
-        let entry = entry.clone();
-        let episode = episode.cloned();
-        Box::pin(async move {
-            let (page, _) = self.fetch_title_page(&entry).await?;
-            let media_id = page["props"]["title"]["id"].as_u64().unwrap_or(entry.id);
-            let ep_id = episode.as_ref().map(|e| e.id);
-            let iframe = self.fetch_iframe_url(Self::LANG, media_id, ep_id).await?;
-            self.extract_stream_url(&iframe).await
-        })
+    ) -> ProviderResult<StreamUrl> {
+        let (page, _) = self.fetch_title_page(entry).await?;
+        let media_id = page["props"]["title"]["id"].as_u64().unwrap_or(entry.id);
+        let ep_id = episode.as_ref().map(|e| e.id);
+        let iframe = self.fetch_iframe_url(Self::LANG, media_id, ep_id).await?;
+        self.extract_stream_url(&iframe).await
     }
 
-    fn get_catalog(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<MediaEntry>>> + Send + '_>> {
-        Box::pin(async move {
-            let resp = self.client.get(self.base_url()).send().await?;
-            let html = resp.text().await?;
-            let page = Self::parse_data_page(&html)?;
-            let mut entries = Vec::new();
-            let mut seen = HashSet::new();
-            if let Some(sliders) = page["props"]["sliders"].as_array() {
-                for slider in sliders {
-                    if let Some(titles) = slider["titles"].as_array() {
-                        for t in titles {
-                            if let Some(e) = self.parse_result(t) {
-                                if seen.insert(e.id) {
-                                    entries.push(e);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if entries.is_empty() {
-                if let Some(titles) = page["props"]["titles"].as_array() {
+    async fn get_catalog(&self) -> ProviderResult<Vec<MediaEntry>> {
+        let resp = self.client.get(self.base_url()).send().await?;
+        let html = resp.text().await?;
+        let page = Self::parse_data_page(&html)?;
+        let mut entries = Vec::new();
+        let mut seen = HashSet::new();
+        if let Some(sliders) = page["props"]["sliders"].as_array() {
+            for slider in sliders {
+                if let Some(titles) = slider["titles"].as_array() {
                     for t in titles {
                         if let Some(e) = self.parse_result(t) {
                             if seen.insert(e.id) {
@@ -457,7 +419,18 @@ impl Provider for StreamingCommunityProvider {
                     }
                 }
             }
-            Ok(entries)
-        })
+        }
+        if entries.is_empty() {
+            if let Some(titles) = page["props"]["titles"].as_array() {
+                for t in titles {
+                    if let Some(e) = self.parse_result(t) {
+                        if seen.insert(e.id) {
+                            entries.push(e);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(entries)
     }
 }

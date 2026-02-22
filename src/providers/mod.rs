@@ -6,9 +6,6 @@ pub use models::*;
 pub use raiplay::RaiPlayProvider;
 pub use streaming_community::StreamingCommunityProvider;
 
-use std::future::Future;
-use std::pin::Pin;
-
 pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
@@ -45,32 +42,19 @@ impl From<serde_json::Error> for ProviderError {
 
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
+#[async_trait::async_trait]
 pub trait Provider: Send + Sync {
-    fn init(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        Box::pin(async {})
-    }
-    fn search(
-        &self,
-        query: &str,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<MediaEntry>>> + Send + '_>>;
-    fn get_seasons(
-        &self,
-        entry: &MediaEntry,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<Season>>> + Send + '_>>;
-    fn get_episodes(
-        &self,
-        entry: &MediaEntry,
-        season: u32,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<Episode>>> + Send + '_>>;
-    fn get_stream_url(
+    async fn init(&self) {}
+    async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>>;
+    async fn get_seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<Season>>;
+    async fn get_episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>>;
+    async fn get_stream_url(
         &self,
         entry: &MediaEntry,
         episode: Option<&Episode>,
         season: Option<u32>,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<StreamUrl>> + Send + '_>>;
-    fn get_catalog(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<MediaEntry>>> + Send + '_>>;
+    ) -> ProviderResult<StreamUrl>;
+    async fn get_catalog(&self) -> ProviderResult<Vec<MediaEntry>>;
 }
 
 #[cfg(test)]
