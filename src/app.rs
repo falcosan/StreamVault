@@ -462,7 +462,7 @@ pub fn App() -> Element {
             }
             native_playing.set(false);
             playing_title.set(String::new());
-            screen.set(Screen::Search);
+            screen.set(Screen::Home);
         }
     };
 

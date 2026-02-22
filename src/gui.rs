@@ -240,11 +240,6 @@ pub fn Navbar(
                 "Home"
             }
             button {
-                class: if current == Screen::Search || current == Screen::Details { "nav-link active" } else { "nav-link" },
-                onclick: move |_| screen.set(Screen::Search),
-                "Browse"
-            }
-            button {
                 class: if current == Screen::Downloads { "nav-link active" } else { "nav-link" },
                 onclick: move |_| screen.set(Screen::Downloads),
                 "Downloads"
