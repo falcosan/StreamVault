@@ -218,7 +218,15 @@ impl DownloadEngine {
                 let msg = if stderr_output.is_empty() {
                     format!("N_m3u8DL-RE exited: {exit}")
                 } else {
-                    let tail: String = stderr_output.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+                    let tail: String = stderr_output
+                        .lines()
+                        .rev()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     format!("N_m3u8DL-RE exited: {exit}\n{tail}")
                 };
                 progress.status = DownloadStatus::Failed(msg);
