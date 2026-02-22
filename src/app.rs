@@ -355,7 +355,7 @@ pub fn App() -> Element {
     let current_entry = selected_entry();
 
     rsx! {
-        style { dangerous_inner_html: gui::GLOBAL_CSS }
+        style { dangerous_inner_html: crate::style::GLOBAL_CSS }
         div { class: "app",
             gui::Navbar { screen, history, search_query, is_searching: ReadOnlySignal::from(is_searching), on_search_submit }
             if let Some(ref err) = error_msg() {
