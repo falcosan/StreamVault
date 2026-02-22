@@ -49,7 +49,7 @@ impl Default for OutputConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            root_path: "Downloads".into(),
+            root_path: "Movies".into(),
             movie_folder_name: "Movie".into(),
             serie_folder_name: "Serie".into(),
             map_episode_name: "%(episode_name) S%(season)E%(episode)".into(),
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn default_config_has_expected_values() {
         let c = AppConfig::default();
-        assert_eq!(c.output.root_path, "Downloads");
+        assert_eq!(c.output.root_path, "Movies");
         assert_eq!(c.output.movie_folder_name, "Movie");
         assert_eq!(c.output.serie_folder_name, "Serie");
         assert_eq!(c.download.thread_count, 8);
@@ -189,21 +189,21 @@ mod tests {
 
     #[test]
     fn download_dir_uses_root_path() {
-        assert!(AppConfig::default().download_dir().ends_with("Downloads"));
+        assert!(AppConfig::default().download_dir().ends_with("Movies"));
     }
 
     #[test]
     fn movie_dir_appends_movie_folder() {
         assert!(AppConfig::default()
             .movie_dir()
-            .ends_with("Downloads/Movie"));
+            .ends_with("Movies/Movie"));
     }
 
     #[test]
     fn serie_dir_appends_serie_folder() {
         assert!(AppConfig::default()
             .serie_dir()
-            .ends_with("Downloads/Serie"));
+            .ends_with("Movies/Serie"));
     }
 
     #[test]
