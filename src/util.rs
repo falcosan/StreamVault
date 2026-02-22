@@ -154,15 +154,16 @@ impl DownloadEngine {
             .arg("--binary-merge")
             .arg("--del-after-done")
             .arg("--mux-after-done")
-            .arg(format!("format={}", self.config.process.extension))
+            .arg({
+                let mut mux_opts = format!("format={}", self.config.process.extension);
+                if !self.config.process.merge_subtitle {
+                    mux_opts.push_str(":skip_sub=true");
+                }
+                mux_opts
+            })
             .arg("--auto-subtitle-fix")
             .arg("false")
-            .arg("--check-segments-count")
-            .arg(if self.config.download.concurrent_download {
-                "true"
-            } else {
-                "false"
-            });
+            .arg("--check-segments-count");
 
         if self.config.download.concurrent_download {
             cmd.arg("--concurrent-download");
@@ -180,11 +181,8 @@ impl DownloadEngine {
             .arg(&self.config.download.select_audio);
         cmd.arg("--select-subtitle")
             .arg(&self.config.download.select_subtitle);
-        if self.config.process.merge_audio {
-            cmd.arg("--mux-import").arg("audio");
-        }
-        if self.config.process.merge_subtitle {
-            cmd.arg("--mux-import").arg("subtitle");
+        if !self.config.process.merge_audio {
+            cmd.arg("--drop-audio").arg("all");
         }
         for (k, v) in &req.headers {
             cmd.arg("--header").arg(format!("{k}: {v}"));
