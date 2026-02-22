@@ -143,6 +143,9 @@ pub trait Provider: Send + Sync {
         episode: Option<&Episode>,
         season: Option<u32>,
     ) -> Pin<Box<dyn Future<Output = ProviderResult<StreamUrl>> + Send + '_>>;
+    fn get_catalog(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<MediaEntry>>> + Send + '_>>;
 }
 
 pub struct StreamingCommunityProvider {
@@ -510,6 +513,51 @@ impl Provider for StreamingCommunityProvider {
             let iframe =
                 fetch_iframe_url(&self.client, &self.base_url, LANG, media_id, ep_id).await?;
             extract_stream_url(&self.client, &iframe).await
+        })
+    }
+
+    fn get_catalog(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = ProviderResult<Vec<MediaEntry>>> + Send + '_>> {
+        Box::pin(async move {
+            let resp = self
+                .client
+                .get(&self.base_url)
+                .send()
+                .await
+                .map_err(|e| ProviderError::Network(e.to_string()))?;
+            let html = resp
+                .text()
+                .await
+                .map_err(|e| ProviderError::Network(e.to_string()))?;
+            let page = Self::parse_data_page(&html)?;
+            let mut entries = Vec::new();
+            let mut seen = HashSet::new();
+            if let Some(sliders) = page["props"]["sliders"].as_array() {
+                for slider in sliders {
+                    if let Some(titles) = slider["titles"].as_array() {
+                        for t in titles {
+                            if let Some(e) = self.parse_result(t) {
+                                if seen.insert(e.id) {
+                                    entries.push(e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if entries.is_empty() {
+                if let Some(titles) = page["props"]["titles"].as_array() {
+                    for t in titles {
+                        if let Some(e) = self.parse_result(t) {
+                            if seen.insert(e.id) {
+                                entries.push(e);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(entries)
         })
     }
 }

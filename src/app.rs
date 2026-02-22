@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::gui::{self, Screen};
-use crate::providers::{Episode, MediaEntry, Provider, Season, StreamingCommunityProvider};
+use crate::providers::{MediaEntry, Provider, StreamingCommunityProvider};
 use crate::util::{DownloadEngine, DownloadProgress, DownloadRequest};
 use dioxus::prelude::*;
 use std::cell::RefCell;
@@ -133,14 +133,17 @@ pub fn App() -> Element {
     let mut search_results: Signal<Vec<MediaEntry>> = use_signal(Vec::new);
     let mut is_searching = use_signal(|| false);
     let mut selected_entry: Signal<Option<MediaEntry>> = use_signal(|| None);
-    let mut seasons: Signal<Vec<Season>> = use_signal(Vec::new);
-    let mut episodes: Signal<Vec<Episode>> = use_signal(Vec::new);
+    let mut seasons: Signal<Vec<crate::providers::Season>> = use_signal(Vec::new);
+    let mut episodes: Signal<Vec<crate::providers::Episode>> = use_signal(Vec::new);
     let mut selected_season: Signal<Option<u32>> = use_signal(|| None);
     let mut is_loading = use_signal(|| false);
     let mut error_msg: Signal<Option<String>> = use_signal(|| None);
     let mut downloads: Signal<Vec<DownloadProgress>> = use_signal(Vec::new);
     let mut playing_title = use_signal(String::new);
     let mut native_playing = use_signal(|| false);
+    let mut catalog: Signal<Vec<MediaEntry>> = use_signal(Vec::new);
+    let mut catalog_loading = use_signal(|| true);
+    let mut prev_screen = use_signal(|| Screen::Home);
 
     #[cfg(target_os = "macos")]
     let native_player: Rc<RefCell<Option<NativePlayer>>> =
@@ -166,7 +169,14 @@ pub fn App() -> Element {
         use_future(move || {
             let p = provider.clone();
             async move {
-                provider_online.set(p.search("test").await.is_ok());
+                match p.get_catalog().await {
+                    Ok(entries) => {
+                        provider_online.set(true);
+                        catalog.set(entries);
+                    }
+                    Err(_) => provider_online.set(false),
+                }
+                catalog_loading.set(false);
             }
         });
     }
@@ -192,39 +202,37 @@ pub fn App() -> Element {
 
     let on_select_entry = {
         let provider = provider.clone();
-        move |idx: usize| {
-            let results = search_results();
-            if let Some(entry) = results.get(idx).cloned() {
-                let is_movie = entry.is_movie();
-                selected_entry.set(Some(entry.clone()));
-                screen.set(Screen::Details);
-                seasons.set(Vec::new());
-                episodes.set(Vec::new());
-                selected_season.set(None);
-                if !is_movie {
-                    is_loading.set(true);
-                    let p = provider.clone();
-                    spawn(async move {
-                        match p.get_seasons(&entry).await {
-                            Ok(s) => {
-                                let first_num = s.first().map(|f| f.number);
-                                seasons.set(s);
-                                if let Some(n) = first_num {
-                                    selected_season.set(Some(n));
-                                    if let Some(e) = selected_entry() {
-                                        is_loading.set(true);
-                                        match p.get_episodes(&e, n).await {
-                                            Ok(eps) => episodes.set(eps),
-                                            Err(_) => episodes.set(Vec::new()),
-                                        }
+        move |entry: MediaEntry| {
+            let is_movie = entry.is_movie();
+            selected_entry.set(Some(entry.clone()));
+            prev_screen.set(screen());
+            screen.set(Screen::Details);
+            seasons.set(Vec::new());
+            episodes.set(Vec::new());
+            selected_season.set(None);
+            if !is_movie {
+                is_loading.set(true);
+                let p = provider.clone();
+                spawn(async move {
+                    match p.get_seasons(&entry).await {
+                        Ok(s) => {
+                            let first_num = s.first().map(|f| f.number);
+                            seasons.set(s);
+                            if let Some(n) = first_num {
+                                selected_season.set(Some(n));
+                                if let Some(e) = selected_entry() {
+                                    is_loading.set(true);
+                                    match p.get_episodes(&e, n).await {
+                                        Ok(eps) => episodes.set(eps),
+                                        Err(_) => episodes.set(Vec::new()),
                                     }
                                 }
                             }
-                            Err(_) => seasons.set(Vec::new()),
                         }
-                        is_loading.set(false);
-                    });
-                }
+                        Err(_) => seasons.set(Vec::new()),
+                    }
+                    is_loading.set(false);
+                });
             }
         }
     };
@@ -475,8 +483,8 @@ pub fn App() -> Element {
                 match screen() {
                     Screen::Home => rsx! {
                         gui::HomeView {
-                            provider_online: ReadOnlySignal::from(provider_online),
-                            search_results: ReadOnlySignal::from(search_results),
+                            catalog: ReadOnlySignal::from(catalog),
+                            is_loading: ReadOnlySignal::from(catalog_loading),
                             on_select: on_select_entry,
                         }
                     },
@@ -502,14 +510,14 @@ pub fn App() -> Element {
                                     on_play_episode,
                                     on_dl_movie,
                                     on_dl_episode,
-                                    on_back: move |_| screen.set(Screen::Search),
+                                    on_back: move |_| screen.set(prev_screen()),
                                 }
                             }
                         } else {
                             rsx! {
                                 gui::HomeView {
-                                    provider_online: ReadOnlySignal::from(provider_online),
-                                    search_results: ReadOnlySignal::from(search_results),
+                                    catalog: ReadOnlySignal::from(catalog),
+                                    is_loading: ReadOnlySignal::from(catalog_loading),
                                     on_select: on_select_entry,
                                 }
                             }

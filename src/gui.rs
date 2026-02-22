@@ -1,4 +1,4 @@
-use crate::providers::{Episode, MediaEntry, Season};
+use crate::providers::MediaEntry;
 use crate::util::{DownloadProgress, DownloadStatus};
 use dioxus::prelude::*;
 
@@ -50,6 +50,8 @@ pub const GLOBAL_CSS: &str = r#"
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+::-webkit-scrollbar { display: none; }
+body { scrollbar-width: none; -ms-overflow-style: none; }
 .app { display: flex; flex-direction: column; height: 100vh; }
 
 .navbar {
@@ -92,30 +94,29 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
     height: 100%; text-align: center; padding: 20px;
 }
 
-.home-hero { display: flex; flex-direction: column; align-items: center; padding-top: 80px; }
-.home-title { font-size: 52px; color: var(--accent); font-weight: bold; }
-.home-subtitle { font-size: 16px; color: var(--text2); margin-top: 6px; }
-.home-status { display: flex; align-items: center; gap: 8px; margin-top: 28px; }
-.status-dot { width: 6px; height: 6px; border-radius: 3px; }
-.status-dot.online { background: var(--success); }
-.status-dot.offline { background: var(--danger); }
-.home-hint { font-size: 14px; color: var(--text3); margin-top: 32px; }
+.catalog-view { padding: 16px 0; }
+.section-header { display: flex; align-items: center; gap: 10px; padding: 0 20px 12px; }
+.section-title { font-size: 18px; color: var(--text); }
+.section-count { font-size: 12px; color: var(--text3); }
 
-.media-section { margin-bottom: 10px; }
-.media-section-title { font-size: 16px; color: var(--text); padding: 10px 20px 6px; }
-.media-row { display: flex; gap: 8px; overflow-x: auto; padding: 0 20px; }
-.media-row::-webkit-scrollbar { height: 6px; }
-.media-row::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.media-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 16px;
+    padding: 0 20px 20px;
+}
 
 .poster-card {
-    min-width: 230px; width: 230px; height: 130px; border-radius: 4px;
-    cursor: pointer; position: relative; overflow: hidden; flex-shrink: 0;
+    width: 100%; aspect-ratio: 2/3; border-radius: 6px;
+    cursor: pointer; position: relative; overflow: hidden;
     border: none; padding: 0; text-align: left;
+    background-size: cover; background-position: center;
+    transition: transform 0.15s;
 }
-.poster-card:hover { filter: brightness(1.15); }
+.poster-card:hover { transform: scale(1.03); }
 .poster-overlay {
     position: absolute; bottom: 0; left: 0; right: 0;
-    background: rgba(0,0,0,0.75); padding: 6px 10px;
+    background: linear-gradient(transparent, rgba(0,0,0,0.85)); padding: 8px 10px;
 }
 .poster-title { font-size: 12px; color: white; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .poster-meta { display: flex; align-items: center; gap: 6px; }
@@ -127,9 +128,6 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
 .badge-series { background: #0091d5; }
 .poster-year { font-size: 10px; color: #b0b0b0; }
 
-.browse-header { display: flex; align-items: center; gap: 10px; padding: 14px 20px; }
-.browse-title { font-size: 18px; color: var(--text); }
-.browse-count { font-size: 12px; color: var(--text3); }
 .empty-msg { font-size: 16px; color: var(--text3); }
 .searching-msg { font-size: 16px; color: var(--text3); }
 
@@ -160,7 +158,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
 .movie-actions { display: flex; align-items: center; gap: 8px; padding: 14px 24px; }
 .movie-actions .fill { flex: 1; }
 
-.season-tabs { display: flex; gap: 6px; padding: 6px 24px; overflow-x: auto; }
+.season-tabs { display: flex; gap: 6px; padding: 6px 24px; flex-wrap: wrap; }
 .season-tab {
     font-size: 12px; padding: 7px 14px; cursor: pointer; border-radius: 3px;
     border: 1px solid var(--border); background: transparent; color: var(--text2);
@@ -281,60 +279,32 @@ pub fn Navbar(
 
 #[component]
 pub fn HomeView(
-    provider_online: ReadOnlySignal<bool>,
-    search_results: ReadOnlySignal<Vec<MediaEntry>>,
-    on_select: EventHandler<usize>,
+    catalog: ReadOnlySignal<Vec<MediaEntry>>,
+    is_loading: ReadOnlySignal<bool>,
+    on_select: EventHandler<MediaEntry>,
 ) -> Element {
-    let results = search_results();
-    if results.is_empty() {
-        let online = provider_online();
-        let (dot_class, status_text) = if online {
-            ("status-dot online", "Provider Online")
-        } else {
-            ("status-dot offline", "Provider Offline")
-        };
-        let status_color = if online {
-            "var(--success)"
-        } else {
-            "var(--danger)"
-        };
+    let items = catalog();
+    let loading = is_loading();
+
+    if items.is_empty() && loading {
         return rsx! {
-            div { class: "home-hero",
-                div { class: "home-title", "STREAMVAULT" }
-                div { class: "home-subtitle", "Stream. Download. Watch." }
-                div { class: "home-status",
-                    div { class: "{dot_class}" }
-                    span { color: "{status_color}", font_size: "12px", "{status_text}" }
-                }
-                div { class: "home-hint", "Search for movies and series to get started" }
-            }
+            div { class: "center-msg", span { class: "searching-msg", "Loading..." } }
         };
     }
 
-    let all: Vec<(usize, MediaEntry)> = results
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (i, e.clone()))
-        .collect();
-    let movies: Vec<(usize, MediaEntry)> = results
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| e.is_movie())
-        .map(|(i, e)| (i, e.clone()))
-        .collect();
-    let series: Vec<(usize, MediaEntry)> = results
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| !e.is_movie())
-        .map(|(i, e)| (i, e.clone()))
-        .collect();
+    if items.is_empty() {
+        return rsx! {
+            div { class: "center-msg", span { class: "empty-msg", "No media available" } }
+        };
+    }
 
     rsx! {
-        div { style: "padding-top: 12px; overflow-y: auto; height: 100%;",
-            if !all.is_empty() { MediaRow { title: "Top Picks", items: all.clone(), on_select } }
-            if !movies.is_empty() { MediaRow { title: "Movies", items: movies, on_select } }
-            if !series.is_empty() { MediaRow { title: "Series", items: series, on_select } }
-            div { style: "height: 24px;" }
+        div { class: "catalog-view",
+            div { class: "media-grid",
+                for entry in items.iter() {
+                    PosterCard { key: "{entry.id}", entry: entry.clone(), on_select }
+                }
+            }
         }
     }
 }
@@ -344,22 +314,11 @@ pub fn SearchView(
     search_query: ReadOnlySignal<String>,
     search_results: ReadOnlySignal<Vec<MediaEntry>>,
     is_searching: ReadOnlySignal<bool>,
-    on_select: EventHandler<usize>,
+    on_select: EventHandler<MediaEntry>,
 ) -> Element {
     let results = search_results();
     let loading = is_searching();
     let query = search_query();
-
-    if results.is_empty() && !loading {
-        let msg = if query.is_empty() {
-            "Use the search bar to find movies and series"
-        } else {
-            "No results found — try different keywords"
-        };
-        return rsx! {
-            div { class: "center-msg", span { class: "empty-msg", "{msg}" } }
-        };
-    }
 
     if loading {
         return rsx! {
@@ -367,53 +326,29 @@ pub fn SearchView(
         };
     }
 
-    let count = results.len();
-    let all: Vec<(usize, MediaEntry)> = results
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (i, e.clone()))
-        .collect();
-    let movies: Vec<(usize, MediaEntry)> = results
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| e.is_movie())
-        .map(|(i, e)| (i, e.clone()))
-        .collect();
-    let series: Vec<(usize, MediaEntry)> = results
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| !e.is_movie())
-        .map(|(i, e)| (i, e.clone()))
-        .collect();
-
-    rsx! {
-        div {
-            div { class: "browse-header",
-                span { class: "browse-title", "Browse" }
-                span { class: "browse-count", "{count} results" }
-            }
-            div { style: "overflow-y: auto;",
-                if !all.is_empty() { MediaRow { title: "All Results", items: all, on_select } }
-                if !movies.is_empty() { MediaRow { title: "Movies", items: movies, on_select } }
-                if !series.is_empty() { MediaRow { title: "Series", items: series, on_select } }
-                div { style: "height: 24px;" }
-            }
-        }
+    if results.is_empty() {
+        let msg = if query.is_empty() {
+            "Use the search bar to find movies and series"
+        } else {
+            "No results found"
+        };
+        return rsx! {
+            div { class: "center-msg", span { class: "empty-msg", "{msg}" } }
+        };
     }
-}
 
-#[component]
-fn MediaRow(
-    title: String,
-    items: Vec<(usize, MediaEntry)>,
-    on_select: EventHandler<usize>,
-) -> Element {
+    let count = results.len();
+    let count_str = format!("{count} results");
+
     rsx! {
-        div { class: "media-section",
-            div { class: "media-section-title", "{title}" }
-            div { class: "media-row",
-                for (idx, entry) in items.iter() {
-                    PosterCard { key: "{idx}", idx: *idx, entry: entry.clone(), on_select }
+        div { class: "catalog-view",
+            div { class: "section-header",
+                span { class: "section-title", "Results" }
+                span { class: "section-count", "{count_str}" }
+            }
+            div { class: "media-grid",
+                for entry in results.iter() {
+                    PosterCard { key: "{entry.id}", entry: entry.clone(), on_select }
                 }
             }
         }
@@ -421,8 +356,12 @@ fn MediaRow(
 }
 
 #[component]
-fn PosterCard(idx: usize, entry: MediaEntry, on_select: EventHandler<usize>) -> Element {
+fn PosterCard(entry: MediaEntry, on_select: EventHandler<MediaEntry>) -> Element {
     let bg = poster_color(&entry.name);
+    let style = match &entry.image_url {
+        Some(url) => format!("background-color: {bg}; background-image: url('{url}');"),
+        None => format!("background-color: {bg};"),
+    };
     let is_movie = entry.is_movie();
     let badge_class = if is_movie {
         "badge badge-movie"
@@ -432,12 +371,13 @@ fn PosterCard(idx: usize, entry: MediaEntry, on_select: EventHandler<usize>) -> 
     let kind_label = if is_movie { "MOVIE" } else { "SERIES" };
     let yr = entry.year_display().to_string();
     let name = entry.name.clone();
+    let e = entry.clone();
 
     rsx! {
         button {
             class: "poster-card",
-            style: "background: {bg};",
-            onclick: move |_| on_select.call(idx),
+            style: "{style}",
+            onclick: move |_| on_select.call(e.clone()),
             div { class: "poster-overlay",
                 div { class: "poster-title", "{name}" }
                 div { class: "poster-meta",
@@ -452,8 +392,8 @@ fn PosterCard(idx: usize, entry: MediaEntry, on_select: EventHandler<usize>) -> 
 #[component]
 pub fn DetailsView(
     entry: MediaEntry,
-    seasons: ReadOnlySignal<Vec<Season>>,
-    episodes: ReadOnlySignal<Vec<Episode>>,
+    seasons: ReadOnlySignal<Vec<crate::providers::Season>>,
+    episodes: ReadOnlySignal<Vec<crate::providers::Episode>>,
     selected_season: ReadOnlySignal<Option<u32>>,
     is_loading: ReadOnlySignal<bool>,
     on_select_season: EventHandler<u32>,
@@ -464,6 +404,10 @@ pub fn DetailsView(
     on_back: EventHandler<()>,
 ) -> Element {
     let bg = poster_color(&entry.name);
+    let hero_style = match &entry.image_url {
+        Some(url) => format!("background: url('{url}') center/cover;"),
+        None => format!("background: {bg};"),
+    };
     let is_movie = entry.is_movie();
     let kind_color = if is_movie { "var(--accent)" } else { "#0091d5" };
     let kind_label = if is_movie { "MOVIE" } else { "SERIES" };
@@ -476,7 +420,7 @@ pub fn DetailsView(
 
     rsx! {
         div { style: "overflow-y: auto; height: 100%;",
-            div { class: "details-hero", style: "background: {bg};",
+            div { class: "details-hero", style: "{hero_style}",
                 div { class: "details-hero-overlay",
                     div { class: "details-kind-row",
                         span { class: "details-kind-badge", style: "background: {kind_color};", "{kind_label}" }
