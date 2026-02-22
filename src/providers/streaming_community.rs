@@ -1,6 +1,6 @@
 use super::{
     Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, Season, StreamUrl,
-    USER_AGENT,
+    DOMAINS_URL, USER_AGENT,
 };
 use async_trait::async_trait;
 use regex::Regex;
@@ -14,9 +14,6 @@ pub struct StreamingCommunityProvider {
     client: Client,
     base_url: RwLock<String>,
 }
-
-const SC_DOMAINS_URL: &str =
-    "https://raw.githubusercontent.com/Arrowar/SC_Domains/refs/heads/main/domains.json";
 
 impl StreamingCommunityProvider {
     const LANG: &str = "it";
@@ -42,7 +39,7 @@ impl StreamingCommunityProvider {
     }
 
     async fn resolve_domain(&self) {
-        let resp = match self.client.get(SC_DOMAINS_URL).send().await {
+        let resp = match self.client.get(DOMAINS_URL).send().await {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("[StreamVault] Domain resolve failed: {e}");
