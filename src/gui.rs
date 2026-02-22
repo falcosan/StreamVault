@@ -40,7 +40,7 @@ fn poster_color(name: &str) -> String {
     format!("rgb({r},{g},{b})")
 }
 
-pub const LOGO_SVG: &str = r##"<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><polygon points="32,0 100,0 68,47 0,47" fill="#f4fd37"/><polygon points="32,53 100,53 68,100 0,100" fill="#f4fd37"/></svg>"##;
+pub const LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200"><path fill="#f4fd37" d="M458.8 436.7C386 512 320.6 579.5 313.6 586.7L300.8 600l144.8-.1h144.9l137.2-134.2c75.4-73.8 144.4-141.3 153.2-150L897 300H591.4zm0 300C386 812 320.6 879.5 313.6 886.7L300.8 900l144.8-.1h144.9l137.2-134.2c75.4-73.8 144.4-141.3 153.2-150L897 600H591.4z"/></svg>"##;
 
 pub const GLOBAL_CSS: &str = r#"
 :root {
@@ -63,7 +63,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 }
 .logo { background: none; border: none; cursor: pointer; padding: 0; display: flex; align-items: center; }
 .logo:hover { opacity: 0.8; }
-.logo-icon { height: 24px; width: 24px; }
+.logo-icon { height: 30px; width: 30px; }
 .logo-icon svg { width: 100%; height: 100%; display: block; }
 .nav-spacer { width: 24px; }
 .nav-link {
@@ -103,7 +103,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     height: 100%; gap: 16px;
 }
-.splash-logo { width: 80px; height: 80px; }
+.splash-logo { width: 100px; height: 100px; }
 .splash-logo svg { width: 100%; height: 100%; display: block; }
 .splash-text { font-size: 22px; font-weight: bold; color: var(--accent); letter-spacing: 2px; }
 
