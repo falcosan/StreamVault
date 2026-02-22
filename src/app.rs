@@ -221,6 +221,7 @@ impl App {
                     return IcedTask::none();
                 }
                 self.is_searching = true;
+                self.screen = Screen::Search;
                 let (p, q) = (self.provider.clone(), self.search_query.clone());
                 IcedTask::perform(
                     async move { p.search(&q).await.map_err(|e| e.to_string()) },
@@ -290,14 +291,6 @@ impl App {
                 IcedTask::none()
             }
 
-            Msg::PlayEntry(i) => {
-                if let Some(e) = self.search_results.get(i).cloned() {
-                    let t = e.display_title();
-                    self.resolve_play(e, None, None, t)
-                } else {
-                    IcedTask::none()
-                }
-            }
             Msg::PlayMovie => {
                 if let Some(e) = self.selected_entry.clone() {
                     self.error_msg = None;
@@ -402,8 +395,8 @@ impl App {
                     IcedTask::none()
                 }
             }
-            Msg::DlStreamResolved(r) => {
-                if let Ok((stream, fname, is_movie)) = r {
+            Msg::DlStreamResolved(r) => match r {
+                Ok((stream, fname, is_movie)) => {
                     let id = uuid::Uuid::new_v4();
                     let engine = DownloadEngine::new(self.config.clone());
                     let req = DownloadRequest {
@@ -423,7 +416,9 @@ impl App {
                         },
                         |_: ()| Msg::Tick,
                     )
-                } else {
+                }
+                Err(e) => {
+                    self.error_msg = Some(format!("Download failed: {e}"));
                     IcedTask::none()
                 }
             }
@@ -579,20 +574,18 @@ impl App {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
-    fn start_playback(&mut self, url: &str, title: &str) {
-        eprintln!("[StreamVault] Playback not supported on this platform: {url} - {title}");
-        self.error_msg = Some("Playback not supported on this platform".into());
-    }
-
     pub fn view(&self) -> Element<'_, Msg> {
         let p = Pal::from_dark(self.config.dark_mode);
-        let sidebar = self.sidebar(p);
-        let content = match self.screen {
-            Screen::Home => gui::home_view(p, self.provider_online),
-            Screen::Search => {
-                gui::search_view(p, &self.search_query, &self.search_results, self.is_searching)
-            }
+        let nav = gui::navbar(p, &self.screen, &self.search_query, self.is_searching);
+
+        let content: Element<'_, Msg> = match self.screen {
+            Screen::Home => gui::home_view(p, self.provider_online, &self.search_results),
+            Screen::Search => gui::search_view(
+                p,
+                &self.search_query,
+                &self.search_results,
+                self.is_searching,
+            ),
             Screen::Details => {
                 if let Some(ref e) = self.selected_entry {
                     gui::details_view(
@@ -604,33 +597,40 @@ impl App {
                         self.is_loading,
                     )
                 } else {
-                    gui::home_view(p, self.provider_online)
+                    gui::home_view(p, self.provider_online, &self.search_results)
                 }
             }
             Screen::Player => {
                 #[cfg(target_os = "macos")]
-                let playing = self.native_player.as_ref().is_some_and(|np| np.is_playing());
-                #[cfg(not(target_os = "macos"))]
-                let playing = false;
+                let playing = self
+                    .native_player
+                    .as_ref()
+                    .is_some_and(|np| np.is_playing());
                 gui::player_view(p, playing, &self.playing_title)
             }
             Screen::Downloads => gui::downloads_view(p, &self.downloads),
             Screen::Settings => gui::settings_view(p, &self.config),
         };
 
-        let mut main_col = column![].width(Fill).height(Fill);
+        let mut main_col = column![nav].width(Fill).height(Fill);
+
         if let Some(ref err) = self.error_msg {
             main_col = main_col.push(
                 container(
                     row![
                         text(err.as_str()).size(13).color(iced::Color::WHITE),
                         Space::with_width(Fill),
-                        button(text("X").size(12))
+                        button(text("✕").size(12).color(iced::Color::WHITE))
                             .on_press(Msg::DismissError)
-                            .padding(4),
+                            .padding([4, 8])
+                            .style(move |_, _| button::Style {
+                                background: None,
+                                text_color: iced::Color::WHITE,
+                                ..Default::default()
+                            }),
                     ]
                     .align_y(Alignment::Center)
-                    .padding(10),
+                    .padding([8, 20]),
                 )
                 .width(Fill)
                 .style(move |_: &_| container::Style {
@@ -639,54 +639,14 @@ impl App {
                 }),
             );
         }
+
         main_col = main_col.push(container(content).width(Fill).height(Fill).style(
             move |_: &_| container::Style {
                 background: Some(iced::Background::Color(p.bg)),
                 ..Default::default()
             },
         ));
-        row![sidebar, main_col].into()
-    }
 
-    fn sidebar(&self, p: Pal) -> Element<'_, Msg> {
-        let s = &self.screen;
-        let dark = self.config.dark_mode;
-        let theme_label = if dark { "Light Mode" } else { "Dark Mode" };
-        let content = column![
-            Space::with_height(20),
-            text("SV").size(24).color(p.accent).center(),
-            Space::with_height(30),
-            gui::nav_button("Home", matches!(s, Screen::Home), Msg::NavHome),
-            gui::nav_button(
-                "Search",
-                matches!(s, Screen::Search | Screen::Details),
-                Msg::NavSearch
-            ),
-            gui::nav_button("Player", matches!(s, Screen::Player), Msg::NavHome),
-            gui::nav_button(
-                "Downloads",
-                matches!(s, Screen::Downloads),
-                Msg::NavDownloads
-            ),
-            gui::nav_button("Settings", matches!(s, Screen::Settings), Msg::NavSettings),
-            Space::with_height(Fill),
-            button(
-                text(theme_label)
-                    .size(12)
-                    .color(gui::SB_DIM)
-                    .width(Fill)
-                    .center()
-            )
-            .on_press(Msg::CfgDarkMode(!dark))
-            .padding([6, 12])
-            .width(Fill),
-            Space::with_height(12),
-        ]
-        .width(gui::SIDEBAR_W)
-        .align_x(Alignment::Center);
-        container(content)
-            .height(Fill)
-            .style(gui::sidebar_style(p))
-            .into()
+        main_col.into()
     }
 }

@@ -199,6 +199,23 @@ impl DownloadEngine {
             }
         };
 
+        // Drain stderr in a background task to prevent pipe-buffer deadlock
+        // and collect output for error reporting.
+        let stderr_handle = child.stderr.take().map(|stderr| {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                let mut collected = String::new();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if !collected.is_empty() {
+                        collected.push('\n');
+                    }
+                    collected.push_str(&line);
+                }
+                collected
+            })
+        });
+
+        // Read stdout for progress updates (N_m3u8DL-RE writes progress here)
         if let Some(stdout) = child.stdout.take() {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -213,13 +230,24 @@ impl DownloadEngine {
             }
         }
 
+        let stderr_output = match stderr_handle {
+            Some(handle) => handle.await.unwrap_or_default(),
+            None => String::new(),
+        };
+
         match child.wait().await {
             Ok(exit) if exit.success() => {
                 progress.status = DownloadStatus::Completed;
                 progress.percent = 100.0;
             }
             Ok(exit) => {
-                progress.status = DownloadStatus::Failed(format!("N_m3u8DL-RE exited: {exit}"));
+                let msg = if stderr_output.is_empty() {
+                    format!("N_m3u8DL-RE exited: {exit}")
+                } else {
+                    let tail: String = stderr_output.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+                    format!("N_m3u8DL-RE exited: {exit}\n{tail}")
+                };
+                progress.status = DownloadStatus::Failed(msg);
             }
             Err(e) => {
                 progress.status = DownloadStatus::Failed(format!("Process error: {e}"));
