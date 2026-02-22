@@ -1,16 +1,12 @@
+mod app;
 mod config;
-mod download;
 mod gui;
-mod playback;
-mod provider;
+mod providers;
 mod util;
 
-use gui::App;
-use iced::application;
-
 fn main() -> iced::Result {
-    application("StreamVault", App::update, App::view)
-        .subscription(App::subscription)
-        .theme(App::theme)
-        .run_with(App::new)
+    iced::application("StreamVault", app::App::update, app::App::view)
+        .subscription(app::App::subscription)
+        .theme(app::App::theme)
+        .run_with(app::App::new)
 }

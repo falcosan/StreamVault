@@ -46,6 +46,7 @@ pub struct RequestsConfig {
 }
 
 impl Default for OutputConfig {
+    #[inline]
     fn default() -> Self {
         Self {
             root_path: "Video".into(),
@@ -57,6 +58,7 @@ impl Default for OutputConfig {
 }
 
 impl Default for DownloadConfig {
+    #[inline]
     fn default() -> Self {
         Self {
             thread_count: 8,
@@ -71,37 +73,27 @@ impl Default for DownloadConfig {
 }
 
 impl Default for ProcessConfig {
+    #[inline]
     fn default() -> Self {
-        Self {
-            use_gpu: false,
-            merge_audio: true,
-            merge_subtitle: true,
-            extension: "mkv".into(),
-        }
+        Self { use_gpu: false, merge_audio: true, merge_subtitle: true, extension: "mkv".into() }
     }
 }
 
 impl Default for RequestsConfig {
+    #[inline]
     fn default() -> Self {
-        Self {
-            timeout: 30,
-            max_retry: 8,
-            use_proxy: false,
-            proxy_url: String::new(),
-        }
+        Self { timeout: 30, max_retry: 8, use_proxy: false, proxy_url: String::new() }
     }
 }
 
 impl AppConfig {
+    #[inline]
     pub fn config_dir() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("StreamVault")
+        dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("StreamVault")
     }
 
-    pub fn config_path() -> PathBuf {
-        Self::config_dir().join("config.json")
-    }
+    #[inline]
+    pub fn config_path() -> PathBuf { Self::config_dir().join("config.json") }
 
     pub fn load() -> Self {
         let path = Self::config_path();
@@ -111,9 +103,9 @@ impl AppConfig {
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default()
         } else {
-            let config = Self::default();
-            config.save();
-            config
+            let cfg = Self::default();
+            cfg.save();
+            cfg
         }
     }
 
@@ -121,35 +113,30 @@ impl AppConfig {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
-                eprintln!("[StreamVault] Failed to create config directory: {e}");
+                eprintln!("[StreamVault] config dir error: {e}");
                 return;
             }
         }
         match serde_json::to_string_pretty(self) {
             Ok(json) => {
                 if let Err(e) = fs::write(&path, json) {
-                    eprintln!("[StreamVault] Failed to write config file: {e}");
+                    eprintln!("[StreamVault] config write error: {e}");
                 }
             }
-            Err(e) => {
-                eprintln!("[StreamVault] Failed to serialize config: {e}");
-            }
+            Err(e) => eprintln!("[StreamVault] config serialize error: {e}"),
         }
     }
 
+    #[inline]
     pub fn download_dir(&self) -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(&self.output.root_path)
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(&self.output.root_path)
     }
 
-    pub fn movie_dir(&self) -> PathBuf {
-        self.download_dir().join(&self.output.movie_folder_name)
-    }
+    #[inline]
+    pub fn movie_dir(&self) -> PathBuf { self.download_dir().join(&self.output.movie_folder_name) }
 
-    pub fn serie_dir(&self) -> PathBuf {
-        self.download_dir().join(&self.output.serie_folder_name)
-    }
+    #[inline]
+    pub fn serie_dir(&self) -> PathBuf { self.download_dir().join(&self.output.serie_folder_name) }
 }
 
 #[cfg(test)]
@@ -158,63 +145,69 @@ mod tests {
 
     #[test]
     fn default_config_has_expected_values() {
-        let config = AppConfig::default();
-        assert_eq!(config.output.root_path, "Video");
-        assert_eq!(config.output.movie_folder_name, "Movie");
-        assert_eq!(config.output.serie_folder_name, "Serie");
-        assert_eq!(config.download.thread_count, 8);
-        assert_eq!(config.download.retry_count, 30);
-        assert!(config.download.concurrent_download);
-        assert_eq!(config.process.extension, "mkv");
-        assert!(!config.process.use_gpu);
-        assert!(config.process.merge_audio);
-        assert_eq!(config.requests.timeout, 30);
-        assert!(!config.requests.use_proxy);
+        let c = AppConfig::default();
+        assert_eq!(c.output.root_path, "Video");
+        assert_eq!(c.output.movie_folder_name, "Movie");
+        assert_eq!(c.output.serie_folder_name, "Serie");
+        assert_eq!(c.download.thread_count, 8);
+        assert_eq!(c.download.retry_count, 30);
+        assert!(c.download.concurrent_download);
+        assert_eq!(c.process.extension, "mkv");
+        assert!(!c.process.use_gpu);
+        assert!(c.process.merge_audio);
+        assert_eq!(c.requests.timeout, 30);
+        assert!(!c.requests.use_proxy);
     }
 
     #[test]
-    fn config_dir_is_inside_streamvault() {
-        let dir = AppConfig::config_dir();
-        assert!(dir.ends_with("StreamVault"));
+    fn config_dir_ends_with_streamvault() {
+        assert!(AppConfig::config_dir().ends_with("StreamVault"));
     }
 
     #[test]
     fn config_path_ends_with_json() {
-        let path = AppConfig::config_path();
-        assert!(path.ends_with("config.json"));
+        assert!(AppConfig::config_path().ends_with("config.json"));
     }
 
     #[test]
     fn download_dir_uses_root_path() {
-        let config = AppConfig::default();
-        let dir = config.download_dir();
-        assert!(dir.ends_with("Video"));
+        assert!(AppConfig::default().download_dir().ends_with("Video"));
     }
 
     #[test]
     fn movie_dir_appends_movie_folder() {
-        let config = AppConfig::default();
-        let dir = config.movie_dir();
-        assert!(dir.ends_with("Video/Movie"));
+        assert!(AppConfig::default().movie_dir().ends_with("Video/Movie"));
     }
 
     #[test]
     fn serie_dir_appends_serie_folder() {
-        let config = AppConfig::default();
-        let dir = config.serie_dir();
-        assert!(dir.ends_with("Video/Serie"));
+        assert!(AppConfig::default().serie_dir().ends_with("Video/Serie"));
     }
 
     #[test]
     fn serde_round_trip() {
-        let mut config = AppConfig::default();
-        config.output.root_path = "TestPath".into();
-        config.download.thread_count = 16;
-
-        let json = serde_json::to_string_pretty(&config).unwrap();
+        let mut c = AppConfig::default();
+        c.output.root_path = "TestPath".into();
+        c.download.thread_count = 16;
+        let json = serde_json::to_string_pretty(&c).unwrap();
         let loaded: AppConfig = serde_json::from_str(&json).unwrap();
-
         assert_eq!(loaded.output.root_path, "TestPath");
         assert_eq!(loaded.download.thread_count, 16);
+    }
+
+    #[test]
+    fn default_process_merge_flags() {
+        let p = ProcessConfig::default();
+        assert!(p.merge_audio);
+        assert!(p.merge_subtitle);
+        assert!(!p.use_gpu);
+    }
+
+    #[test]
+    fn default_request_no_proxy() {
+        let r = RequestsConfig::default();
+        assert!(!r.use_proxy);
+        assert!(r.proxy_url.is_empty());
+        assert_eq!(r.max_retry, 8);
     }
 }
