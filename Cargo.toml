@@ -14,4 +14,5 @@ url = { version = "2", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 dioxus = { version = "0.7", features = ["desktop"] }
+dioxus-desktop = { version = "0.7", features = ["fullscreen"] }
 reqwest = { version = "0.13", features = ["json", "cookies", "query"] }
