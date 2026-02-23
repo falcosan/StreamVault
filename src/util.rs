@@ -107,32 +107,29 @@ impl DownloadEngine {
 
         let n_m3u8dl = find_binary("N_m3u8DL-RE");
         let ffmpeg = find_binary("ffmpeg");
+        let save_name = sanitize_filename(&req.filename);
 
         let mut cmd = Command::new(&n_m3u8dl);
         cmd.arg(&req.stream_url)
             .arg("--save-name")
-            .arg(sanitize_filename(&req.filename))
+            .arg(&save_name)
             .arg("--save-dir")
             .arg(&req.output_dir)
             .arg("--tmp-dir")
-            .arg(req.output_dir.join("tmp"))
+            .arg(&req.output_dir)
             .arg("--ffmpeg-binary-path")
             .arg(&ffmpeg)
             .arg("--no-log")
+            .arg("--write-meta-json")
+            .arg("false")
             .arg("--binary-merge")
             .arg("--del-after-done")
-            .arg(format!(
-                "--mux-after-done=format={}{}",
-                self.config.process.extension,
-                if self.config.process.merge_subtitle {
-                    ""
-                } else {
-                    ":skip_sub=true"
-                }
-            ))
             .arg("--auto-subtitle-fix")
             .arg("false")
-            .arg("--check-segments-count");
+            .arg("--check-segments-count")
+            .arg("true")
+            .arg("--force-ansi-console")
+            .arg("--no-ansi-color");
 
         if self.config.download.concurrent_download {
             cmd.arg("--concurrent-download");
@@ -199,22 +196,38 @@ impl DownloadEngine {
 
         match child.wait().await {
             Ok(exit) if exit.success() => {
-                progress.status = DownloadStatus::Completed;
+                progress.status = DownloadStatus::Muxing;
+                let _ = tx.send(progress.clone());
+
+                match self.mux_output(&ffmpeg, &req.output_dir, &save_name).await {
+                    Ok(_) => {
+                        progress.status = DownloadStatus::Completed;
+                    }
+                    Err(e) => {
+                        progress.status = DownloadStatus::Failed(format!("Mux failed: {e}"));
+                    }
+                }
             }
             Ok(exit) => {
                 let msg = if stderr_output.is_empty() {
                     format!("N_m3u8DL-RE exited: {exit}")
                 } else {
-                    let tail: String = stderr_output
+                    let error_lines: String = stderr_output
                         .lines()
-                        .rev()
-                        .take(3)
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .rev()
+                        .filter(|l| {
+                            let t = l.trim();
+                            !t.is_empty()
+                                && !t.starts_with("at ")
+                                && !t.starts_with("---")
+                        })
+                        .take(5)
                         .collect::<Vec<_>>()
                         .join("\n");
-                    format!("N_m3u8DL-RE exited: {exit}\n{tail}")
+                    if error_lines.is_empty() {
+                        format!("N_m3u8DL-RE exited: {exit}")
+                    } else {
+                        format!("N_m3u8DL-RE exited: {exit}\n{error_lines}")
+                    }
                 };
                 progress.status = DownloadStatus::Failed(msg);
             }
@@ -223,6 +236,101 @@ impl DownloadEngine {
             }
         }
         let _ = tx.send(progress);
+    }
+
+    async fn mux_output(
+        &self,
+        ffmpeg: &std::path::Path,
+        output_dir: &std::path::Path,
+        save_name: &str,
+    ) -> Result<(), String> {
+        let ext = &self.config.process.extension;
+
+        let mut ts_files: Vec<PathBuf> = std::fs::read_dir(output_dir)
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "ts").unwrap_or(false))
+            .collect();
+
+        if ts_files.is_empty() {
+            return Err("No .ts files found after download".into());
+        }
+
+        ts_files.sort_by(|a, b| {
+            let sa = std::fs::metadata(a).map(|m| m.len()).unwrap_or(0);
+            let sb = std::fs::metadata(b).map(|m| m.len()).unwrap_or(0);
+            sb.cmp(&sa)
+        });
+
+        let out_file = output_dir.join(format!("{save_name}.{ext}"));
+
+        let vtt_files: Vec<PathBuf> = if self.config.process.merge_subtitle {
+            std::fs::read_dir(output_dir)
+                .map_err(|e| e.to_string())?
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "vtt").unwrap_or(false))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let mut mux_cmd = Command::new(ffmpeg);
+        mux_cmd.arg("-y");
+        for ts in &ts_files {
+            mux_cmd.arg("-i").arg(ts);
+        }
+        for vtt in &vtt_files {
+            mux_cmd.arg("-i").arg(vtt);
+        }
+        mux_cmd.arg("-map").arg("0:v:0").arg("-map").arg("0:a?");
+        for i in 1..ts_files.len() {
+            mux_cmd.arg("-map").arg(format!("{i}:a?"));
+        }
+        let ts_count = ts_files.len();
+        for i in 0..vtt_files.len() {
+            mux_cmd.arg("-map").arg(format!("{}:s?", ts_count + i));
+        }
+        mux_cmd.arg("-c:v").arg("copy").arg("-c:a").arg("copy");
+        if !vtt_files.is_empty() {
+            let sub_codec = if ext == "mkv" { "srt" } else { "mov_text" };
+            mux_cmd.arg("-c:s").arg(sub_codec);
+        }
+        mux_cmd
+            .arg(&out_file)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+
+        let mux_result = mux_cmd.output().await.map_err(|e| e.to_string())?;
+
+        if !mux_result.status.success() {
+            let err = String::from_utf8_lossy(&mux_result.stderr);
+            let lines: Vec<&str> = err
+                .lines()
+                .filter(|l| {
+                    let t = l.trim();
+                    !t.is_empty() && !t.starts_with("frame=")
+                })
+                .collect();
+            let tail = lines.iter().rev().take(5).rev().copied().collect::<Vec<_>>().join("\n");
+            return Err(format!("ffmpeg exited: {}\n{tail}", mux_result.status));
+        }
+
+        for ts in &ts_files {
+            let _ = std::fs::remove_file(ts);
+        }
+        if self.config.process.merge_subtitle {
+            if let Ok(entries) = std::fs::read_dir(output_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().extension().map(|x| x == "vtt").unwrap_or(false) {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     #[inline]
