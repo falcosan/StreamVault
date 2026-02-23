@@ -300,25 +300,22 @@ impl StreamingCommunityProvider {
         let has_b = parsed.query_pairs().any(|(k, v)| k == "b" && v == "1");
         parsed.set_query(None);
 
-        let mut params: Vec<(&str, String)> = Vec::with_capacity(4);
-        if fhd {
-            params.push(("h", "1".into()));
+        {
+            let mut pairs = parsed.query_pairs_mut();
+            pairs.clear();
+            if fhd {
+                pairs.append_pair("h", "1");
+            }
+            if has_b {
+                pairs.append_pair("b", "1");
+            }
+            pairs.append_pair("token", &token);
+            pairs.append_pair("expires", &expires);
         }
-        if has_b {
-            params.push(("b", "1".into()));
-        }
-        params.push(("token", token));
-        params.push(("expires", expires));
-        let qs: String = params
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join("&");
-        parsed.set_query(Some(&qs));
 
         Ok(StreamUrl {
             url: parsed.to_string(),
-            headers: Vec::new(),
+            headers: vec![("User-Agent".into(), USER_AGENT.to_string())],
         })
     }
 }
