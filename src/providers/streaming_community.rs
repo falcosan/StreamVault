@@ -443,6 +443,41 @@ impl Provider for StreamingCommunityProvider {
                 }
             }
         }
+
+        let genre_configs: Vec<serde_json::Value> = page["props"]["genres"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|g| {
+                        let name = g["name"].as_str()?;
+                        Some(serde_json::json!({ "name": "genre", "genre": name }))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !genre_configs.is_empty() {
+            let payload = serde_json::json!({ "sliders": genre_configs });
+            for lang in Self::LANGS {
+                let url = format!("{}/api/sliders/fetch?lang={}", self.base_url(), lang);
+                if let Ok(resp) = self.client.post(&url).json(&payload).send().await {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        let api_sliders = json.as_array().cloned().unwrap_or_default();
+                        for slider in &api_sliders {
+                            if let Some(titles) = slider["titles"].as_array() {
+                                for t in titles {
+                                    if let Some(mut e) = self.parse_result(t) {
+                                        e.provider_language = lang.to_string();
+                                        if seen.insert(e.id) {
+                                            entries.push(e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(entries)
     }
 }
