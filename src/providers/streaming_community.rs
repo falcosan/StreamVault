@@ -104,7 +104,14 @@ impl StreamingCommunityProvider {
             .as_array()
             .cloned()
             .unwrap_or_default();
-        Ok(titles.iter().filter_map(|t| self.parse_result(t)).collect())
+        Ok(titles
+            .iter()
+            .filter_map(|t| {
+                let mut entry = self.parse_result(t)?;
+                entry.provider_language = lang.to_string();
+                Some(entry)
+            })
+            .collect())
     }
 
     fn parse_result(&self, v: &serde_json::Value) -> Option<MediaEntry> {
@@ -125,6 +132,7 @@ impl StreamingCommunityProvider {
             tmdb_id: v["tmdb_id"].as_u64().map(|n| n.to_string()),
             description: Self::extract_description(v),
             provider: 0,
+            provider_language: String::new(),
         })
     }
 
@@ -192,11 +200,19 @@ impl StreamingCommunityProvider {
         })
     }
 
+    fn entry_lang(entry: &MediaEntry) -> &str {
+        if entry.provider_language.is_empty() {
+            Self::LANG
+        } else {
+            &entry.provider_language
+        }
+    }
+
     async fn fetch_title_page(
         &self,
         entry: &MediaEntry,
     ) -> ProviderResult<(serde_json::Value, String)> {
-        let lang = Self::LANG;
+        let lang = Self::entry_lang(entry);
         let base = self.base_url();
         let url = format!("{base}/{lang}/titles/{}-{}", entry.id, entry.slug);
         let resp = self.client.get(&url).send().await?;
@@ -351,7 +367,7 @@ impl Provider for StreamingCommunityProvider {
 
     async fn get_episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>> {
         let (_, version) = self.fetch_title_page(entry).await?;
-        let lang = Self::LANG;
+        let lang = Self::entry_lang(entry);
         let base = self.base_url();
         let url = format!(
             "{base}/{lang}/titles/{}-{}/season-{season}",
@@ -390,10 +406,11 @@ impl Provider for StreamingCommunityProvider {
         episode: Option<&Episode>,
         _season: Option<u32>,
     ) -> ProviderResult<StreamUrl> {
+        let lang = Self::entry_lang(entry);
         let (page, _) = self.fetch_title_page(entry).await?;
         let media_id = page["props"]["title"]["id"].as_u64().unwrap_or(entry.id);
-        let ep_id = episode.as_ref().map(|e| e.id);
-        let iframe = self.fetch_iframe_url(Self::LANG, media_id, ep_id).await?;
+        let ep_id = episode.map(|e| e.id);
+        let iframe = self.fetch_iframe_url(lang, media_id, ep_id).await?;
         self.extract_stream_url(&iframe).await
     }
 
@@ -407,7 +424,8 @@ impl Provider for StreamingCommunityProvider {
             for slider in sliders {
                 if let Some(titles) = slider["titles"].as_array() {
                     for t in titles {
-                        if let Some(e) = self.parse_result(t) {
+                        if let Some(mut e) = self.parse_result(t) {
+                            e.provider_language = Self::LANG.to_string();
                             if seen.insert(e.id) {
                                 entries.push(e);
                             }
@@ -419,7 +437,8 @@ impl Provider for StreamingCommunityProvider {
         if entries.is_empty() {
             if let Some(titles) = page["props"]["titles"].as_array() {
                 for t in titles {
-                    if let Some(e) = self.parse_result(t) {
+                    if let Some(mut e) = self.parse_result(t) {
+                        e.provider_language = Self::LANG.to_string();
                         if seen.insert(e.id) {
                             entries.push(e);
                         }

@@ -18,6 +18,8 @@ pub struct MediaEntry {
     pub description: Option<String>,
     #[serde(default)]
     pub provider: usize,
+    #[serde(default)]
+    pub provider_language: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

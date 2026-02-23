@@ -210,10 +210,6 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .dl-card-top { display: flex; align-items: center; }
 .dl-card-title { font-size: 13px; color: var(--text); flex: 1; }
 .dl-card-status { font-size: 11px; }
-.dl-progress { width: 100%; height: 3px; background: var(--surface2); border-radius: 2px; margin-top: 8px; overflow: hidden; }
-.dl-progress-bar { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; }
-.dl-card-bottom { display: flex; align-items: center; margin-top: 5px; }
-.dl-pct { font-size: 11px; color: var(--text2); }
 
 .loading-msg { font-size: 13px; color: var(--text3); padding: 10px 24px; }
 "#;

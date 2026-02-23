@@ -1,8 +1,6 @@
 use crate::config::AppConfig;
-use regex::Regex;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::OnceLock;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -59,7 +57,6 @@ pub struct DownloadProgress {
     pub id: uuid::Uuid,
     pub title: String,
     pub status: DownloadStatus,
-    pub percent: f64,
 }
 
 impl DownloadProgress {
@@ -69,17 +66,6 @@ impl DownloadProgress {
             id,
             title,
             status: DownloadStatus::Queued,
-            percent: 0.0,
-        }
-    }
-
-    pub fn parse_line(&mut self, line: &str) {
-        static PERCENT_RE: OnceLock<Regex> = OnceLock::new();
-        let pct = PERCENT_RE.get_or_init(|| Regex::new(r"(\d+(?:\.\d+)?)%").unwrap());
-        if let Some(c) = pct.captures(line) {
-            if let Ok(p) = c[1].parse::<f64>() {
-                self.percent = p;
-            }
         }
     }
 }
@@ -113,6 +99,12 @@ impl DownloadEngine {
         progress.status = DownloadStatus::Downloading;
         let _ = tx.send(progress.clone());
 
+        if let Err(e) = std::fs::create_dir_all(&req.output_dir) {
+            progress.status = DownloadStatus::Failed(format!("Cannot create output dir: {e}"));
+            let _ = tx.send(progress);
+            return;
+        }
+
         let n_m3u8dl = find_binary("N_m3u8DL-RE");
         let ffmpeg = find_binary("ffmpeg");
 
@@ -129,14 +121,15 @@ impl DownloadEngine {
             .arg("--no-log")
             .arg("--binary-merge")
             .arg("--del-after-done")
-            .arg("--mux-after-done")
-            .arg({
-                let mut mux_opts = format!("format={}", self.config.process.extension);
-                if !self.config.process.merge_subtitle {
-                    mux_opts.push_str(":skip_sub=true");
+            .arg(format!(
+                "--mux-after-done=format={}{}",
+                self.config.process.extension,
+                if self.config.process.merge_subtitle {
+                    ""
+                } else {
+                    ":skip_sub=true"
                 }
-                mux_opts
-            })
+            ))
             .arg("--auto-subtitle-fix")
             .arg("false")
             .arg("--check-segments-count");
@@ -192,14 +185,10 @@ impl DownloadEngine {
         if let Some(stdout) = child.stdout.take() {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                progress.parse_line(&line);
-                progress.status =
-                    if line.contains("Muxing") || line.contains("muxing") || line.contains("MUX") {
-                        DownloadStatus::Muxing
-                    } else {
-                        DownloadStatus::Downloading
-                    };
-                let _ = tx.send(progress.clone());
+                if line.contains("Muxing") || line.contains("muxing") || line.contains("MUX") {
+                    progress.status = DownloadStatus::Muxing;
+                    let _ = tx.send(progress.clone());
+                }
             }
         }
 
@@ -211,7 +200,6 @@ impl DownloadEngine {
         match child.wait().await {
             Ok(exit) if exit.success() => {
                 progress.status = DownloadStatus::Completed;
-                progress.percent = 100.0;
             }
             Ok(exit) => {
                 let msg = if stderr_output.is_empty() {
@@ -245,6 +233,13 @@ impl DownloadEngine {
             self.config.serie_dir()
         };
         base.join(sanitize_filename(title))
+    }
+
+    pub fn build_series_episode_path(&self, show: &str, season: u32) -> PathBuf {
+        self.config
+            .serie_dir()
+            .join(sanitize_filename(show))
+            .join(format!("S{season:02}"))
     }
 
     pub fn format_episode_name(&self, show: &str, season: u32, ep: u32, ep_name: &str) -> String {
@@ -331,35 +326,16 @@ mod tests {
         assert!(path.ends_with("Serie/Breaking Bad"));
     }
 
-    fn make_progress() -> DownloadProgress {
-        DownloadProgress::new(uuid::Uuid::nil(), "test".into())
+    #[test]
+    fn build_series_episode_path_includes_season() {
+        let path =
+            DownloadEngine::new(AppConfig::default()).build_series_episode_path("Breaking Bad", 2);
+        assert!(path.ends_with("Serie/Breaking Bad/S02"));
     }
 
     #[test]
     fn new_progress_starts_queued() {
-        let p = make_progress();
+        let p = DownloadProgress::new(uuid::Uuid::nil(), "test".into());
         assert!(matches!(p.status, DownloadStatus::Queued));
-        assert_eq!(p.percent, 0.0);
-    }
-
-    #[test]
-    fn parse_percent() {
-        let mut p = make_progress();
-        p.parse_line("Downloading 45.3% done");
-        assert!((p.percent - 45.3).abs() < 0.01);
-    }
-
-    #[test]
-    fn parse_combined_line() {
-        let mut p = make_progress();
-        p.parse_line("50.0% 200MB/400MB 10MBps");
-        assert!((p.percent - 50.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn parse_no_match_leaves_defaults() {
-        let mut p = make_progress();
-        p.parse_line("Some random log line");
-        assert_eq!(p.percent, 0.0);
     }
 }

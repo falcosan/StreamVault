@@ -7,7 +7,7 @@ pub use raiplay::RaiPlayProvider;
 pub use streaming_community::StreamingCommunityProvider;
 
 pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
-    AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
 
 pub(crate) const DOMAINS_URL: &str =
     "https://raw.githubusercontent.com/Arrowar/SC_Domains/refs/heads/main/domains.json";
@@ -75,6 +75,7 @@ mod tests {
             tmdb_id: None,
             description: None,
             provider: 0,
+            provider_language: String::new(),
         }
     }
 
@@ -89,6 +90,7 @@ mod tests {
             tmdb_id: None,
             description: None,
             provider: 0,
+            provider_language: String::new(),
         }
     }
 

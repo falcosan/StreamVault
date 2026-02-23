@@ -75,6 +75,7 @@ impl RaiPlayProvider {
             tmdb_id: None,
             description: None,
             provider: 0,
+            provider_language: String::new(),
         })
     }
 

@@ -419,26 +419,17 @@ pub fn DownloadsView(downloads: ReadSignal<Vec<DownloadProgress>>) -> Element {
 fn DlCard(progress: DownloadProgress) -> Element {
     let (status_text, status_color) = match &progress.status {
         DownloadStatus::Queued => ("Queued".to_string(), "var(--text3)"),
-        DownloadStatus::Downloading => ("Downloading".to_string(), "var(--accent)"),
-        DownloadStatus::Muxing => ("Muxing".to_string(), "var(--warn)"),
+        DownloadStatus::Downloading => ("Downloading...".to_string(), "var(--accent)"),
+        DownloadStatus::Muxing => ("Muxing...".to_string(), "var(--warn)"),
         DownloadStatus::Completed => ("Completed".to_string(), "var(--success)"),
         DownloadStatus::Failed(ref e) => (e.clone(), "var(--danger)"),
     };
-    let pct = progress.percent;
-    let pct_str = format!("{pct}%");
-    let width_str = format!("{pct}%");
 
     rsx! {
         div { class: "dl-card",
             div { class: "dl-card-top",
                 span { class: "dl-card-title", "{progress.title}" }
                 span { class: "dl-card-status", color: "{status_color}", "{status_text}" }
-            }
-            div { class: "dl-progress",
-                div { class: "dl-progress-bar", style: "width: {width_str};" }
-            }
-            div { class: "dl-card-bottom",
-                span { class: "dl-pct", "{pct_str}" }
             }
         }
     }

@@ -287,7 +287,7 @@ pub fn App() -> Element {
                                 id,
                                 title: fname.clone(),
                                 stream_url: stream.url,
-                                output_dir: engine.build_output_path(&fname, false),
+                                output_dir: engine.build_series_episode_path(&show, season),
                                 filename: fname.clone(),
                                 headers: stream.headers,
                             };
