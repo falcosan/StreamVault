@@ -303,8 +303,8 @@ impl DownloadEngine {
         for vtt in &vtt_files {
             mux_cmd.arg("-i").arg(vtt);
         }
-        mux_cmd.arg("-map").arg("0:v:0").arg("-map").arg("0:a?");
-        for i in 1..ts_files.len() {
+        for i in 0..ts_files.len() {
+            mux_cmd.arg("-map").arg(format!("{i}:v?"));
             mux_cmd.arg("-map").arg(format!("{i}:a?"));
         }
         let ts_count = ts_files.len();
