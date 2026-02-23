@@ -198,6 +198,7 @@ fn PosterCard(entry: MediaEntry, on_select: EventHandler<MediaEntry>) -> Element
     };
     let kind_label = if is_movie { "MOVIE" } else { "SERIES" };
     let yr = entry.year_display().to_string();
+    let score = entry.score.clone();
     let name = entry.name.clone();
     let e = entry.clone();
 
@@ -206,6 +207,9 @@ fn PosterCard(entry: MediaEntry, on_select: EventHandler<MediaEntry>) -> Element
             class: "poster-card",
             style: "{style}",
             onclick: move |_| on_select.call(e.clone()),
+            if let Some(ref sc) = score {
+                span { class: "poster-score", "★ {sc}" }
+            }
             div { class: "poster-overlay",
                 div { class: "poster-title", "{name}" }
                 div { class: "poster-meta",
@@ -243,6 +247,7 @@ pub fn DetailsView(
     let yr = entry.year_display().to_string();
     let name = entry.name.clone();
     let description = entry.description.clone();
+    let score = entry.score.clone();
     let image_url = entry.image_url.clone();
     let loading = is_loading();
     let sel = selected_season();
@@ -270,6 +275,9 @@ pub fn DetailsView(
                     }
                     if let Some(ref desc) = description {
                         p { class: "details-desc", "{desc}" }
+                    }
+                    if let Some(ref sc) = score {
+                        div { class: "details-score", "★ {sc}" }
                     }
                 }
                 div { class: "details-poster",

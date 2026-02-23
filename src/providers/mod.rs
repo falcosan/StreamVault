@@ -74,6 +74,7 @@ mod tests {
             image_url: None,
             tmdb_id: None,
             description: None,
+            score: None,
             provider: 0,
             provider_language: String::new(),
         }
@@ -89,6 +90,7 @@ mod tests {
             image_url: None,
             tmdb_id: None,
             description: None,
+            score: None,
             provider: 0,
             provider_language: String::new(),
         }

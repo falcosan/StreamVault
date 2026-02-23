@@ -131,6 +131,7 @@ impl StreamingCommunityProvider {
             image_url: self.extract_image_url(v),
             tmdb_id: v["tmdb_id"].as_u64().map(|n| n.to_string()),
             description: Self::extract_description(v),
+            score: v["score"].as_str().map(String::from),
             provider: 0,
             provider_language: String::new(),
         })

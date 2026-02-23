@@ -74,6 +74,7 @@ impl RaiPlayProvider {
             image_url: image,
             tmdb_id: None,
             description: None,
+            score: None,
             provider: 0,
             provider_language: String::new(),
         })

@@ -16,6 +16,7 @@ pub struct MediaEntry {
     pub image_url: Option<String>,
     pub tmdb_id: Option<String>,
     pub description: Option<String>,
+    pub score: Option<String>,
     #[serde(default)]
     pub provider: usize,
     #[serde(default)]

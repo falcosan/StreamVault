@@ -108,6 +108,12 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .badge-movie { background: var(--accent); color: var(--accent-text); }
 .badge-series { background: #0091d5; color: white; }
 .poster-year { font-size: 10px; color: #b0b0b0; }
+.poster-score {
+    position: absolute; top: 6px; right: 6px;
+    font-size: 10px; font-weight: 700; color: var(--accent-text);
+    background: var(--accent); padding: 2px 6px; border-radius: 3px;
+    z-index: 1;
+}
 
 .empty-msg { font-size: 16px; color: var(--text3); }
 .searching-msg { font-size: 16px; color: var(--text3); }
@@ -141,6 +147,9 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .details-actions { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
 .details-desc {
     font-size: 14px; color: var(--text2); line-height: 1.6; margin-top: 4px; max-width: 600px;
+}
+.details-score {
+    font-size: 13px; font-weight: 700; color: var(--accent); margin-top: 4px;
 }
 .details-poster {
     width: 200px; flex-shrink: 0;
