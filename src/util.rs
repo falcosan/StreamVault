@@ -216,9 +216,7 @@ impl DownloadEngine {
                         .lines()
                         .filter(|l| {
                             let t = l.trim();
-                            !t.is_empty()
-                                && !t.starts_with("at ")
-                                && !t.starts_with("---")
+                            !t.is_empty() && !t.starts_with("at ") && !t.starts_with("---")
                         })
                         .take(5)
                         .collect::<Vec<_>>()
@@ -313,7 +311,14 @@ impl DownloadEngine {
                     !t.is_empty() && !t.starts_with("frame=")
                 })
                 .collect();
-            let tail = lines.iter().rev().take(5).rev().copied().collect::<Vec<_>>().join("\n");
+            let tail = lines
+                .iter()
+                .rev()
+                .take(5)
+                .rev()
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n");
             return Err(format!("ffmpeg exited: {}\n{tail}", mux_result.status));
         }
 
@@ -323,11 +328,21 @@ impl DownloadEngine {
         if self.config.process.merge_subtitle {
             if let Ok(entries) = std::fs::read_dir(output_dir) {
                 for entry in entries.flatten() {
-                    if entry.path().extension().map(|x| x == "vtt").unwrap_or(false) {
+                    if entry
+                        .path()
+                        .extension()
+                        .map(|x| x == "vtt")
+                        .unwrap_or(false)
+                    {
                         let _ = std::fs::remove_file(entry.path());
                     }
                 }
             }
+        }
+
+        let temp_dir = output_dir.join(save_name);
+        if temp_dir.is_dir() {
+            let _ = std::fs::remove_dir_all(&temp_dir);
         }
 
         Ok(())
