@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use regex::Regex;
 use reqwest::Client;
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 const RAIPLAY_BASE: &str = "https://www.raiplay.it";
 
@@ -48,14 +48,14 @@ impl RaiPlayProvider {
         }
     }
 
-    fn parse_search_card(card: &serde_json::Value) -> Option<MediaEntry> {
-        let path_id = card["path_id"].as_str()?.to_string();
-        let name = card["titolo"].as_str().unwrap_or("").to_string();
+    fn parse_result(v: &serde_json::Value) -> Option<MediaEntry> {
+        let slug = v["path_id"].as_str()?.to_string();
+        let name = v["titolo"].as_str().unwrap_or("").to_string();
         if name.is_empty() {
             return None;
         }
-        let image = card["immagine"].as_str().map(raiplay_abs_url);
-        let year = image.as_ref().and_then(|img| {
+        let image_url = v["immagine"].as_str().map(raiplay_abs_url);
+        let year = image_url.as_ref().and_then(|img| {
             let parts: Vec<&str> = img.split('/').collect();
             parts.iter().rev().nth(3).and_then(|y| {
                 if y.len() == 4 && y.chars().all(|c| c.is_ascii_digit()) {
@@ -66,18 +66,84 @@ impl RaiPlayProvider {
             })
         });
         Some(MediaEntry {
-            id: raiplay_hash(&path_id),
+            id: raiplay_hash(&slug),
             name,
-            slug: path_id,
+            slug,
             media_type: MediaType::Series,
             year,
-            image_url: image,
+            image_url,
             tmdb_id: None,
             description: None,
             score: None,
             provider: 0,
             provider_language: String::new(),
         })
+    }
+
+    fn parse_catalog_result(v: &serde_json::Value) -> Option<MediaEntry> {
+        let slug = v["path_id"].as_str()?.to_string();
+        let name = v["name"].as_str().unwrap_or("").to_string();
+        if name.is_empty() {
+            return None;
+        }
+        let description = v["vanity"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_string());
+        let image_url = v["images"]["portrait_logo"]
+            .as_str()
+            .or_else(|| v["images"]["landscape"].as_str())
+            .or_else(|| v["images"]["portrait"].as_str())
+            .or_else(|| v["images"]["square"].as_str())
+            .filter(|s| !s.is_empty())
+            .map(raiplay_abs_url);
+        let media_type = match v["layout"].as_str() {
+            Some("single") => MediaType::Movie,
+            _ => MediaType::Series,
+        };
+        Some(MediaEntry {
+            id: raiplay_hash(&slug),
+            name,
+            slug,
+            media_type,
+            year: None,
+            image_url,
+            tmdb_id: None,
+            description,
+            score: None,
+            provider: 0,
+            provider_language: String::new(),
+        })
+    }
+
+    async fn enrich_entry(&self, entry: &mut MediaEntry) {
+        let path = entry.slug.trim_start_matches('/');
+        let url = format!("{RAIPLAY_BASE}/{path}");
+        let json: serde_json::Value = match self.client.get(&url).send().await {
+            Ok(r) => match r.json().await {
+                Ok(j) => j,
+                Err(_) => return,
+            },
+            Err(_) => return,
+        };
+        let info = &json["program_info"];
+        if entry.description.is_none() {
+            entry.description = info["description"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_string());
+        }
+        if entry.year.is_none() {
+            entry.year = info["year"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+        }
+        match info["layout"].as_str() {
+            Some("single") => entry.media_type = MediaType::Movie,
+            Some("multi") => entry.media_type = MediaType::Series,
+            _ => {}
+        }
     }
 
     async fn resolve_stream(&self, page_url: &str) -> ProviderResult<StreamUrl> {
@@ -156,12 +222,16 @@ impl Provider for RaiPlayProvider {
             .cloned()
             .unwrap_or_default();
         let mut seen = HashSet::new();
-        Ok(cards
+        let mut entries: Vec<MediaEntry> = cards
             .iter()
             .take(15)
-            .filter_map(Self::parse_search_card)
+            .filter_map(Self::parse_result)
             .filter(|e| seen.insert(e.id))
-            .collect())
+            .collect();
+        for e in &mut entries {
+            self.enrich_entry(e).await;
+        }
+        Ok(entries)
     }
 
     async fn get_seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<Season>> {
@@ -296,6 +366,53 @@ impl Provider for RaiPlayProvider {
     }
 
     async fn get_catalog(&self) -> ProviderResult<Vec<MediaEntry>> {
-        Ok(Vec::new())
+        static WASHI_RE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"window\.WashiContext\s*=\s*(\{.*?\});\s*</script>").unwrap()
+        });
+
+        let resp = self.client.get(RAIPLAY_BASE).send().await?;
+        let html = resp.text().await?;
+        let cap = WASHI_RE
+            .captures(&html)
+            .ok_or_else(|| ProviderError::Parse("No WashiContext".into()))?;
+        let washi: serde_json::Value = serde_json::from_str(&cap[1])
+            .map_err(|e| ProviderError::Parse(format!("WashiContext JSON: {e}")))?;
+
+        let fasce = washi["fasce"].as_object().cloned().unwrap_or_default();
+        let block_urls: Vec<String> = fasce
+            .values()
+            .filter_map(|v| {
+                if v["type"].as_str() == Some("RaiPlay Slider Block") {
+                    v["self_url"].as_str().map(|u| format!("{RAIPLAY_BASE}{u}"))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let mut entries = Vec::new();
+        let mut seen = HashSet::new();
+        for url in &block_urls {
+            let json: serde_json::Value = match self.client.get(url).send().await {
+                Ok(r) => match r.json().await {
+                    Ok(j) => j,
+                    Err(_) => continue,
+                },
+                Err(_) => continue,
+            };
+            let contents = json["contents"].as_array().cloned().unwrap_or_default();
+            for item in &contents {
+                if item["type"].as_str() != Some("RaiPlay Programma Item") {
+                    continue;
+                }
+                if let Some(mut e) = Self::parse_catalog_result(item) {
+                    e.provider_language = "it".to_string();
+                    if seen.insert(e.id) {
+                        entries.push(e);
+                    }
+                }
+            }
+        }
+        Ok(entries)
     }
 }
