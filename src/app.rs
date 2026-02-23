@@ -424,6 +424,10 @@ pub fn App() -> Element {
                     Screen::Downloads => rsx! {
                         gui::DownloadsView {
                             downloads: ReadSignal::from(downloads),
+                            on_back: move |_| {
+                                let prev = history.write().pop().unwrap_or(Screen::Home);
+                                screen.set(prev);
+                            },
                         }
                     },
                 }

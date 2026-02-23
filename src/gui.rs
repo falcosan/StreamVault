@@ -386,7 +386,10 @@ pub fn PlayerView(
 }
 
 #[component]
-pub fn DownloadsView(downloads: ReadSignal<Vec<DownloadProgress>>) -> Element {
+pub fn DownloadsView(
+    downloads: ReadSignal<Vec<DownloadProgress>>,
+    on_back: EventHandler<()>,
+) -> Element {
     let dls = downloads();
     let count_str = format!(
         "{} item{}",
@@ -395,6 +398,9 @@ pub fn DownloadsView(downloads: ReadSignal<Vec<DownloadProgress>>) -> Element {
     );
     rsx! {
         div { style: "display: flex; flex-direction: column; height: 100%;",
+            div { class: "details-toolbar",
+                button { class: "btn-ghost", onclick: move |_| on_back.call(()), "← Back" }
+            }
             div { class: "dl-header",
                 span { class: "dl-title", "Downloads" }
                 span { class: "dl-count", "{count_str}" }
