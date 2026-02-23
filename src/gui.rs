@@ -425,7 +425,7 @@ fn DlCard(progress: DownloadProgress) -> Element {
         DownloadStatus::Failed(ref e) => (e.clone(), "var(--danger)"),
     };
     let pct = progress.percent;
-    let pct_str = format!("{pct:.1}%");
+    let pct_str = format!("{pct}%");
     let width_str = format!("{pct}%");
 
     rsx! {
