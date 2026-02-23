@@ -116,7 +116,7 @@ impl DownloadEngine {
             .arg("--save-dir")
             .arg(&req.output_dir)
             .arg("--tmp-dir")
-            .arg(&req.output_dir)
+            .arg(req.output_dir.join("tmp"))
             .arg("--ffmpeg-binary-path")
             .arg(&ffmpeg)
             .arg("--no-log")
@@ -264,6 +264,7 @@ impl DownloadEngine {
         save_name: &str,
     ) -> Result<(), String> {
         let ext = &self.config.process.extension;
+        let out_file = output_dir.join(format!("{save_name}.{ext}"));
 
         let mut ts_files: Vec<PathBuf> = std::fs::read_dir(output_dir)
             .map_err(|e| e.to_string())?
@@ -282,8 +283,6 @@ impl DownloadEngine {
             sb.cmp(&sa)
         });
 
-        let out_file = output_dir.join(format!("{save_name}.{ext}"));
-
         let vtt_files: Vec<PathBuf> = if self.config.process.merge_subtitle {
             std::fs::read_dir(output_dir)
                 .map_err(|e| e.to_string())?
@@ -297,8 +296,8 @@ impl DownloadEngine {
 
         let mut mux_cmd = Command::new(ffmpeg);
         mux_cmd.arg("-y");
-        for ts in &ts_files {
-            mux_cmd.arg("-i").arg(ts);
+        for f in &ts_files {
+            mux_cmd.arg("-i").arg(f);
         }
         for vtt in &vtt_files {
             mux_cmd.arg("-i").arg(vtt);
@@ -343,8 +342,8 @@ impl DownloadEngine {
             return Err(format!("ffmpeg exited: {}\n{tail}", mux_result.status));
         }
 
-        for ts in &ts_files {
-            let _ = std::fs::remove_file(ts);
+        for f in &ts_files {
+            let _ = std::fs::remove_file(f);
         }
         if self.config.process.merge_subtitle {
             if let Ok(entries) = std::fs::read_dir(output_dir) {
@@ -361,9 +360,11 @@ impl DownloadEngine {
             }
         }
 
-        let temp_dir = output_dir.join(save_name);
-        if temp_dir.is_dir() {
-            let _ = std::fs::remove_dir_all(&temp_dir);
+        for dir_name in &["tmp", save_name] {
+            let dir = output_dir.join(dir_name);
+            if dir.is_dir() {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
         }
 
         Ok(())
