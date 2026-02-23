@@ -209,25 +209,46 @@ impl DownloadEngine {
                 }
             }
             Ok(exit) => {
-                let msg = if stderr_output.is_empty() {
-                    format!("N_m3u8DL-RE exited: {exit}")
+                let has_ts = std::fs::read_dir(&req.output_dir)
+                    .map(|rd| {
+                        rd.filter_map(|e| e.ok())
+                            .any(|e| e.path().extension().map(|x| x == "ts").unwrap_or(false))
+                    })
+                    .unwrap_or(false);
+
+                if has_ts {
+                    progress.status = DownloadStatus::Muxing;
+                    let _ = tx.send(progress.clone());
+
+                    match self.mux_output(&ffmpeg, &req.output_dir, &save_name).await {
+                        Ok(_) => {
+                            progress.status = DownloadStatus::Completed;
+                        }
+                        Err(e) => {
+                            progress.status = DownloadStatus::Failed(format!("Mux failed: {e}"));
+                        }
+                    }
                 } else {
-                    let error_lines: String = stderr_output
-                        .lines()
-                        .filter(|l| {
-                            let t = l.trim();
-                            !t.is_empty() && !t.starts_with("at ") && !t.starts_with("---")
-                        })
-                        .take(5)
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    if error_lines.is_empty() {
+                    let msg = if stderr_output.is_empty() {
                         format!("N_m3u8DL-RE exited: {exit}")
                     } else {
-                        format!("N_m3u8DL-RE exited: {exit}\n{error_lines}")
-                    }
-                };
-                progress.status = DownloadStatus::Failed(msg);
+                        let error_lines: String = stderr_output
+                            .lines()
+                            .filter(|l| {
+                                let t = l.trim();
+                                !t.is_empty() && !t.starts_with("at ") && !t.starts_with("---")
+                            })
+                            .take(5)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if error_lines.is_empty() {
+                            format!("N_m3u8DL-RE exited: {exit}")
+                        } else {
+                            format!("N_m3u8DL-RE exited: {exit}\n{error_lines}")
+                        }
+                    };
+                    progress.status = DownloadStatus::Failed(msg);
+                }
             }
             Err(e) => {
                 progress.status = DownloadStatus::Failed(format!("Process error: {e}"));
