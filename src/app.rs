@@ -88,7 +88,7 @@ pub fn App() -> Element {
     let on_search_submit = {
         let providers = providers.clone();
         move |q: String| {
-            if q.trim().is_empty() || is_searching() {
+            if q.trim().is_empty() {
                 return;
             }
             is_searching.set(true);
@@ -102,10 +102,29 @@ pub fn App() -> Element {
                 spawn(async move {
                     if let Ok(entries) = p.search(&q).await {
                         let mut results = search_results.write();
-                        for mut e in entries {
+                        results.extend(entries.into_iter().map(|mut e| {
                             e.provider = idx;
-                            results.push(e);
-                        }
+                            e
+                        }));
+
+                        let q_lower = q.to_lowercase();
+                        let q_words: Vec<&str> = q_lower.split_whitespace().collect();
+                        results.sort_by_cached_key(|e| {
+                            let t = e.name.to_lowercase();
+
+                            let score = if t == q_lower {
+                                1000_u16
+                            } else if t.starts_with(&q_lower) {
+                                800
+                            } else if let Some(pos) = t.find(&q_lower) {
+                                600 - (pos.min(100) as u16)
+                            } else {
+                                let words_match =
+                                    q_words.iter().filter(|&&w| t.contains(w)).count();
+                                (words_match * 200).min(400) as u16
+                            };
+                            (std::cmp::Reverse(score), e.name.len(), e.name.clone())
+                        });
                     }
                     let prev = search_pending();
                     search_pending.set(prev.saturating_sub(1));
