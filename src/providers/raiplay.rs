@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use regex::Regex;
 use reqwest::Client;
 use std::collections::{HashMap, HashSet};
-use std::sync::{LazyLock, OnceLock};
+use std::sync::LazyLock;
 
 const RAIPLAY_BASE: &str = "https://www.raiplay.it";
 
@@ -191,18 +191,9 @@ impl RaiPlayProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::StreamExtraction("No video in relinker".into()))?;
 
-        static QUALITY_RE: OnceLock<Regex> = OnceLock::new();
-        let final_url = if !stream.contains(".mpd") {
-            let re = QUALITY_RE.get_or_init(|| Regex::new(r"(_,[\d,]+)(/playlist\.m3u8)").unwrap());
-            re.replace(stream, "_1200,1800,2400,3600,5000$2")
-                .to_string()
-        } else {
-            stream.to_string()
-        };
-
         Ok(StreamUrl {
-            url: final_url,
             headers: Vec::new(),
+            url: stream.to_string(),
         })
     }
 }
