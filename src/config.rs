@@ -194,16 +194,12 @@ mod tests {
 
     #[test]
     fn movie_dir_appends_movie_folder() {
-        assert!(AppConfig::default()
-            .movie_dir()
-            .ends_with("Movies/Movie"));
+        assert!(AppConfig::default().movie_dir().ends_with("Movies/Movie"));
     }
 
     #[test]
     fn serie_dir_appends_serie_folder() {
-        assert!(AppConfig::default()
-            .serie_dir()
-            .ends_with("Movies/Serie"));
+        assert!(AppConfig::default().serie_dir().ends_with("Movies/Serie"));
     }
 
     #[test]
