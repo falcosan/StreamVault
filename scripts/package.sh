@@ -10,7 +10,7 @@ if [[ "${BASH_SOURCE[0]:-}" == "" || "$(basename "${BASH_SOURCE[0]:-bash}")" == 
   REMOTE_INSTALL=true
   TMPDIR_SV="$(mktemp -d)"
   trap 'rm -rf "$TMPDIR_SV"' EXIT
-  git clone --depth 1 --quiet "$REPO" "$TMPDIR_SV/StreamVault"
+  git clone --depth 1 --quiet "$REPO" "$TMPDIR_SV/StreamVault" 2>/dev/null
   P="$TMPDIR_SV/StreamVault"
 else
   P="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,7 +29,7 @@ if ! command -v cargo >/dev/null 2>&1; then
   RUST_INSTALLED_BY_SCRIPT=true
 fi
 
-cargo build --release --quiet
+cargo build --release --quiet 2>/dev/null
 
 rm -rf "$APP" "$D/f" "$D/n"
 mkdir -p "$C/MacOS" "$B" "$D/f" "$D/n" "$C/Resources"
