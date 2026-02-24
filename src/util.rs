@@ -9,9 +9,9 @@ fn bundled_bin_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
     let resources_bin = exe_dir.parent().map(|c| c.join("Resources").join("bin"));
-    if let Some(ref p) = resources_bin {
+    if let Some(p) = resources_bin {
         if p.is_dir() {
-            return Some(p.clone());
+            return Some(p);
         }
     }
     let dev_bin = exe_dir.join("bin");
@@ -95,11 +95,14 @@ impl DownloadEngine {
         req: DownloadRequest,
         tx: mpsc::UnboundedSender<DownloadProgress>,
     ) {
-        let mut progress = DownloadProgress::new(req.id, req.title.clone());
-        progress.status = DownloadStatus::Downloading;
+        let mut progress = DownloadProgress {
+            id: req.id,
+            title: req.title.clone(),
+            status: DownloadStatus::Downloading,
+        };
         let _ = tx.send(progress.clone());
 
-        if let Err(e) = std::fs::create_dir_all(&req.output_dir) {
+        if let Err(e) = tokio::fs::create_dir_all(&req.output_dir).await {
             progress.status = DownloadStatus::Failed(format!("Cannot create output dir: {e}"));
             let _ = tx.send(progress);
             return;
@@ -196,9 +199,10 @@ impl DownloadEngine {
 
         match child.wait().await {
             Ok(exit) if exit.success() => {
-                progress.status = DownloadStatus::Muxing;
-                let _ = tx.send(progress.clone());
-
+                if progress.status != DownloadStatus::Muxing {
+                    progress.status = DownloadStatus::Muxing;
+                    let _ = tx.send(progress.clone());
+                }
                 match self.mux_output(&ffmpeg, &req.output_dir, &save_name).await {
                     Ok(_) => {
                         progress.status = DownloadStatus::Completed;
@@ -209,17 +213,19 @@ impl DownloadEngine {
                 }
             }
             Ok(exit) => {
-                let has_ts = std::fs::read_dir(&req.output_dir)
-                    .map(|rd| {
-                        rd.filter_map(|e| e.ok())
-                            .any(|e| e.path().extension().map(|x| x == "ts").unwrap_or(false))
-                    })
-                    .unwrap_or(false);
+                let mut has_ts = false;
+                if let Ok(mut rd) = tokio::fs::read_dir(&req.output_dir).await {
+                    while let Ok(Some(entry)) = rd.next_entry().await {
+                        if entry.path().extension().map(|x| x == "ts").unwrap_or(false) {
+                            has_ts = true;
+                            break;
+                        }
+                    }
+                }
 
                 if has_ts {
                     progress.status = DownloadStatus::Muxing;
                     let _ = tx.send(progress.clone());
-
                     match self.mux_output(&ffmpeg, &req.output_dir, &save_name).await {
                         Ok(_) => {
                             progress.status = DownloadStatus::Completed;
@@ -266,30 +272,44 @@ impl DownloadEngine {
         let ext = &self.config.process.extension;
         let out_file = output_dir.join(format!("{save_name}.{ext}"));
 
-        let mut ts_files: Vec<PathBuf> = std::fs::read_dir(output_dir)
-            .map_err(|e| e.to_string())?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().map(|x| x == "ts").unwrap_or(false))
-            .collect();
+        let ts_files: Vec<PathBuf> = {
+            let mut files = Vec::new();
+            let mut rd = tokio::fs::read_dir(output_dir)
+                .await
+                .map_err(|e| e.to_string())?;
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                let path = entry.path();
+                if path.extension().map(|x| x == "ts").unwrap_or(false) {
+                    files.push(path);
+                }
+            }
+            files
+        };
 
         if ts_files.is_empty() {
             return Err("No .ts files found after download".into());
         }
 
-        ts_files.sort_by(|a, b| {
-            let sa = std::fs::metadata(a).map(|m| m.len()).unwrap_or(0);
-            let sb = std::fs::metadata(b).map(|m| m.len()).unwrap_or(0);
-            sb.cmp(&sa)
-        });
+        let mut ts_with_sizes: Vec<(PathBuf, u64)> = Vec::with_capacity(ts_files.len());
+        for f in ts_files {
+            let size = tokio::fs::metadata(&f).await.map(|m| m.len()).unwrap_or(0);
+            ts_with_sizes.push((f, size));
+        }
+        ts_with_sizes.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        let ts_files: Vec<PathBuf> = ts_with_sizes.into_iter().map(|(p, _)| p).collect();
 
         let vtt_files: Vec<PathBuf> = if self.config.process.merge_subtitle {
-            std::fs::read_dir(output_dir)
-                .map_err(|e| e.to_string())?
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.extension().map(|x| x == "vtt").unwrap_or(false))
-                .collect()
+            let mut files = Vec::new();
+            let mut rd = tokio::fs::read_dir(output_dir)
+                .await
+                .map_err(|e| e.to_string())?;
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                let path = entry.path();
+                if path.extension().map(|x| x == "vtt").unwrap_or(false) {
+                    files.push(path);
+                }
+            }
+            files
         } else {
             Vec::new()
         };
@@ -343,28 +363,25 @@ impl DownloadEngine {
         }
 
         for f in &ts_files {
-            let _ = std::fs::remove_file(f);
+            let _ = tokio::fs::remove_file(f).await;
         }
         if self.config.process.merge_subtitle {
-            if let Ok(entries) = std::fs::read_dir(output_dir) {
-                for entry in entries.flatten() {
+            if let Ok(mut rd) = tokio::fs::read_dir(output_dir).await {
+                while let Ok(Some(entry)) = rd.next_entry().await {
                     if entry
                         .path()
                         .extension()
                         .map(|x| x == "vtt")
                         .unwrap_or(false)
                     {
-                        let _ = std::fs::remove_file(entry.path());
+                        let _ = tokio::fs::remove_file(entry.path()).await;
                     }
                 }
             }
         }
 
         for dir_name in &["tmp", save_name] {
-            let dir = output_dir.join(dir_name);
-            if dir.is_dir() {
-                let _ = std::fs::remove_dir_all(&dir);
-            }
+            let _ = tokio::fs::remove_dir_all(output_dir.join(dir_name)).await;
         }
 
         Ok(())
