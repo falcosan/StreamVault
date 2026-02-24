@@ -44,17 +44,22 @@ main() {
     tmpdir_sv="$(mktemp -d)" || { printf '\n  Failed to create temp directory\n' >&2; exit 1; }
     progress
     curl -fsSL "https://github.com/falcosan/StreamVault/archive/refs/heads/main.tar.gz" \
-      | tar xz -C "$tmpdir_sv" 2>/dev/null \
+      -o "$tmpdir_sv/repo.tar.gz" \
       || { printf '\n  Failed to download repository\n' >&2; exit 1; }
+    tar xzf "$tmpdir_sv/repo.tar.gz" -C "$tmpdir_sv" 2>/dev/null \
+      || { printf '\n  Failed to extract repository\n' >&2; exit 1; }
+    rm -f "$tmpdir_sv/repo.tar.gz"
     p="$tmpdir_sv/StreamVault-main"
   else
     p="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     progress
   fi
 
+  [[ -d "$p" ]] || { printf '\n  Project directory not found\n' >&2; exit 1; }
+
   app="$p/dist/StreamVault.app"
   dep_cache="$p/.dep-cache"
-  
+
   local -r contents="$app/Contents"
   local -r bin_dir="$contents/Resources/bin"
 
@@ -64,7 +69,7 @@ main() {
     progress
   elif command -v rustup &>/dev/null; then
     progress
-    rustup default stable &>/dev/null \
+    rustup default stable </dev/null &>/dev/null \
       || { printf '\n  Failed to set Rust default toolchain\n' >&2; exit 1; }
     [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
   else
@@ -83,7 +88,8 @@ main() {
   cargo --version &>/dev/null || { printf '\n  cargo not found after setup\n' >&2; exit 1; }
 
   progress
-  cargo build --release --quiet || { printf '\n  cargo build failed\n' >&2; exit 1; }
+  cargo build --release --quiet </dev/null \
+    || { printf '\n  cargo build failed\n' >&2; exit 1; }
 
   rm -rf "$app" "$dep_cache/f" "$dep_cache/n"
   install -d "$contents/MacOS" "$bin_dir" "$dep_cache/f" "$dep_cache/n" "$contents/Resources"
@@ -106,8 +112,8 @@ main() {
   dl() { [[ -f "$2" ]] && return 0; curl -fsSL --retry 3 --retry-delay 2 "$1" -o "$2.tmp" && mv "$2.tmp" "$2"; }
 
   local dl_pids=()
-  dl "$ffmpeg_url" "$ffmpeg_zip" & dl_pids+=($!)
-  dl "$nurl" "$ntar" & dl_pids+=($!)
+  dl "$ffmpeg_url" "$ffmpeg_zip" </dev/null & dl_pids+=($!)
+  dl "$nurl" "$ntar" </dev/null & dl_pids+=($!)
 
   local pid fail=false
   for pid in "${dl_pids[@]}"; do
