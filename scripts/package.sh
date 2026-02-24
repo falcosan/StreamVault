@@ -3,6 +3,7 @@
 main() {
   set -euo pipefail
 
+  COMPLETED=false
   CALLER_DIR="$(pwd)"
   REMOTE_INSTALL=false
   RUST_INSTALLED_BY_SCRIPT=false
@@ -16,10 +17,23 @@ main() {
     ((CURRENT == STEPS)) && printf "\n" || true
   }
 
+
+  cleanup() {
+    if [[ "$COMPLETED" == true ]]; then return; fi
+    printf "\n  Interrupted, cleaning up…\n" >&2
+    [[ -n "${APP:-}" ]] && rm -rf "$APP" 2>/dev/null || true
+    [[ -n "${D:-}" ]] && rm -rf "$D" 2>/dev/null || true
+    [[ -n "${TMPDIR_SV:-}" ]] && rm -rf "$TMPDIR_SV" 2>/dev/null || true
+    if [[ "$RUST_INSTALLED_BY_SCRIPT" == true ]]; then
+      rustup self uninstall -y 2>/dev/null || true
+    fi
+  }
+
+  trap cleanup EXIT INT TERM HUP
+
   if [[ -z "${BASH_SOURCE[0]:-}" || "$(basename "${BASH_SOURCE[0]:-bash}")" == "bash" ]]; then
     REMOTE_INSTALL=true
     TMPDIR_SV="$(mktemp -d)"
-    trap 'rm -rf "$TMPDIR_SV"' EXIT
     progress
     git clone --depth 1 --quiet "$REPO" "$TMPDIR_SV/StreamVault" 2>/dev/null
     P="$TMPDIR_SV/StreamVault"
@@ -92,6 +106,10 @@ main() {
   if [[ "$REMOTE_INSTALL" == true ]]; then
     cp -R "$APP" "$CALLER_DIR/"
   fi
+
+  COMPLETED=true
+
+  [[ -n "${TMPDIR_SV:-}" ]] && rm -rf "$TMPDIR_SV" 2>/dev/null || true
 
   progress
 
