@@ -36,7 +36,7 @@ StreamVault is a lightweight, native desktop app that aggregates content from mu
 
 ### Quick Install (macOS)
 
-Run a single command to install `StreamVault.app` into `~/Applications`:
+Run a single command to install `StreamVault.app`:
 
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/package.sh" | bash
