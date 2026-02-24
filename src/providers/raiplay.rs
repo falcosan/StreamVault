@@ -158,7 +158,12 @@ impl RaiPlayProvider {
         let json: serde_json::Value = resp.json().await?;
 
         let video_json = if let Some(first_item) = json["first_item_path"].as_str() {
-            let item_url = format!("{}.json", raiplay_abs_url(first_item));
+            let abs = raiplay_abs_url(first_item);
+            let item_url = if abs.ends_with(".json") {
+                abs
+            } else {
+                format!("{abs}.json")
+            };
             let resp = self.client.get(&item_url).send().await?;
             resp.json().await?
         } else {
