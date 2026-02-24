@@ -1,5 +1,5 @@
 use crate::providers::MediaEntry;
-use crate::style::LOGO_SVG;
+use crate::style::{LOGO_SVG, UPDATE_SVG};
 use crate::util::{DownloadProgress, DownloadStatus};
 use dioxus::prelude::*;
 
@@ -46,10 +46,15 @@ pub fn Navbar(
     screen: Signal<Screen>,
     history: Signal<Vec<Screen>>,
     search_query: Signal<String>,
+    has_update: ReadSignal<bool>,
+    is_updating: ReadSignal<bool>,
     is_searching: ReadSignal<bool>,
+    on_update: EventHandler<()>,
     on_search_submit: EventHandler<String>,
 ) -> Element {
     let current = screen();
+    let update = has_update();
+    let updating = is_updating();
     let searching = is_searching();
     rsx! {
         nav { class: "navbar",
@@ -97,6 +102,14 @@ pub fn Navbar(
                         move |_| on_search_submit.call(q())
                     },
                     div { class: "search-icon", dangerous_inner_html: r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>"# }
+                }
+            }
+            if update || updating {
+                button {
+                    class: if updating { "update-btn updating" } else { "update-btn" },
+                    onclick: move |_| { if !updating { on_update.call(()); } },
+                    div { class: "update-icon", dangerous_inner_html: UPDATE_SVG }
+                    if !updating { span { class: "update-dot" } }
                 }
             }
         }

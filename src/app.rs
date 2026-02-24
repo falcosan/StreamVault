@@ -38,6 +38,30 @@ pub fn App() -> Element {
     let mut catalog: Signal<Vec<MediaEntry>> = use_signal(Vec::new);
     let mut catalog_loading = use_signal(|| true);
     let mut history: Signal<Vec<Screen>> = use_signal(Vec::new);
+    let mut has_update = use_signal(|| false);
+    let mut is_updating = use_signal(|| false);
+
+    use_future(move || async move {
+        let Ok(resp) = reqwest::get(
+            "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/Cargo.toml",
+        )
+        .await
+        else {
+            return;
+        };
+        let text = resp.text().await.unwrap_or_default();
+        let remote = text
+            .lines()
+            .find_map(|l| {
+                l.trim()
+                    .strip_prefix("version")
+                    .filter(|r| r.starts_with(|c: char| c == ' ' || c == '='))
+            })
+            .map(|v| v.trim_start_matches([' ', '=']).trim().trim_matches('"'));
+        if remote.is_some_and(|v| v != env!("CARGO_PKG_VERSION")) {
+            has_update.set(true);
+        }
+    });
 
     let dl_tx: mpsc::UnboundedSender<DownloadProgress> = use_hook(|| {
         let (tx, mut rx) = mpsc::unbounded_channel::<DownloadProgress>();
@@ -84,6 +108,37 @@ pub fn App() -> Element {
             }
         });
     }
+
+    let on_update = move |_: ()| {
+        is_updating.set(true);
+        spawn(async move {
+            let dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| {
+                    p.ancestors()
+                        .find(|a| a.extension().is_some_and(|e| e == "app"))
+                        .map(|a| a.parent().unwrap_or(a).to_path_buf())
+                })
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let script = format!(
+                "cd '{}' && curl -fsSL 'https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/package.sh' | bash",
+                dir.display()
+            );
+            let ok = tokio::process::Command::new("bash")
+                .arg("-c")
+                .arg(&script)
+                .status()
+                .await
+                .is_ok_and(|s| s.success());
+            if ok {
+                if let Ok(exe) = std::env::current_exe() {
+                    std::process::Command::new(exe).spawn().ok();
+                }
+                std::process::exit(0);
+            }
+            is_updating.set(false);
+        });
+    };
 
     let on_search_submit = {
         let providers = providers.clone();
@@ -413,7 +468,16 @@ pub fn App() -> Element {
     rsx! {
         style { dangerous_inner_html: crate::style::GLOBAL_CSS }
         div { class: "app",
-            gui::Navbar { screen, history, search_query, is_searching: ReadSignal::from(is_searching), on_search_submit }
+            gui::Navbar {
+                screen,
+                history,
+                search_query,
+                has_update: ReadSignal::from(has_update),
+                is_updating: ReadSignal::from(is_updating),
+                is_searching: ReadSignal::from(is_searching),
+                on_update,
+                on_search_submit,
+            }
             if let Some(ref err) = error_msg() {
                 div { class: "error-bar",
                     span { "{err}" }

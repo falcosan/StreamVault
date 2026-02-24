@@ -1,5 +1,7 @@
 pub const LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200"><path fill="#f4fd37" d="M458.8 436.7C386 512 320.6 579.5 313.6 586.7L300.8 600l144.8-.1h144.9l137.2-134.2c75.4-73.8 144.4-141.3 153.2-150L897 300H591.4zm0 300C386 812 320.6 879.5 313.6 886.7L300.8 900l144.8-.1h144.9l137.2-134.2c75.4-73.8 144.4-141.3 153.2-150L897 600H591.4z"/></svg>"##;
 
+pub const UPDATE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6"/><path d="M2.5 22v-6h6"/><path d="M2.5 11.5a10 10 0 0 1 18.4-4.5"/><path d="M21.5 12.5a10 10 0 0 1-18.4 4.5"/></svg>"##;
+
 pub const GLOBAL_CSS: &str = r#"
 :root {
     --bg: #151515; --surface: #1c1c1c; --surface2: #272727;
@@ -53,6 +55,19 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .search-go:disabled { opacity: 0.5; cursor: default; }
 .search-icon { width: 15px; height: 15px; display: flex; }
 .search-icon svg { width: 100%; height: 100%; display: block; }
+
+.update-btn {
+    background: none; border: none; cursor: pointer; padding: 0; position: relative;
+    width: 32px; height: 32px; border-radius: 50%; margin-left: 8px;
+    display: flex; align-items: center; justify-content: center; color: var(--text2);
+}
+.update-btn:hover { background: var(--surface2); color: var(--accent); }
+.update-btn.updating { color: var(--accent); pointer-events: none; }
+.update-btn.updating .update-icon { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.update-icon { width: 16px; height: 16px; }
+.update-icon svg { width: 100%; height: 100%; display: block; }
+.update-dot { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 
 .content { flex: 1; overflow-y: auto; }
 
