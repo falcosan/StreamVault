@@ -59,7 +59,10 @@ main() {
   fi
 
   progress
-  cargo build --release --quiet 2>/dev/null
+  if ! cargo build --release --quiet 2>&1; then
+    printf '\n  cargo build failed\n' >&2
+    exit 1
+  fi
 
   rm -rf "$APP" "$D/f" "$D/n"
   mkdir -p "$C/MacOS" "$B" "$D/f" "$D/n" "$C/Resources"
