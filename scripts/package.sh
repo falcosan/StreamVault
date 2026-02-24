@@ -57,7 +57,7 @@ main() {
     progress
   elif command -v rustup &>/dev/null; then
     progress
-    rustup default stable --quiet 2>/dev/null \
+    rustup default stable 2>/dev/null \
       || { printf '\n  Failed to set Rust default toolchain\n' >&2; exit 1; }
     . "$HOME/.cargo/env" 2>/dev/null || true
   else
