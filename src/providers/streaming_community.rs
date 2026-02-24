@@ -108,7 +108,7 @@ impl StreamingCommunityProvider {
             .iter()
             .filter_map(|t| {
                 let mut entry = self.parse_result(t)?;
-                entry.provider_language = lang.to_string();
+                entry.language = lang.to_string();
                 Some(entry)
             })
             .collect())
@@ -133,7 +133,7 @@ impl StreamingCommunityProvider {
             description: Self::extract_description(v),
             score: v["score"].as_str().map(String::from),
             provider: 0,
-            provider_language: String::new(),
+            language: String::new(),
         })
     }
 
@@ -202,10 +202,10 @@ impl StreamingCommunityProvider {
     }
 
     fn entry_lang(entry: &MediaEntry) -> &str {
-        if entry.provider_language.is_empty() {
+        if entry.language.is_empty() {
             Self::LANG
         } else {
-            &entry.provider_language
+            &entry.language
         }
     }
 
@@ -412,7 +412,7 @@ impl Provider for StreamingCommunityProvider {
         self.extract_stream_url(&iframe).await
     }
 
-    async fn get_catalog(&self) -> ProviderResult<Vec<MediaEntry>> {
+    async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>> {
         let resp = self.client.get(self.base_url()).send().await?;
         let html = resp.text().await?;
         let page = Self::parse_data_page(&html)?;
@@ -423,7 +423,7 @@ impl Provider for StreamingCommunityProvider {
                 if let Some(titles) = slider["titles"].as_array() {
                     for t in titles {
                         if let Some(mut e) = self.parse_result(t) {
-                            e.provider_language = Self::LANG.to_string();
+                            e.language = Self::LANG.to_string();
                             if seen.insert(e.id) {
                                 entries.push(e);
                             }
@@ -432,11 +432,11 @@ impl Provider for StreamingCommunityProvider {
                 }
             }
         }
-        if entries.is_empty() {
+        if entries.len() < limit && entries.is_empty() {
             if let Some(titles) = page["props"]["titles"].as_array() {
                 for t in titles {
                     if let Some(mut e) = self.parse_result(t) {
-                        e.provider_language = Self::LANG.to_string();
+                        e.language = Self::LANG.to_string();
                         if seen.insert(e.id) {
                             entries.push(e);
                         }
@@ -456,9 +456,9 @@ impl Provider for StreamingCommunityProvider {
                     .collect()
             })
             .unwrap_or_default();
-        if !genre_configs.is_empty() {
+        if entries.len() < limit && !genre_configs.is_empty() {
             let payload = serde_json::json!({ "sliders": genre_configs });
-            for lang in Self::LANGS {
+            'outer: for lang in Self::LANGS {
                 let url = format!("{}/api/sliders/fetch?lang={}", self.base_url(), lang);
                 if let Ok(resp) = self.client.post(&url).json(&payload).send().await {
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
@@ -467,18 +467,22 @@ impl Provider for StreamingCommunityProvider {
                             if let Some(titles) = slider["titles"].as_array() {
                                 for t in titles {
                                     if let Some(mut e) = self.parse_result(t) {
-                                        e.provider_language = lang.to_string();
+                                        e.language = lang.to_string();
                                         if seen.insert(e.id) {
                                             entries.push(e);
                                         }
                                     }
                                 }
                             }
+                            if entries.len() >= limit {
+                                break 'outer;
+                            }
                         }
                     }
                 }
             }
         }
+        entries.truncate(limit);
         Ok(entries)
     }
 }

@@ -57,7 +57,7 @@ pub trait Provider: Send + Sync {
         episode: Option<&Episode>,
         season: Option<u32>,
     ) -> ProviderResult<StreamUrl>;
-    async fn get_catalog(&self) -> ProviderResult<Vec<MediaEntry>>;
+    async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>>;
 }
 
 #[cfg(test)]
@@ -76,7 +76,7 @@ mod tests {
             description: None,
             score: None,
             provider: 0,
-            provider_language: String::new(),
+            language: String::new(),
         }
     }
 
@@ -92,7 +92,7 @@ mod tests {
             description: None,
             score: None,
             provider: 0,
-            provider_language: String::new(),
+            language: String::new(),
         }
     }
 

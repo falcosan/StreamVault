@@ -62,10 +62,11 @@ pub fn App() -> Element {
                 for p in &providers {
                     p.init().await;
                 }
+                let per_provider = 100 / providers.len();
                 for (idx, p) in providers.iter().enumerate() {
                     let p = p.clone();
                     spawn(async move {
-                        if let Ok(entries) = p.get_catalog().await {
+                        if let Ok(entries) = p.get_catalog(per_provider).await {
                             provider_online.set(true);
                             let mut cat = catalog.write();
                             for mut e in entries {

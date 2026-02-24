@@ -76,7 +76,7 @@ impl RaiPlayProvider {
             description: None,
             score: None,
             provider: 0,
-            provider_language: String::new(),
+            language: String::new(),
         })
     }
 
@@ -112,7 +112,7 @@ impl RaiPlayProvider {
             description,
             score: None,
             provider: 0,
-            provider_language: String::new(),
+            language: String::new(),
         })
     }
 
@@ -365,7 +365,7 @@ impl Provider for RaiPlayProvider {
         self.resolve_stream(&page_url).await
     }
 
-    async fn get_catalog(&self) -> ProviderResult<Vec<MediaEntry>> {
+    async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>> {
         static WASHI_RE: LazyLock<Regex> = LazyLock::new(|| {
             Regex::new(r"window\.WashiContext\s*=\s*(\{.*?\});\s*</script>").unwrap()
         });
@@ -406,13 +406,17 @@ impl Provider for RaiPlayProvider {
                     continue;
                 }
                 if let Some(mut e) = Self::parse_catalog_result(item) {
-                    e.provider_language = "it".to_string();
+                    e.language = "it".to_string();
                     if seen.insert(e.id) {
                         entries.push(e);
                     }
                 }
             }
+            if entries.len() >= limit {
+                break;
+            }
         }
+        entries.truncate(limit);
         Ok(entries)
     }
 }

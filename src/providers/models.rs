@@ -11,16 +11,14 @@ pub struct MediaEntry {
     pub id: u64,
     pub name: String,
     pub slug: String,
+    pub provider: usize,
+    pub language: String,
     pub media_type: MediaType,
     pub year: Option<String>,
-    pub image_url: Option<String>,
-    pub tmdb_id: Option<String>,
-    pub description: Option<String>,
     pub score: Option<String>,
-    #[serde(default)]
-    pub provider: usize,
-    #[serde(default)]
-    pub provider_language: String,
+    pub tmdb_id: Option<String>,
+    pub image_url: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
