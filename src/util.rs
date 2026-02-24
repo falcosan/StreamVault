@@ -95,14 +95,22 @@ impl DownloadEngine {
         req: DownloadRequest,
         tx: mpsc::UnboundedSender<DownloadProgress>,
     ) {
+        let DownloadRequest {
+            id,
+            title,
+            stream_url,
+            output_dir,
+            filename,
+            headers,
+        } = req;
         let mut progress = DownloadProgress {
-            id: req.id,
-            title: req.title.clone(),
+            id,
+            title,
             status: DownloadStatus::Downloading,
         };
         let _ = tx.send(progress.clone());
 
-        if let Err(e) = tokio::fs::create_dir_all(&req.output_dir).await {
+        if let Err(e) = tokio::fs::create_dir_all(&output_dir).await {
             progress.status = DownloadStatus::Failed(format!("Cannot create output dir: {e}"));
             let _ = tx.send(progress);
             return;
@@ -110,16 +118,16 @@ impl DownloadEngine {
 
         let n_m3u8dl = find_binary("N_m3u8DL-RE");
         let ffmpeg = find_binary("ffmpeg");
-        let save_name = sanitize_filename(&req.filename);
+        let save_name = sanitize_filename(&filename);
 
         let mut cmd = Command::new(&n_m3u8dl);
-        cmd.arg(&req.stream_url)
+        cmd.arg(&stream_url)
             .arg("--save-name")
             .arg(&save_name)
             .arg("--save-dir")
-            .arg(&req.output_dir)
+            .arg(&output_dir)
             .arg("--tmp-dir")
-            .arg(req.output_dir.join("tmp"))
+            .arg(output_dir.join("tmp"))
             .arg("--ffmpeg-binary-path")
             .arg(&ffmpeg)
             .arg("--no-log")
@@ -153,7 +161,7 @@ impl DownloadEngine {
         if !self.config.process.merge_audio {
             cmd.arg("--drop-audio").arg("all");
         }
-        for (k, v) in &req.headers {
+        for (k, v) in &headers {
             cmd.arg("--header").arg(format!("{k}: {v}"));
         }
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -203,7 +211,7 @@ impl DownloadEngine {
                     progress.status = DownloadStatus::Muxing;
                     let _ = tx.send(progress.clone());
                 }
-                match self.mux_output(&ffmpeg, &req.output_dir, &save_name).await {
+                match self.mux_output(&ffmpeg, &output_dir, &save_name).await {
                     Ok(_) => {
                         progress.status = DownloadStatus::Completed;
                     }
@@ -214,7 +222,7 @@ impl DownloadEngine {
             }
             Ok(exit) => {
                 let mut has_ts = false;
-                if let Ok(mut rd) = tokio::fs::read_dir(&req.output_dir).await {
+                if let Ok(mut rd) = tokio::fs::read_dir(&output_dir).await {
                     while let Ok(Some(entry)) = rd.next_entry().await {
                         if entry.path().extension().map(|x| x == "ts").unwrap_or(false) {
                             has_ts = true;
@@ -226,7 +234,7 @@ impl DownloadEngine {
                 if has_ts {
                     progress.status = DownloadStatus::Muxing;
                     let _ = tx.send(progress.clone());
-                    match self.mux_output(&ffmpeg, &req.output_dir, &save_name).await {
+                    match self.mux_output(&ffmpeg, &output_dir, &save_name).await {
                         Ok(_) => {
                             progress.status = DownloadStatus::Completed;
                         }
@@ -271,48 +279,34 @@ impl DownloadEngine {
     ) -> Result<(), String> {
         let ext = &self.config.process.extension;
         let out_file = output_dir.join(format!("{save_name}.{ext}"));
+        let merge_subtitle = self.config.process.merge_subtitle;
 
-        let ts_files: Vec<PathBuf> = {
-            let mut files = Vec::new();
-            let mut rd = tokio::fs::read_dir(output_dir)
-                .await
-                .map_err(|e| e.to_string())?;
-            while let Ok(Some(entry)) = rd.next_entry().await {
-                let path = entry.path();
-                if path.extension().map(|x| x == "ts").unwrap_or(false) {
-                    files.push(path);
+        let mut ts_with_sizes: Vec<(PathBuf, u64)> = Vec::new();
+        let mut vtt_files: Vec<PathBuf> = Vec::new();
+
+        let mut rd = tokio::fs::read_dir(output_dir)
+            .await
+            .map_err(|e| e.to_string())?;
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let path = entry.path();
+            match path.extension().and_then(|x| x.to_str()) {
+                Some("ts") => {
+                    let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+                    ts_with_sizes.push((path, size));
                 }
+                Some("vtt") if merge_subtitle => {
+                    vtt_files.push(path);
+                }
+                _ => {}
             }
-            files
-        };
+        }
 
-        if ts_files.is_empty() {
+        if ts_with_sizes.is_empty() {
             return Err("No .ts files found after download".into());
         }
 
-        let mut ts_with_sizes: Vec<(PathBuf, u64)> = Vec::with_capacity(ts_files.len());
-        for f in ts_files {
-            let size = tokio::fs::metadata(&f).await.map(|m| m.len()).unwrap_or(0);
-            ts_with_sizes.push((f, size));
-        }
         ts_with_sizes.sort_unstable_by(|a, b| b.1.cmp(&a.1));
         let ts_files: Vec<PathBuf> = ts_with_sizes.into_iter().map(|(p, _)| p).collect();
-
-        let vtt_files: Vec<PathBuf> = if self.config.process.merge_subtitle {
-            let mut files = Vec::new();
-            let mut rd = tokio::fs::read_dir(output_dir)
-                .await
-                .map_err(|e| e.to_string())?;
-            while let Ok(Some(entry)) = rd.next_entry().await {
-                let path = entry.path();
-                if path.extension().map(|x| x == "vtt").unwrap_or(false) {
-                    files.push(path);
-                }
-            }
-            files
-        } else {
-            Vec::new()
-        };
 
         let mut mux_cmd = Command::new(ffmpeg);
         mux_cmd.arg("-y");
@@ -365,21 +359,9 @@ impl DownloadEngine {
         for f in &ts_files {
             let _ = tokio::fs::remove_file(f).await;
         }
-        if self.config.process.merge_subtitle {
-            if let Ok(mut rd) = tokio::fs::read_dir(output_dir).await {
-                while let Ok(Some(entry)) = rd.next_entry().await {
-                    if entry
-                        .path()
-                        .extension()
-                        .map(|x| x == "vtt")
-                        .unwrap_or(false)
-                    {
-                        let _ = tokio::fs::remove_file(entry.path()).await;
-                    }
-                }
-            }
+        for vtt in &vtt_files {
+            let _ = tokio::fs::remove_file(vtt).await;
         }
-
         for dir_name in &["tmp", save_name] {
             let _ = tokio::fs::remove_dir_all(output_dir.join(dir_name)).await;
         }
