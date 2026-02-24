@@ -13,7 +13,7 @@ main() {
     CURRENT=$((CURRENT + 1))
     local pct=$((CURRENT * 100 / STEPS)) filled=$((CURRENT * BAR_WIDTH / STEPS))
     printf "\r  [%-${BAR_WIDTH}s] %3d%%" "$(printf '%*s' "$filled" '' | tr ' ' '#')" "$pct"
-    [[ $CURRENT -eq $STEPS ]] && printf "\n" || true
+    ((CURRENT == STEPS)) && printf "\n" || true
   }
 
   if [[ -z "${BASH_SOURCE[0]:-}" || "$(basename "${BASH_SOURCE[0]:-bash}")" == "bash" ]]; then
@@ -21,7 +21,7 @@ main() {
     TMPDIR_SV="$(mktemp -d)"
     trap 'rm -rf "$TMPDIR_SV"' EXIT
     progress
-    git clone --depth 1 --quiet "$REPO" "$TMPDIR_SV/StreamVault" </dev/null 2>/dev/null
+    git clone --depth 1 --quiet "$REPO" "$TMPDIR_SV/StreamVault" 2>/dev/null
     P="$TMPDIR_SV/StreamVault"
   else
     P="$(cd "$(dirname "$0")/.." && pwd)"
@@ -37,11 +37,7 @@ main() {
 
   if ! command -v cargo &>/dev/null; then
     progress
-    local _rustup_tmp
-    _rustup_tmp="$(mktemp)"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$_rustup_tmp" 2>/dev/null
-    sh "$_rustup_tmp" -y --quiet </dev/null 2>/dev/null
-    rm -f "$_rustup_tmp"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet 2>/dev/null
     . "$HOME/.cargo/env"
     RUST_INSTALLED_BY_SCRIPT=true
   else
@@ -49,7 +45,7 @@ main() {
   fi
 
   progress
-  cargo build --release --quiet </dev/null 2>/dev/null
+  cargo build --release --quiet 2>/dev/null
 
   rm -rf "$APP" "$D/f" "$D/n"
   mkdir -p "$C/MacOS" "$B" "$D/f" "$D/n" "$C/Resources"
