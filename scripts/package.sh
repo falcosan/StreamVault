@@ -25,13 +25,13 @@ main() {
   }
 
   remove_rust() {
-    [[ "$rust_installed_by_script" == true ]] || return 0
+    [[ "${rust_installed_by_script:-}" == true ]] || return 0
     rustup self uninstall -y &>/dev/null || :
     rm -rf "$HOME/.rustup" "$HOME/.cargo" &>/dev/null || :
   }
 
   cleanup() {
-    [[ "$completed" == true ]] && return 0
+    [[ "${completed:-}" == true ]] && return 0
     printf "\n  Interrupted, cleaning up…\n" >&2
     rm -rf "${app:+$app}" "${dep_cache:+$dep_cache}" "${tmpdir_sv:+$tmpdir_sv}" &>/dev/null || :
     remove_rust
@@ -54,7 +54,9 @@ main() {
 
   app="$p/dist/StreamVault.app"
   dep_cache="$p/.dep-cache"
-  local -r contents="$app/Contents" bin_dir="$contents/Resources/bin"
+  
+  local -r contents="$app/Contents"
+  local -r bin_dir="$contents/Resources/bin"
 
   cd "$p"
 
@@ -139,6 +141,7 @@ main() {
   fi
 
   completed=true
+  trap - EXIT
   remove_rust
   [[ -n "$tmpdir_sv" ]] && rm -rf "$tmpdir_sv" &>/dev/null || :
   progress
