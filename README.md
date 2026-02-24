@@ -32,22 +32,32 @@ StreamVault is a lightweight, native desktop app that aggregates content from mu
 - **FFmpeg** — for post-download muxing
 - **N_m3u8DL-RE** — for HLS/DASH stream downloading
 
-## Building
+## Installation
 
-### Development
+### Quick Install (macOS)
+
+Run a single command to install `StreamVault.app` into `~/Applications`:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/package.sh" | bash
+```
+
+### Building from Source
+
+#### Development
 
 ```bash
 cargo build
 cargo run
 ```
 
-### Release
+#### Release
 
 ```bash
 cargo build --release
 ```
 
-### Packaging (.app bundle)
+#### Packaging (.app bundle)
 
 The included packaging script builds a release binary, downloads FFmpeg and N_m3u8DL-RE, and assembles a self-contained `.app` bundle:
 
@@ -63,22 +73,22 @@ StreamVault stores its configuration in a JSON file. On first launch, a default 
 
 ### Config Sections
 
-| Section | Key Options |
-|---|---|
-| **output** | `root_path`, `movie_folder_name`, `serie_folder_name`, `map_episode_name` |
+| Section            | Key Options                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------- |
+| **output**   | `root_path`, `movie_folder_name`, `serie_folder_name`, `map_episode_name`                       |
 | **download** | `thread_count` (default: 8), `retry_count`, `concurrent_download`, `max_speed`, track selection |
-| **process** | `use_gpu`, `merge_audio`, `merge_subtitle`, `extension` (default: mp4) |
-| **requests** | `timeout` (default: 30s), `max_retry`, `use_proxy`, `proxy_url` |
+| **process**  | `use_gpu`, `merge_audio`, `merge_subtitle`, `extension` (default: mp4)                          |
+| **requests** | `timeout` (default: 30s), `max_retry`, `use_proxy`, `proxy_url`                                 |
 
 ## Project Structure
 
-| Directory | Description |
-|---|---|
-| `src/` | Application source code — UI components, state management, configuration, download engine, and provider implementations |
-| `src/providers/` | Pluggable streaming provider modules with a shared trait interface and data models |
-| `resources/` | macOS app bundle metadata (`Info.plist`) |
-| `scripts/` | Build, packaging, and update automation scripts |
-| `assets/` | Logo and branding assets |
+| Directory          | Description                                                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `src/`           | Application source code — UI components, state management, configuration, download engine, and provider implementations |
+| `src/providers/` | Pluggable streaming provider modules with a shared trait interface and data models                                       |
+| `resources/`     | macOS app bundle metadata (`Info.plist`)                                                                               |
+| `scripts/`       | Build, packaging, and update automation scripts                                                                          |
+| `assets/`        | Logo and branding assets                                                                                                 |
 
 ## Tech Stack
 
@@ -96,7 +106,7 @@ This project is licensed under the [MIT License](LICENSE).
 ---
 
 ## Disclaimer
->
+
 > This software is provided strictly for **educational and research purposes only**. The author and contributors:
 >
 > - **DO NOT** assume any responsibility for illegal or unauthorized use of this software
