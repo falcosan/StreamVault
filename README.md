@@ -43,6 +43,8 @@ Run a single command to install `StreamVault.app`:
 curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/package.sh" | bash
 ```
 
+> **Note:** Any build dependency installed during the process (e.g. Rust toolchain) is automatically removed after packaging. Nothing is left behind.
+
 ### Building from Source
 
 #### Development
