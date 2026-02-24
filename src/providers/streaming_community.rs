@@ -7,7 +7,7 @@ use regex::Regex;
 use reqwest::Client;
 use scraper::{Html, Selector};
 use std::collections::HashSet;
-use std::sync::{LazyLock, OnceLock, RwLock};
+use std::sync::{LazyLock, RwLock};
 use std::time::Duration;
 use tokio::time::sleep;
 use url::Url;
@@ -53,8 +53,8 @@ impl StreamingCommunityProvider {
                         if let Some(url) = json["streamingcommunity"]["full_url"].as_str() {
                             let url = url.trim_end_matches('/').to_string();
                             if url.starts_with("http") {
-                                *self.base_url.write().unwrap() = url.clone();
                                 eprintln!("[StreamVault] Resolved SC domain: {url}");
+                                *self.base_url.write().unwrap() = url;
                                 return;
                             }
                         }
@@ -281,10 +281,17 @@ impl StreamingCommunityProvider {
     async fn extract_stream_url(&self, iframe_url: &str) -> ProviderResult<StreamUrl> {
         static SCRIPT_SEL: LazyLock<Selector> =
             LazyLock::new(|| Selector::parse("script").unwrap());
-        static TOKEN_RE: OnceLock<Regex> = OnceLock::new();
-        static EXPIRES_RE: OnceLock<Regex> = OnceLock::new();
-        static URL_RE: OnceLock<Regex> = OnceLock::new();
-        static FHD_RE: OnceLock<Regex> = OnceLock::new();
+        static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r#"(?:['"]token['"]|token)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
+        });
+        static EXPIRES_RE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r#"(?:['"]expires['"]|expires)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
+        });
+        static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r#"(?:['"]url['"]|url)\s*:\s*['"](?P<url>https?://[^'"]+)['"]"#).unwrap()
+        });
+        static FHD_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"window\.canPlayFHD\s*=\s*(true|false)").unwrap());
 
         let resp = self.client.get(iframe_url).send().await?;
         let html = resp.text().await?;
@@ -296,31 +303,21 @@ impl StreamingCommunityProvider {
             .join("\n");
 
         let token = TOKEN_RE
-            .get_or_init(|| {
-                Regex::new(r#"(?:['"]token['"]|token)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
-            })
             .captures(&script)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .ok_or_else(|| ProviderError::StreamExtraction("No token".into()))?;
         let expires = EXPIRES_RE
-            .get_or_init(|| {
-                Regex::new(r#"(?:['"]expires['"]|expires)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
-            })
             .captures(&script)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .ok_or_else(|| ProviderError::StreamExtraction("No expires".into()))?;
         let base = URL_RE
-            .get_or_init(|| {
-                Regex::new(r#"(?:['"]url['"]|url)\s*:\s*['"](?P<url>https?://[^'"]+)['"]"#).unwrap()
-            })
             .captures(&script)
             .and_then(|c| c.name("url"))
             .map(|m| m.as_str().to_string())
             .ok_or_else(|| ProviderError::StreamExtraction("No URL".into()))?;
         let fhd = FHD_RE
-            .get_or_init(|| Regex::new(r"window\.canPlayFHD\s*=\s*(true|false)").unwrap())
             .captures(&script)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str() == "true")
