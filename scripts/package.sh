@@ -69,10 +69,14 @@ main() {
     [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
   else
     progress
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --default-toolchain stable --quiet \
-      || { printf '\n  Rust installation failed\n' >&2; exit 1; }
-    . "$HOME/.cargo/env"
+    local rustup_init="$(mktemp)"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$rustup_init" \
+      || { printf '\n  Rust installation failed\n' >&2; rm -f "$rustup_init"; exit 1; }
+    sh "$rustup_init" -y --default-toolchain stable --quiet </dev/null \
+      || { printf '\n  Rust installation failed\n' >&2; rm -f "$rustup_init"; exit 1; }
+    rm -f "$rustup_init"
+    [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
+    export PATH="$HOME/.cargo/bin:$PATH"
     rust_installed_by_script=true
   fi
 
