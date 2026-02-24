@@ -88,7 +88,8 @@ pub fn App() -> Element {
     let on_search_submit = {
         let providers = providers.clone();
         move |q: String| {
-            if q.trim().is_empty() {
+            let q = q.trim().to_string();
+            if q.is_empty() {
                 return;
             }
             is_searching.set(true);
@@ -96,39 +97,74 @@ pub fn App() -> Element {
             history.write().push(screen());
             screen.set(Screen::Search);
             search_pending.set(providers.len());
+
+            let q_lower = Arc::new(q.to_lowercase());
+            let q_words: Arc<Vec<String>> =
+                Arc::new(q_lower.split_whitespace().map(str::to_owned).collect());
+
             for (idx, p) in providers.iter().enumerate() {
                 let p = p.clone();
                 let q = q.clone();
+                let q_lower = Arc::clone(&q_lower);
+                let q_words = Arc::clone(&q_words);
+
                 spawn(async move {
                     if let Ok(entries) = p.search(&q).await {
-                        let mut results = search_results.write();
-                        results.extend(entries.into_iter().map(|mut e| {
-                            e.provider = idx;
-                            e
-                        }));
-
-                        let q_lower = q.to_lowercase();
-                        let q_words: Vec<&str> = q_lower.split_whitespace().collect();
-                        results.sort_by_cached_key(|e| {
-                            let t = e.name.to_lowercase();
-
-                            let score = if t == q_lower {
-                                1000_u16
-                            } else if t.starts_with(&q_lower) {
-                                800
-                            } else if let Some(pos) = t.find(&q_lower) {
-                                600 - (pos.min(100) as u16)
-                            } else {
-                                let words_match =
-                                    q_words.iter().filter(|&&w| t.contains(w)).count();
-                                (words_match * 200).min(400) as u16
-                            };
-                            (std::cmp::Reverse(score), e.name.len(), e.name.clone())
-                        });
+                        let new_entries: Vec<_> = entries
+                            .into_iter()
+                            .map(|mut e| {
+                                e.provider = idx;
+                                e
+                            })
+                            .collect();
+                        search_results.write().extend(new_entries);
                     }
-                    let prev = search_pending();
-                    search_pending.set(prev.saturating_sub(1));
-                    if prev <= 1 {
+
+                    let new_pending = search_pending().saturating_sub(1);
+                    search_pending.set(new_pending);
+
+                    if new_pending == 0 {
+                        let unsorted = std::mem::take(&mut *search_results.write());
+
+                        let mut scored: Vec<(u16, _)> = unsorted
+                            .into_iter()
+                            .map(|e| {
+                                let t = e.name.to_lowercase();
+                                let score = if t == *q_lower {
+                                    1000_u16
+                                } else if t.starts_with(q_lower.as_str()) {
+                                    800
+                                } else if let Some(pos) = t.find(q_lower.as_str()) {
+                                    600 - (pos.min(100) as u16)
+                                } else {
+                                    let d = e
+                                        .description
+                                        .as_ref()
+                                        .map(|s| s.to_lowercase())
+                                        .unwrap_or_default();
+                                    if d.contains(q_lower.as_str()) {
+                                        450
+                                    } else {
+                                        let matches = q_words
+                                            .iter()
+                                            .filter(|w| {
+                                                t.contains(w.as_str()) || d.contains(w.as_str())
+                                            })
+                                            .count();
+                                        (matches * 200).min(400) as u16
+                                    }
+                                };
+                                (score, e)
+                            })
+                            .collect();
+
+                        scored.sort_unstable_by(|(sa, ea), (sb, eb)| {
+                            sb.cmp(sa)
+                                .then(ea.name.len().cmp(&eb.name.len()))
+                                .then(ea.name.cmp(&eb.name))
+                        });
+
+                        search_results.set(scored.into_iter().map(|(_, e)| e).collect());
                         is_searching.set(false);
                     }
                 });
