@@ -4,14 +4,14 @@ set -euo pipefail
 CALLER_DIR="$(pwd)"
 REMOTE_INSTALL=false
 RUST_INSTALLED_BY_SCRIPT=false
-STEPS=7 CURRENT=0 BAR_WIDTH=30
+STEPS=6 CURRENT=0 BAR_WIDTH=30
 REPO="https://github.com/falcosan/StreamVault.git"
 
 progress() {
   CURRENT=$((CURRENT + 1))
   local pct=$((CURRENT * 100 / STEPS)) filled=$((CURRENT * BAR_WIDTH / STEPS))
   printf "\r  [%-${BAR_WIDTH}s] %3d%%" "$(printf '%*s' "$filled" '' | tr ' ' '#')" "$pct"
-  ((CURRENT == STEPS)) && printf "\n"
+  ((CURRENT == STEPS)) && printf "\n" || true
 }
 
 if [[ -z "${BASH_SOURCE[0]:-}" || "$(basename "${BASH_SOURCE[0]:-bash}")" == "bash" ]]; then
@@ -87,8 +87,12 @@ codesign --force --sign - "$B/N_m3u8DL-RE" 2>/dev/null || true
 codesign --force --deep --sign - "$APP" 2>/dev/null || true
 xattr -cr "$APP" 2>/dev/null || true
 
-[[ "$REMOTE_INSTALL" == true ]] && cp -R "$APP" "$CALLER_DIR/"
+if [[ "$REMOTE_INSTALL" == true ]]; then
+  cp -R "$APP" "$CALLER_DIR/"
+fi
 
 progress
 
-[[ "$RUST_INSTALLED_BY_SCRIPT" == true ]] && rustup self uninstall -y 2>/dev/null || true
+if [[ "$RUST_INSTALLED_BY_SCRIPT" == true ]]; then
+  rustup self uninstall -y 2>/dev/null || true
+fi
