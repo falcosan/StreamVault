@@ -13,10 +13,10 @@ main() {
     CURRENT=$((CURRENT + 1))
     local pct=$((CURRENT * 100 / STEPS)) filled=$((CURRENT * BAR_WIDTH / STEPS))
     printf "\r  [%-${BAR_WIDTH}s] %3d%%" "$(printf '%*s' "$filled" '' | tr ' ' '#')" "$pct"
-    ((CURRENT == STEPS)) && printf "\n" || true
+    [[ $CURRENT -eq $STEPS ]] && printf "\n" || true
   }
 
-  if [[ "${BASH_SOURCE[0]:-}" == "" ]] || [[ "$(basename "${BASH_SOURCE[0]:-}")" == "bash" ]] || [[ ! -f "${BASH_SOURCE[0]:-}" ]]; then
+  if [[ -z "${BASH_SOURCE[0]:-}" || "$(basename "${BASH_SOURCE[0]:-bash}")" == "bash" ]]; then
     REMOTE_INSTALL=true
     TMPDIR_SV="$(mktemp -d)"
     trap 'rm -rf "$TMPDIR_SV"' EXIT
@@ -37,7 +37,11 @@ main() {
 
   if ! command -v cargo &>/dev/null; then
     progress
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet </dev/null 2>/dev/null
+    local _rustup_tmp
+    _rustup_tmp="$(mktemp)"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$_rustup_tmp" 2>/dev/null
+    sh "$_rustup_tmp" -y --quiet </dev/null 2>/dev/null
+    rm -f "$_rustup_tmp"
     . "$HOME/.cargo/env"
     RUST_INSTALLED_BY_SCRIPT=true
   else
