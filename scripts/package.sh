@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="https://github.com/falcosan/StreamVault.git"
+CALLER_DIR="$(pwd)"
 REMOTE_INSTALL=false
 RUST_INSTALLED_BY_SCRIPT=false
+REPO="https://github.com/falcosan/StreamVault.git"
 
 if [[ "${BASH_SOURCE[0]:-}" == "" || "$(basename "${BASH_SOURCE[0]:-bash}")" == "bash" ]]; then
   REMOTE_INSTALL=true
   TMPDIR_SV="$(mktemp -d)"
   trap 'rm -rf "$TMPDIR_SV"' EXIT
-  git clone --depth 1 "$REPO" "$TMPDIR_SV/StreamVault"
+  git clone --depth 1 --quiet "$REPO" "$TMPDIR_SV/StreamVault"
   P="$TMPDIR_SV/StreamVault"
 else
   P="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,7 +29,7 @@ if ! command -v cargo >/dev/null 2>&1; then
   RUST_INSTALLED_BY_SCRIPT=true
 fi
 
-cargo build --release
+cargo build --release --quiet
 
 rm -rf "$APP" "$D/f" "$D/n"
 mkdir -p "$C/MacOS" "$B" "$D/f" "$D/n" "$C/Resources"
@@ -70,8 +71,7 @@ codesign --force --deep --sign - "$APP" 2>/dev/null || true
 xattr -cr "$APP" 2>/dev/null || true
 
 if [[ "$REMOTE_INSTALL" == true ]]; then
-  mkdir -p "$HOME/Applications"
-  cp -R "$APP" "$HOME/Applications/"
+  cp -R "$APP" "$CALLER_DIR/"
 fi
 
 if [[ "$RUST_INSTALLED_BY_SCRIPT" == true ]]; then
