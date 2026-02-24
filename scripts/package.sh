@@ -1,30 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-STEPS=7
-CURRENT=0
-BAR_WIDTH=30
 CALLER_DIR="$(pwd)"
 REMOTE_INSTALL=false
 RUST_INSTALLED_BY_SCRIPT=false
+STEPS=7 CURRENT=0 BAR_WIDTH=30
 REPO="https://github.com/falcosan/StreamVault.git"
 
 progress() {
   CURRENT=$((CURRENT + 1))
-  local pct=$((CURRENT * 100 / STEPS))
-  local filled=$((pct * BAR_WIDTH / 100))
-  printf "\r  [%-${BAR_WIDTH}s] %3d%%" \
-    "$(printf '%*s' "$filled" '' | tr ' ' '#')" \
-    "$pct"
-  [[ $CURRENT -eq $STEPS ]] && printf "\n"
+  local pct=$((CURRENT * 100 / STEPS)) filled=$((CURRENT * BAR_WIDTH / STEPS))
+  printf "\r  [%-${BAR_WIDTH}s] %3d%%" "$(printf '%*s' "$filled" '' | tr ' ' '#')" "$pct"
+  ((CURRENT == STEPS)) && printf "\n"
 }
 
-if [[ "${BASH_SOURCE[0]:-}" == "" || "$(basename "${BASH_SOURCE[0]:-bash}")" == "bash" ]]; then
+if [[ -z "${BASH_SOURCE[0]:-}" || "$(basename "${BASH_SOURCE[0]:-bash}")" == "bash" ]]; then
   REMOTE_INSTALL=true
   TMPDIR_SV="$(mktemp -d)"
   trap 'rm -rf "$TMPDIR_SV"' EXIT
   progress
-  git clone --depth 1 --quiet "$REPO" "$TMPDIR_SV/StreamVault" 2>/dev/null
+  git clone --depth 1 --quiet "$REPO" "$TMPDIR_SV/StreamVault" </dev/null 2>/dev/null
   P="$TMPDIR_SV/StreamVault"
 else
   P="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,17 +33,17 @@ D="$P/.dep-cache"
 
 cd "$P"
 
-if ! command -v cargo >/dev/null 2>&1; then
+if ! command -v cargo &>/dev/null; then
   progress
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet 2>/dev/null
-  source "$HOME/.cargo/env"
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet </dev/null 2>/dev/null
+  . "$HOME/.cargo/env"
   RUST_INSTALLED_BY_SCRIPT=true
 else
   progress
 fi
 
 progress
-cargo build --release --quiet 2>/dev/null
+cargo build --release --quiet </dev/null 2>/dev/null
 
 rm -rf "$APP" "$D/f" "$D/n"
 mkdir -p "$C/MacOS" "$B" "$D/f" "$D/n" "$C/Resources"
@@ -57,7 +52,8 @@ cp target/release/streamvault "$C/MacOS/"
 cp resources/Info.plist "$C/"
 cp resources/AppIcon.icns "$C/Resources/" 2>/dev/null || true
 
-if [[ "$(uname -m)" == "arm64" ]]; then
+ARCH="$(uname -m)"
+if [[ "$ARCH" == "arm64" ]]; then
   F_U="https://www.osxexperts.net/ffmpeg71arm.zip"
   N_A="arm64"
 else
