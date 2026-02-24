@@ -3,124 +3,127 @@
 main() {
   set -euo pipefail
 
-  COMPLETED=false
-  CALLER_DIR="$(pwd)"
-  REMOTE_INSTALL=false
-  RUST_INSTALLED_BY_SCRIPT=false
-  STEPS=6 CURRENT=0 BAR_WIDTH=30
-  REPO="https://github.com/falcosan/StreamVault.git"
+  local completed=false
+  local caller_dir="$(pwd)"
+  local remote_install=false
+  local rust_installed_by_script=false
+  local steps=6 current=0 bar_width=30
+  local repo="https://github.com/falcosan/StreamVault.git"
 
   progress() {
-    CURRENT=$((CURRENT + 1))
-    local pct=$((CURRENT * 100 / STEPS)) filled=$((CURRENT * BAR_WIDTH / STEPS))
-    printf "\r  [%-${BAR_WIDTH}s] %3d%%" "$(printf '%*s' "$filled" '' | tr ' ' '#')" "$pct"
-    ((CURRENT == STEPS)) && printf "\n" || true
+    current=$((current + 1))
+    local pct=$((current * 100 / steps))
+    local filled=$((current * bar_width / steps))
+    printf "\r  [%-${bar_width}s] %3d%%" "$(printf '%*s' "$filled" '' | tr ' ' '#')" "$pct"
+    ((current == steps)) && printf "\n" || true
   }
 
-
   cleanup() {
-    if [[ "$COMPLETED" == true ]]; then return; fi
+    if [[ "$completed" == true ]]; then return; fi
     printf "\n  Interrupted, cleaning up…\n" >&2
-    [[ -n "${APP:-}" ]] && rm -rf "$APP" 2>/dev/null || true
-    [[ -n "${D:-}" ]] && rm -rf "$D" 2>/dev/null || true
-    [[ -n "${TMPDIR_SV:-}" ]] && rm -rf "$TMPDIR_SV" 2>/dev/null || true
-    if [[ "$RUST_INSTALLED_BY_SCRIPT" == true ]]; then
+    [[ -n "${app:-}" ]] && rm -rf "$app" 2>/dev/null || true
+    [[ -n "${dep_cache:-}" ]] && rm -rf "$dep_cache" 2>/dev/null || true
+    [[ -n "${tmpdir_sv:-}" ]] && rm -rf "$tmpdir_sv" 2>/dev/null || true
+    if [[ "$rust_installed_by_script" == true ]]; then
       rustup self uninstall -y 2>/dev/null || true
     fi
   }
 
   trap cleanup EXIT INT TERM HUP
 
+  local p
   if [[ -z "${BASH_SOURCE[0]:-}" || "$(basename "${BASH_SOURCE[0]:-bash}")" == "bash" ]]; then
-    REMOTE_INSTALL=true
-    TMPDIR_SV="$(mktemp -d)"
+    remote_install=true
+    tmpdir_sv="$(mktemp -d)"
     progress
-    git clone --depth 1 --quiet "$REPO" "$TMPDIR_SV/StreamVault" 2>/dev/null
-    P="$TMPDIR_SV/StreamVault"
+    if ! git clone --depth 1 --quiet "$repo" "$tmpdir_sv/StreamVault" 2>/dev/null; then
+      printf '\n  Failed to clone repository\n' >&2
+      exit 1
+    fi
+    p="$tmpdir_sv/StreamVault"
   else
-    P="$(cd "$(dirname "$0")/.." && pwd)"
+    p="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     progress
   fi
 
-  APP="$P/dist/StreamVault.app"
-  C="$APP/Contents"
-  B="$C/Resources/bin"
-  D="$P/.dep-cache"
+  local app="$p/dist/StreamVault.app"
+  local contents="$app/Contents"
+  local bin_dir="$contents/Resources/bin"
+  local dep_cache="$p/.dep-cache"
 
-  cd "$P"
+  cd "$p"
 
   if ! command -v cargo &>/dev/null; then
     progress
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet 2>/dev/null
+    if ! curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --quiet; then
+      printf '\n  Rust installation failed\n' >&2
+      exit 1
+    fi
     . "$HOME/.cargo/env"
-    rustup default stable --quiet 2>/dev/null
-    RUST_INSTALLED_BY_SCRIPT=true
+    rust_installed_by_script=true
   else
     progress
   fi
 
   progress
-  if ! cargo build --release --quiet 2>&1; then
+  if ! cargo build --release --quiet; then
     printf '\n  cargo build failed\n' >&2
     exit 1
   fi
 
-  rm -rf "$APP" "$D/f" "$D/n"
-  mkdir -p "$C/MacOS" "$B" "$D/f" "$D/n" "$C/Resources"
+  rm -rf "$app" "$dep_cache/f" "$dep_cache/n"
+  mkdir -p "$contents/MacOS" "$bin_dir" "$dep_cache/f" "$dep_cache/n" "$contents/Resources"
 
-  cp target/release/streamvault "$C/MacOS/"
-  cp resources/Info.plist "$C/"
-  cp resources/AppIcon.icns "$C/Resources/" 2>/dev/null || true
+  cp target/release/streamvault "$contents/MacOS/"
+  cp resources/Info.plist "$contents/" 2>/dev/null || true
+  cp resources/AppIcon.icns "$contents/Resources/" 2>/dev/null || true
 
-  ARCH="$(uname -m)"
-  if [[ "$ARCH" == "arm64" ]]; then
-    F_U="https://www.osxexperts.net/ffmpeg71arm.zip"
-    N_A="arm64"
+  local arch="$(uname -m)"
+  local ffmpeg_url narch
+  if [[ "$arch" == "arm64" ]]; then
+    ffmpeg_url="https://www.osxexperts.net/ffmpeg71arm.zip"
+    narch="arm64"
   else
-    F_U="https://evermeet.cx/ffmpeg/ffmpeg-7.1.zip"
-    N_A="x64"
+    ffmpeg_url="https://evermeet.cx/ffmpeg/ffmpeg-7.1.zip"
+    narch="x64"
   fi
 
-  N_U="https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.5.1-beta/N_m3u8DL-RE_v0.5.1-beta_osx-${N_A}_20251029.tar.gz"
+  local nurl="https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.5.1-beta/N_m3u8DL-RE_v0.5.1-beta_osx-${narch}_20251029.tar.gz"
 
   progress
-  [[ -f "$D/f_$N_A.zip" ]] || curl -fsSL "$F_U" -o "$D/f_$N_A.zip"
-  [[ -f "$D/n_$N_A.tgz" ]] || curl -fsSL "$N_U" -o "$D/n_$N_A.tgz"
+  local ffmpeg_zip="$dep_cache/f_${narch}.zip"
+  local ntar="$dep_cache/n_${narch}.tgz"
+  [[ -f "$ffmpeg_zip" ]] || curl -fsSL "$ffmpeg_url" -o "$ffmpeg_zip"
+  [[ -f "$ntar" ]] || curl -fsSL "$nurl" -o "$ntar"
 
-  unzip -qo "$D/f_$N_A.zip" -d "$D/f"
-  tar xzf "$D/n_$N_A.tgz" -C "$D/n"
+  unzip -qo "$ffmpeg_zip" -d "$dep_cache/f"
+  tar xzf "$ntar" -C "$dep_cache/n"
 
-  F_BIN="$(find "$D/f" -type f -name ffmpeg -perm -111 | head -n1)"
-  N_BIN="$(find "$D/n" -type f -name N_m3u8DL-RE -perm -111 | head -n1)"
+  local ffmpeg_bin="$(find "$dep_cache/f" -type f -name ffmpeg -perm -111 | head -n1)"
+  local nbin="$(find "$dep_cache/n" -type f -name N_m3u8DL-RE -perm -111 | head -n1)"
 
-  [[ -n "$F_BIN" ]] || { printf '\nffmpeg binary not found\n' >&2; exit 1; }
-  [[ -n "$N_BIN" ]] || { printf '\nN_m3u8DL-RE binary not found\n' >&2; exit 1; }
+  [[ -n "$ffmpeg_bin" ]] || { printf '\n  ffmpeg binary not found\n' >&2; exit 1; }
+  [[ -n "$nbin" ]] || { printf '\n  N_m3u8DL-RE binary not found\n' >&2; exit 1; }
 
-  cp "$F_BIN" "$B/ffmpeg"
-  cp "$N_BIN" "$B/N_m3u8DL-RE"
-  chmod +x "$B"/*
+  cp "$ffmpeg_bin" "$bin_dir/ffmpeg"
+  cp "$nbin" "$bin_dir/N_m3u8DL-RE"
+  chmod +x "$bin_dir"/*
 
   progress
-  xattr -cr "$B/ffmpeg" "$B/N_m3u8DL-RE" 2>/dev/null || true
-  codesign --force --sign - "$B/ffmpeg" 2>/dev/null || true
-  codesign --force --sign - "$B/N_m3u8DL-RE" 2>/dev/null || true
-  codesign --force --deep --sign - "$APP" 2>/dev/null || true
-  xattr -cr "$APP" 2>/dev/null || true
+  xattr -cr "$bin_dir/ffmpeg" "$bin_dir/N_m3u8DL-RE" 2>/dev/null || true
+  codesign --force --sign - "$bin_dir/ffmpeg" 2>/dev/null || true
+  codesign --force --sign - "$bin_dir/N_m3u8DL-RE" 2>/dev/null || true
+  codesign --force --deep --sign - "$app" 2>/dev/null || true
+  xattr -cr "$app" 2>/dev/null || true
 
-  if [[ "$REMOTE_INSTALL" == true ]]; then
-    rm -rf "$CALLER_DIR/StreamVault.app"
-    cp -R "$APP" "$CALLER_DIR/"
+  if [[ "$remote_install" == true ]]; then
+    rm -rf "$caller_dir/StreamVault.app"
+    cp -R "$app" "$caller_dir/"
   fi
 
-  COMPLETED=true
-
-  [[ -n "${TMPDIR_SV:-}" ]] && rm -rf "$TMPDIR_SV" 2>/dev/null || true
-
+  completed=true
+  [[ -n "${tmpdir_sv:-}" ]] && rm -rf "$tmpdir_sv" 2>/dev/null || true
   progress
-
-  if [[ "$RUST_INSTALLED_BY_SCRIPT" == true ]]; then
-    rustup self uninstall -y 2>/dev/null || true
-  fi
 }
 
 main "$@"
