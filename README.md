@@ -23,6 +23,7 @@ StreamVault is a lightweight, native desktop app that aggregates content from mu
 - **Integrated Downloads** — Download streams via [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) with progress tracking.
 - **Post-Processing** — Automatic muxing with [FFmpeg](https://ffmpeg.org/) (GPU acceleration optional).
 - **Configurable** — JSON-based configuration for output paths, download threads, video/audio/subtitle track selection, proxy settings, and more.
+- **Auto-Update** — Detects new versions and rebuilds from source with one click. Building locally means you can audit the code before updating, and the resulting binary is ad-hoc signed to satisfy macOS Gatekeeper.
 - **Dark UI** — Custom-styled dark interface with a Netflix-inspired layout.
 
 ## Requirements
