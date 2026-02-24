@@ -104,6 +104,7 @@ main() {
   xattr -cr "$APP" 2>/dev/null || true
 
   if [[ "$REMOTE_INSTALL" == true ]]; then
+    rm -rf "$CALLER_DIR/StreamVault.app"
     cp -R "$APP" "$CALLER_DIR/"
   fi
 
