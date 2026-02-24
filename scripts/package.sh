@@ -53,6 +53,7 @@ main() {
     progress
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet 2>/dev/null
     . "$HOME/.cargo/env"
+    rustup default stable --quiet 2>/dev/null
     RUST_INSTALLED_BY_SCRIPT=true
   else
     progress
