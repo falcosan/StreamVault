@@ -8,6 +8,8 @@ use reqwest::Client;
 use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::sync::{LazyLock, OnceLock, RwLock};
+use std::time::Duration;
+use tokio::time::sleep;
 use url::Url;
 
 pub struct StreamingCommunityProvider {
@@ -23,13 +25,13 @@ impl StreamingCommunityProvider {
     pub fn with_config(timeout: u64) -> Self {
         let client = Client::builder()
             .user_agent(USER_AGENT)
-            .timeout(std::time::Duration::from_secs(timeout))
+            .timeout(Duration::from_secs(timeout))
             .cookie_store(true)
             .build()
             .expect("reqwest client");
         Self {
             client,
-            base_url: RwLock::new("".into()),
+            base_url: RwLock::new(String::new()),
         }
     }
 
@@ -37,43 +39,60 @@ impl StreamingCommunityProvider {
         self.base_url.read().unwrap().clone()
     }
 
-    async fn resolve_domain(&self) {
-        let resp = match self.client.get(DOMAINS_URL).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("[StreamVault] Domain resolve failed: {e}");
-                return;
-            }
-        };
-        let json: serde_json::Value = match resp.json().await {
-            Ok(j) => j,
-            Err(e) => {
-                eprintln!("[StreamVault] Domain JSON parse failed: {e}");
-                return;
-            }
-        };
-        if let Some(url) = json["streamingcommunity"]["full_url"].as_str() {
-            let url = url.trim_end_matches('/').to_string();
-            eprintln!("[StreamVault] Resolved SC domain: {url}");
-            *self.base_url.write().unwrap() = url;
+    async fn ensure_base_url(&self) {
+        if self.base_url.read().unwrap().is_empty() {
+            self.resolve_domain().await;
         }
+    }
+
+    async fn resolve_domain(&self) {
+        for attempt in 0u64..3 {
+            match self.client.get(DOMAINS_URL).send().await {
+                Ok(resp) => match resp.json::<serde_json::Value>().await {
+                    Ok(json) => {
+                        if let Some(url) = json["streamingcommunity"]["full_url"].as_str() {
+                            let url = url.trim_end_matches('/').to_string();
+                            if url.starts_with("http") {
+                                *self.base_url.write().unwrap() = url.clone();
+                                eprintln!("[StreamVault] Resolved SC domain: {url}");
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("[StreamVault] Domain JSON parse failed: {e}"),
+                },
+                Err(e) => eprintln!("[StreamVault] Domain resolve failed: {e}"),
+            }
+            if attempt + 1 < 3 {
+                sleep(Duration::from_millis(300 * (attempt + 1))).await;
+            }
+        }
+        eprintln!("[StreamVault] Failed to resolve domain after 3 attempts");
     }
 
     fn parse_data_page(html: &str) -> ProviderResult<serde_json::Value> {
         static APP_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("div#app").unwrap());
+        static DATA_PAGE_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"data-page\s*=\s*['"]([^'"]+)['"]"#).unwrap());
+
         let doc = Html::parse_document(html);
-        let app = doc
-            .select(&APP_SEL)
-            .next()
-            .ok_or_else(|| ProviderError::Parse("No #app div".into()))?;
-        let data = app
-            .value()
-            .attr("data-page")
-            .ok_or_else(|| ProviderError::Parse("No data-page attr".into()))?;
-        serde_json::from_str(data).map_err(|e| ProviderError::Parse(format!("Invalid JSON: {e}")))
+        if let Some(app) = doc.select(&APP_SEL).next() {
+            if let Some(data) = app.value().attr("data-page") {
+                return serde_json::from_str(data)
+                    .map_err(|e| ProviderError::Parse(format!("Invalid JSON: {e}")));
+            }
+        }
+        if let Some(cap) = DATA_PAGE_RE.captures(html) {
+            if let Some(m) = cap.get(1) {
+                return serde_json::from_str(m.as_str())
+                    .map_err(|e| ProviderError::Parse(format!("Invalid JSON: {e}")));
+            }
+        }
+        Err(ProviderError::Parse("No data-page JSON found".into()))
     }
 
     async fn fetch_inertia_version(&self) -> ProviderResult<String> {
+        self.ensure_base_url().await;
         let resp = self.client.get(self.base_url()).send().await?;
         let html = resp.text().await?;
         let page = Self::parse_data_page(&html)?;
@@ -89,6 +108,7 @@ impl StreamingCommunityProvider {
         lang: &str,
         version: &str,
     ) -> ProviderResult<Vec<MediaEntry>> {
+        self.ensure_base_url().await;
         let url = format!("{}/{lang}/search", self.base_url());
         let resp = self
             .client
@@ -211,6 +231,7 @@ impl StreamingCommunityProvider {
         &self,
         entry: &MediaEntry,
     ) -> ProviderResult<(serde_json::Value, String)> {
+        self.ensure_base_url().await;
         let lang = Self::entry_lang(entry);
         let base = self.base_url();
         let url = format!("{base}/{lang}/titles/{}-{}", entry.id, entry.slug);
@@ -227,28 +248,39 @@ impl StreamingCommunityProvider {
         media_id: u64,
         ep_id: Option<u64>,
     ) -> ProviderResult<String> {
+        static IFRAME_SEL: LazyLock<Selector> =
+            LazyLock::new(|| Selector::parse("iframe").unwrap());
+        static IFRAME_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r#"<iframe[^>]+src=['"]([^'"]+)['"]"#).unwrap());
+
+        self.ensure_base_url().await;
         let base = self.base_url();
         let url = match ep_id {
-            Some(eid) => {
-                format!("{base}/{lang}/iframe/{media_id}?episode_id={eid}&next_episode=1")
-            }
+            Some(eid) => format!("{base}/{lang}/iframe/{media_id}?episode_id={eid}&next_episode=1"),
             None => format!("{base}/{lang}/iframe/{media_id}"),
         };
         let resp = self.client.get(&url).send().await?;
         let html = resp.text().await?;
-        static IFRAME_SEL: LazyLock<Selector> =
-            LazyLock::new(|| Selector::parse("iframe").unwrap());
         let doc = Html::parse_document(&html);
-        doc.select(&IFRAME_SEL)
-            .next()
-            .and_then(|el| el.value().attr("src"))
-            .map(String::from)
-            .ok_or_else(|| ProviderError::Parse("No iframe src found".into()))
+        if let Some(el) = doc.select(&IFRAME_SEL).next() {
+            if let Some(src) = el.value().attr("src") {
+                return Ok(src.to_string());
+            }
+            if let Some(data_src) = el.value().attr("data-src") {
+                return Ok(data_src.to_string());
+            }
+        }
+        if let Some(cap) = IFRAME_RE.captures(&html) {
+            if let Some(m) = cap.get(1) {
+                return Ok(m.as_str().to_string());
+            }
+        }
+        Err(ProviderError::Parse("No iframe src found".into()))
     }
 
     async fn extract_stream_url(&self, iframe_url: &str) -> ProviderResult<StreamUrl> {
         static SCRIPT_SEL: LazyLock<Selector> =
-            LazyLock::new(|| Selector::parse("body script").unwrap());
+            LazyLock::new(|| Selector::parse("script").unwrap());
         static TOKEN_RE: OnceLock<Regex> = OnceLock::new();
         static EXPIRES_RE: OnceLock<Regex> = OnceLock::new();
         static URL_RE: OnceLock<Regex> = OnceLock::new();
@@ -259,9 +291,9 @@ impl StreamingCommunityProvider {
         let doc = Html::parse_document(&html);
         let script = doc
             .select(&SCRIPT_SEL)
-            .next()
             .map(|el| el.inner_html())
-            .unwrap_or_default();
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let token = TOKEN_RE
             .get_or_init(|| {
@@ -411,32 +443,45 @@ impl Provider for StreamingCommunityProvider {
     }
 
     async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>> {
+        self.ensure_base_url().await;
         let resp = self.client.get(self.base_url()).send().await?;
         let html = resp.text().await?;
         let page = Self::parse_data_page(&html)?;
         let mut entries = Vec::new();
         let mut seen = HashSet::new();
-        if let Some(sliders) = page["props"]["sliders"].as_array() {
-            for slider in sliders {
-                if let Some(titles) = slider["titles"].as_array() {
-                    for t in titles {
-                        if let Some(mut e) = self.parse_result(t) {
-                            e.language = Self::LANG.to_string();
-                            if seen.insert(e.id) {
-                                entries.push(e);
+
+        'sliders: for slider in page["props"]["sliders"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            if let Some(titles) = slider["titles"].as_array() {
+                for t in titles {
+                    if let Some(mut e) = self.parse_result(t) {
+                        e.language = Self::LANG.to_string();
+                        if seen.insert(e.id) {
+                            entries.push(e);
+                            if entries.len() >= limit {
+                                break 'sliders;
                             }
                         }
                     }
                 }
             }
         }
-        if entries.len() < limit && entries.is_empty() {
-            if let Some(titles) = page["props"]["titles"].as_array() {
-                for t in titles {
-                    if let Some(mut e) = self.parse_result(t) {
-                        e.language = Self::LANG.to_string();
-                        if seen.insert(e.id) {
-                            entries.push(e);
+
+        if entries.is_empty() {
+            for t in page["props"]["titles"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+            {
+                if let Some(mut e) = self.parse_result(t) {
+                    e.language = Self::LANG.to_string();
+                    if seen.insert(e.id) {
+                        entries.push(e);
+                        if entries.len() >= limit {
+                            break;
                         }
                     }
                 }
@@ -454,6 +499,7 @@ impl Provider for StreamingCommunityProvider {
                     .collect()
             })
             .unwrap_or_default();
+
         if entries.len() < limit && !genre_configs.is_empty() {
             let payload = serde_json::json!({ "sliders": genre_configs });
             'outer: for lang in Self::LANGS {
@@ -480,6 +526,7 @@ impl Provider for StreamingCommunityProvider {
                 }
             }
         }
+
         entries.truncate(limit);
         Ok(entries)
     }
