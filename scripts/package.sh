@@ -5,11 +5,10 @@ main() {
 
   [[ "$(uname -s)" == Darwin ]] || { printf '\n  macOS required\n' >&2; exit 1; }
 
-  local -r repo="https://github.com/falcosan/StreamVault.git"
   local -r bar_width=30 steps=6
   local -r required_cmds=(curl unzip tar)
   local current=0 completed=false caller_dir="$PWD"
-  local remote_install=false rust_installed_by_script=false git_installed_by_script=false
+  local remote_install=false rust_installed_by_script=false
   local app="" dep_cache="" tmpdir_sv=""
 
   for cmd in "${required_cmds[@]}"; do
@@ -24,11 +23,6 @@ main() {
     return 0
   }
 
-  remove_git() {
-    [[ "${git_installed_by_script:-}" == true ]] || return 0
-    sudo rm -rf "$(xcode-select -p 2>/dev/null)" &>/dev/null || :
-  }
-
   remove_rust() {
     [[ "${rust_installed_by_script:-}" == true ]] || return 0
     rustup self uninstall -y &>/dev/null || :
@@ -39,7 +33,6 @@ main() {
     [[ "${completed:-}" == true ]] && return 0
     printf "\n  Interrupted, cleaning up…\n" >&2
     rm -rf "${app:+$app}" "${dep_cache:+$dep_cache}" "${tmpdir_sv:+$tmpdir_sv}" &>/dev/null || :
-    remove_git
     remove_rust
   }
 
@@ -49,15 +42,11 @@ main() {
   if [[ -z "${BASH_SOURCE[0]:-}" || "$(basename "${BASH_SOURCE[0]:-bash}")" == bash ]]; then
     remote_install=true
     tmpdir_sv="$(mktemp -d)" || { printf '\n  Failed to create temp directory\n' >&2; exit 1; }
-    if ! command -v git &>/dev/null; then
-      xcode-select --install 2>/dev/null || :
-      until command -v git &>/dev/null; do sleep 3; done
-      git_installed_by_script=true
-    fi
     progress
-    git clone --depth 1 --quiet "$repo" "$tmpdir_sv/StreamVault" 2>/dev/null \
-      || { printf '\n  Failed to clone repository\n' >&2; exit 1; }
-    p="$tmpdir_sv/StreamVault"
+    curl -fsSL "https://github.com/falcosan/StreamVault/archive/refs/heads/main.tar.gz" \
+      | tar xz -C "$tmpdir_sv" 2>/dev/null \
+      || { printf '\n  Failed to download repository\n' >&2; exit 1; }
+    p="$tmpdir_sv/StreamVault-main"
   else
     p="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     progress
@@ -153,7 +142,6 @@ main() {
 
   completed=true
   trap - EXIT
-  remove_git
   remove_rust
   [[ -n "$tmpdir_sv" ]] && rm -rf "$tmpdir_sv" &>/dev/null || :
   progress
