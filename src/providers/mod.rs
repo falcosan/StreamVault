@@ -72,7 +72,6 @@ mod tests {
             media_type: MediaType::Movie,
             year: Some("2010".into()),
             image_url: None,
-            tmdb_id: None,
             description: None,
             score: None,
             provider: 0,
@@ -88,7 +87,6 @@ mod tests {
             media_type: MediaType::Series,
             year: None,
             image_url: None,
-            tmdb_id: None,
             description: None,
             score: None,
             provider: 0,
@@ -172,10 +170,5 @@ mod tests {
         let loaded: Episode = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.number, 5);
         assert_eq!(loaded.duration, Some(42));
-    }
-
-    #[test]
-    fn fallback_url_is_https() {
-        assert!(StreamingCommunityProvider::FALLBACK_URL.starts_with("https://"));
     }
 }

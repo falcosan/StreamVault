@@ -16,7 +16,6 @@ pub struct MediaEntry {
     pub media_type: MediaType,
     pub year: Option<String>,
     pub score: Option<String>,
-    pub tmdb_id: Option<String>,
     pub image_url: Option<String>,
     pub description: Option<String>,
 }

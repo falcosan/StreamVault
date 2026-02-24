@@ -9,10 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 const RAIPLAY_BASE: &str = "https://www.raiplay.it";
-
 const RAIPLAY_SEARCH: &str =
     "https://www.raiplay.it/atomatic/raiplay-search-service/api/v1/msearch";
-
 const RAIPLAY_RELINKER: &str = "https://mediapolisvod.rai.it/relinker/relinkerServlet.htm";
 
 fn raiplay_hash(s: &str) -> u64 {
@@ -72,7 +70,6 @@ impl RaiPlayProvider {
             media_type: MediaType::Series,
             year,
             image_url,
-            tmdb_id: None,
             description: None,
             score: None,
             provider: 0,
@@ -108,7 +105,6 @@ impl RaiPlayProvider {
             media_type,
             year: None,
             image_url,
-            tmdb_id: None,
             description,
             score: None,
             provider: 0,

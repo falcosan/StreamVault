@@ -18,7 +18,6 @@ pub struct StreamingCommunityProvider {
 impl StreamingCommunityProvider {
     const LANG: &str = "it";
     const LANGS: &[&str] = &["it", "en"];
-    pub(crate) const FALLBACK_URL: &str = "https://streamingcommunityz.name";
     const IMG_PRIORITY: &[&str] = &["poster", "cover", "cover_mobile", "background"];
 
     pub fn with_config(timeout: u64) -> Self {
@@ -30,7 +29,7 @@ impl StreamingCommunityProvider {
             .expect("reqwest client");
         Self {
             client,
-            base_url: RwLock::new(Self::FALLBACK_URL.to_string()),
+            base_url: RwLock::new("".into()),
         }
     }
 
@@ -129,7 +128,6 @@ impl StreamingCommunityProvider {
             media_type,
             year: Self::extract_year(v),
             image_url: self.extract_image_url(v),
-            tmdb_id: v["tmdb_id"].as_u64().map(|n| n.to_string()),
             description: Self::extract_description(v),
             score: v["score"].as_str().map(String::from),
             provider: 0,
