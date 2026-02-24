@@ -16,7 +16,7 @@ main() {
     ((CURRENT == STEPS)) && printf "\n" || true
   }
 
-  if [[ -z "${BASH_SOURCE[0]:-}" || "$(basename "${BASH_SOURCE[0]:-bash}")" == "bash" ]]; then
+  if [[ "${BASH_SOURCE[0]:-}" == "" ]] || [[ "$(basename "${BASH_SOURCE[0]:-}")" == "bash" ]] || [[ ! -f "${BASH_SOURCE[0]:-}" ]]; then
     REMOTE_INSTALL=true
     TMPDIR_SV="$(mktemp -d)"
     trap 'rm -rf "$TMPDIR_SV"' EXIT
