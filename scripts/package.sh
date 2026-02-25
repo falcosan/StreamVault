@@ -8,7 +8,7 @@ main() {
   local -r bar_width=30 steps=6
   local -r required_cmds=(curl unzip tar)
   local current=0 completed=false caller_dir="$PWD"
-  local remote_install=false rust_installed_by_script=false
+  local remote_install=false rust_installed_by_script=false clt_installed_by_script=false
   local app="" dep_cache="" tmpdir_sv=""
 
   for cmd in "${required_cmds[@]}"; do
@@ -23,6 +23,11 @@ main() {
     return 0
   }
 
+  remove_clt() {
+    [[ "${clt_installed_by_script:-}" == true ]] || return 0
+    sudo rm -rf "$(xcode-select -p 2>/dev/null)" &>/dev/null || :
+  }
+
   remove_rust() {
     [[ "${rust_installed_by_script:-}" == true ]] || return 0
     rustup self uninstall -y &>/dev/null || :
@@ -34,6 +39,7 @@ main() {
     printf "\n  Interrupted, cleaning up…\n" >&2
     rm -rf "${app:+$app}" "${dep_cache:+$dep_cache}" "${tmpdir_sv:+$tmpdir_sv}" &>/dev/null || :
     remove_rust
+    remove_clt
   }
 
   trap cleanup EXIT INT TERM HUP PIPE
@@ -86,6 +92,12 @@ main() {
   fi
 
   cargo --version &>/dev/null || { printf '\n  cargo not found after setup\n' >&2; exit 1; }
+
+  if ! xcrun --find cc &>/dev/null; then
+    xcode-select --install 2>/dev/null || :
+    until xcrun --find cc &>/dev/null; do sleep 3; done
+    clt_installed_by_script=true
+  fi
 
   progress
   cargo build --release --quiet </dev/null \
@@ -153,6 +165,7 @@ main() {
   completed=true
   trap - EXIT
   remove_rust
+  remove_clt
   [[ -n "$tmpdir_sv" ]] && rm -rf "$tmpdir_sv" &>/dev/null || :
   progress
 }
