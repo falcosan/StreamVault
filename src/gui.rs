@@ -209,22 +209,19 @@ fn PosterCard(entry: MediaEntry, on_select: EventHandler<MediaEntry>) -> Element
     } else {
         "badge badge-series"
     };
-    let kind_label = if is_movie { "MOVIE" } else { "SERIES" };
     let yr = entry.year_display().to_string();
-    let score = entry.score.clone();
-    let name = entry.name.clone();
-    let e = entry.clone();
+    let kind_label = if is_movie { "MOVIE" } else { "SERIES" };
 
     rsx! {
         button {
             class: "poster-card",
             style: "{style}",
-            onclick: move |_| on_select.call(e.clone()),
-            if let Some(ref sc) = score {
+            onclick: move |_| on_select.call(entry.clone()),
+            if let Some(ref sc) = entry.score {
                 span { class: "poster-score", "★ {sc}" }
             }
             div { class: "poster-overlay",
-                div { class: "poster-title", "{name}" }
+                div { class: "poster-title", "{entry.name}" }
                 div { class: "poster-meta",
                     span { class: "{badge_class}", "{kind_label}" }
                     span { class: "poster-year", "{yr}" }

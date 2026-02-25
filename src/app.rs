@@ -163,14 +163,10 @@ pub fn App() -> Element {
 
                 spawn(async move {
                     if let Ok(entries) = p.search(&q).await {
-                        let new_entries: Vec<_> = entries
-                            .into_iter()
-                            .map(|mut e| {
-                                e.provider = idx;
-                                e
-                            })
-                            .collect();
-                        search_results.write().extend(new_entries);
+                        search_results.write().extend(entries.into_iter().map(|mut e| {
+                            e.provider = idx;
+                            e
+                        }));
                     }
 
                     let new_pending = search_pending().saturating_sub(1);
