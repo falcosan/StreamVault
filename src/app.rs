@@ -55,7 +55,7 @@ pub fn App() -> Element {
             .find_map(|l| {
                 l.trim()
                     .strip_prefix("version")
-                    .filter(|r| r.starts_with(|c: char| c == ' ' || c == '='))
+                    .filter(|r| r.starts_with(|c: char| [' ', '='].contains(&c)))
             })
             .map(|v| v.trim_start_matches([' ', '=']).trim().trim_matches('"'));
         if remote.is_some_and(|v| v != env!("CARGO_PKG_VERSION")) {
@@ -463,6 +463,11 @@ pub fn App() -> Element {
         }
     };
 
+    let on_back = move |_| {
+        let prev = history.write().pop().unwrap_or(Screen::Home);
+        screen.set(prev);
+    };
+
     let current_entry = selected_entry();
 
     rsx! {
@@ -516,10 +521,7 @@ pub fn App() -> Element {
                                     on_play_episode,
                                     on_dl_movie,
                                     on_dl_episode,
-                                    on_back: move |_| {
-                                        let prev = history.write().pop().unwrap_or(Screen::Home);
-                                        screen.set(prev);
-                                    },
+                                    on_back,
                                 }
                             }
                         } else {
@@ -543,11 +545,8 @@ pub fn App() -> Element {
                     },
                     Screen::Downloads => rsx! {
                         gui::DownloadsView {
+                            on_back,
                             downloads: ReadSignal::from(downloads),
-                            on_back: move |_| {
-                                let prev = history.write().pop().unwrap_or(Screen::Home);
-                                screen.set(prev);
-                            },
                         }
                     },
                 }
