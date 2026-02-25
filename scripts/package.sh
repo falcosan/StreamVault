@@ -23,11 +23,6 @@ main() {
     return 0
   }
 
-  remove_clt() {
-    [[ "${clt_installed_by_script:-}" == true ]] || return 0
-    sudo rm -rf "$(xcode-select -p 2>/dev/null)" &>/dev/null || :
-  }
-
   remove_rust() {
     [[ "${rust_installed_by_script:-}" == true ]] || return 0
     rustup self uninstall -y &>/dev/null || :
@@ -39,7 +34,6 @@ main() {
     printf "\n  Interrupted, cleaning up…\n" >&2
     rm -rf "${app:+$app}" "${dep_cache:+$dep_cache}" "${tmpdir_sv:+$tmpdir_sv}" &>/dev/null || :
     remove_rust
-    remove_clt
   }
 
   trap cleanup EXIT INT TERM HUP PIPE
@@ -165,7 +159,6 @@ main() {
   completed=true
   trap - EXIT
   remove_rust
-  remove_clt
   [[ -n "$tmpdir_sv" ]] && rm -rf "$tmpdir_sv" &>/dev/null || :
   progress
 }
