@@ -83,13 +83,11 @@ pub fn App() -> Element {
         use_future(move || {
             let providers = providers.clone();
             async move {
-                for p in &providers {
-                    p.init().await;
-                }
                 let per_provider = 100 / providers.len();
                 for (idx, p) in providers.iter().enumerate() {
                     let p = p.clone();
                     spawn(async move {
+                        p.init().await;
                         if let Ok(entries) = p.get_catalog(per_provider).await {
                             provider_online.set(true);
                             let mut cat = catalog.write();
@@ -192,18 +190,16 @@ pub fn App() -> Element {
                                 } else if let Some(pos) = t.find(q_lower.as_str()) {
                                     600 - (pos.min(100) as u16)
                                 } else {
-                                    let d = e
-                                        .description
-                                        .as_ref()
-                                        .map(|s| s.to_lowercase())
-                                        .unwrap_or_default();
-                                    if d.contains(q_lower.as_str()) {
+                                    let d = e.description.as_ref().map(|s| s.to_lowercase());
+                                    if d.as_ref().is_some_and(|d| d.contains(q_lower.as_str())) {
                                         450
                                     } else {
                                         let matches = q_words
                                             .iter()
                                             .filter(|w| {
-                                                t.contains(w.as_str()) || d.contains(w.as_str())
+                                                t.contains(w.as_str())
+                                                    || d.as_ref()
+                                                        .is_some_and(|d| d.contains(w.as_str()))
                                             })
                                             .count();
                                         (matches * 200).min(400) as u16

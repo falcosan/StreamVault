@@ -444,12 +444,12 @@ pub fn DownloadsView(
 
 #[component]
 fn DlCard(progress: DownloadProgress) -> Element {
-    let (status_text, status_color) = match &progress.status {
-        DownloadStatus::Queued => ("Queued".to_string(), "var(--text3)"),
-        DownloadStatus::Downloading => ("Downloading...".to_string(), "var(--accent)"),
-        DownloadStatus::Muxing => ("Muxing...".to_string(), "var(--warn)"),
-        DownloadStatus::Completed => ("Completed".to_string(), "var(--success)"),
-        DownloadStatus::Failed(ref e) => (e.clone(), "var(--danger)"),
+    let (status_text, status_color): (&str, &str) = match &progress.status {
+        DownloadStatus::Queued => ("Queued", "var(--text3)"),
+        DownloadStatus::Downloading => ("Downloading...", "var(--accent)"),
+        DownloadStatus::Muxing => ("Muxing...", "var(--warn)"),
+        DownloadStatus::Completed => ("Completed", "var(--success)"),
+        DownloadStatus::Failed(ref e) => (e.as_str(), "var(--danger)"),
     };
 
     rsx! {
