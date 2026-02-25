@@ -8,7 +8,7 @@ main() {
   local -r bar_width=30 steps=6
   local -r required_cmds=(curl unzip tar)
   local current=0 completed=false caller_dir="$PWD"
-  local remote_install=false rust_installed_by_script=false clt_installed_by_script=false
+  local remote_install=false rust_installed_by_script=false
   local app="" dep_cache="" tmpdir_sv=""
 
   for cmd in "${required_cmds[@]}"; do
@@ -32,6 +32,7 @@ main() {
   cleanup() {
     [[ "${completed:-}" == true ]] && return 0
     printf "\n  Interrupted, cleaning up…\n" >&2
+    rm -f "/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress" &>/dev/null || :
     rm -rf "${app:+$app}" "${dep_cache:+$dep_cache}" "${tmpdir_sv:+$tmpdir_sv}" &>/dev/null || :
     remove_rust
   }
@@ -88,9 +89,22 @@ main() {
   cargo --version &>/dev/null || { printf '\n  cargo not found after setup\n' >&2; exit 1; }
 
   if ! xcrun --find cc &>/dev/null; then
-    xcode-select --install 2>/dev/null || :
-    until xcrun --find cc &>/dev/null; do sleep 3; done
-    clt_installed_by_script=true
+    local clt_placeholder="/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"
+    touch "$clt_placeholder"
+    local clt_pkg
+    clt_pkg="$(softwareupdate --list 2>/dev/null \
+      | grep -o 'Command Line Tools[^*]*' \
+      | sort -V \
+      | tail -n1 \
+      | xargs)" || :
+    if [[ -n "$clt_pkg" ]]; then
+      softwareupdate --install "$clt_pkg" --agree-to-license &>/dev/null \
+        || { rm -f "$clt_placeholder"; printf '\n  CLT installation failed\n' >&2; exit 1; }
+    else
+      rm -f "$clt_placeholder"
+      printf '\n  Command Line Tools package not found\n' >&2; exit 1
+    fi
+    rm -f "$clt_placeholder"
   fi
 
   progress
