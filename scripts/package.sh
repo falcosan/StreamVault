@@ -75,6 +75,7 @@ main() {
     [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
   else
     progress
+    rm -rf "$HOME/.rustup" "$HOME/.cargo" &>/dev/null || :
     local rustup_init="$(mktemp)"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$rustup_init" \
       || { printf '\n  Rust installation failed\n' >&2; rm -f "$rustup_init"; exit 1; }
