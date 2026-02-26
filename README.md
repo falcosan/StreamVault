@@ -93,15 +93,6 @@ StreamVault stores its configuration in a JSON file. On first launch, a default 
 | `scripts/`       | Build, packaging, and update automation scripts                                                                          |
 | `assets/`        | Logo and branding assets                                                                                                 |
 
-## Tech Stack
-
-- **Language:** Rust (2021 edition)
-- **UI Framework:** [Dioxus](https://dioxuslabs.com/) 0.7 (Desktop / WebView)
-- **HTTP Client:** [reqwest](https://docs.rs/reqwest) with cookies and JSON support
-- **Async Runtime:** [Tokio](https://tokio.rs/)
-- **HTML Parsing:** [scraper](https://docs.rs/scraper)
-- **Serialization:** [serde](https://serde.rs/) + serde_json
-
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
