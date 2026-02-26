@@ -381,7 +381,22 @@ pub fn PlayerView(
     let show_next = has_next_episode();
 
     rsx! {
-        div { class: "player-screen",
+        div {
+            tabindex: "0",
+            autofocus: true,
+            class: "player-screen",
+            onkeydown: move |e: KeyboardEvent| {
+                let js: Option<&str> = match e.key() {
+                    Key::ArrowLeft => Some("document.querySelector('.player-video').currentTime -= 15;"),
+                    Key::ArrowRight => Some("document.querySelector('.player-video').currentTime += 15;"),
+                    Key::Character(c) if c == " " => Some("const v=document.querySelector('.player-video');v.paused?v.play():v.pause();"),
+                    _ => None,
+                };
+                if let Some(js) = js {
+                    e.prevent_default();
+                    document::eval(js);
+                }
+            },
             div { class: "player-top-bar",
                 button { class: "btn-ghost", onclick: move |_| on_stop.call(()), "← Stop" }
                 span { class: "player-title-text", "{title}" }
@@ -392,10 +407,10 @@ pub fn PlayerView(
             div { class: "player-video-container",
                 if let Some(ref src) = url {
                     video {
-                        class: "player-video",
                         src: "{src}",
                         controls: true,
                         autoplay: true,
+                        class: "player-video",
                     }
                 }
             }
