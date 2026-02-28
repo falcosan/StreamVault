@@ -21,10 +21,17 @@ fn bundled_bin_dir() -> Option<PathBuf> {
     None
 }
 
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
 pub fn find_binary(name: &str) -> PathBuf {
     if let Some(bin_dir) = bundled_bin_dir() {
         let bundled = bin_dir.join(name);
-        if bundled.exists() {
+        if is_executable(&bundled) {
             return bundled;
         }
     }
@@ -39,7 +46,7 @@ pub fn find_binary(name: &str) -> PathBuf {
     ];
     candidates
         .into_iter()
-        .find(|p| p.exists())
+        .find(|p| is_executable(p))
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
@@ -116,9 +123,16 @@ impl DownloadEngine {
             return;
         }
 
-        let n_m3u8dl = find_binary("N_m3u8DL-RE");
         let ffmpeg = find_binary("ffmpeg");
+        let n_m3u8dl = find_binary("N_m3u8DL-RE");
         let save_name = sanitize_filename(&filename);
+
+        let tmp_dir = output_dir.join("tmp").join(id.to_string());
+        if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
+            progress.status = DownloadStatus::Failed(format!("Cannot create tmp dir: {e}"));
+            let _ = tx.send(progress);
+            return;
+        }
 
         let mut cmd = Command::new(&n_m3u8dl);
         cmd.arg(&stream_url)
@@ -127,7 +141,7 @@ impl DownloadEngine {
             .arg("--save-dir")
             .arg(&output_dir)
             .arg("--tmp-dir")
-            .arg(output_dir.join("tmp"))
+            .arg(&tmp_dir)
             .arg("--ffmpeg-binary-path")
             .arg(&ffmpeg)
             .arg("--no-log")
@@ -211,7 +225,10 @@ impl DownloadEngine {
                     progress.status = DownloadStatus::Muxing;
                     let _ = tx.send(progress.clone());
                 }
-                match self.mux_output(&ffmpeg, &output_dir, &save_name).await {
+                match self
+                    .mux_output(&ffmpeg, &output_dir, &save_name, &tmp_dir)
+                    .await
+                {
                     Ok(_) => {
                         progress.status = DownloadStatus::Completed;
                     }
@@ -234,7 +251,10 @@ impl DownloadEngine {
                 if has_ts {
                     progress.status = DownloadStatus::Muxing;
                     let _ = tx.send(progress.clone());
-                    match self.mux_output(&ffmpeg, &output_dir, &save_name).await {
+                    match self
+                        .mux_output(&ffmpeg, &output_dir, &save_name, &tmp_dir)
+                        .await
+                    {
                         Ok(_) => {
                             progress.status = DownloadStatus::Completed;
                         }
@@ -276,6 +296,7 @@ impl DownloadEngine {
         ffmpeg: &std::path::Path,
         output_dir: &std::path::Path,
         save_name: &str,
+        tmp_dir: &std::path::Path,
     ) -> Result<(), String> {
         let ext = &self.config.process.extension;
         let out_file = output_dir.join(format!("{save_name}.{ext}"));
@@ -362,9 +383,8 @@ impl DownloadEngine {
         for vtt in &vtt_files {
             let _ = tokio::fs::remove_file(vtt).await;
         }
-        for dir_name in &["tmp", save_name] {
-            let _ = tokio::fs::remove_dir_all(output_dir.join(dir_name)).await;
-        }
+        let _ = tokio::fs::remove_dir_all(output_dir.join(save_name)).await;
+        let _ = tokio::fs::remove_dir_all(tmp_dir).await;
 
         Ok(())
     }
