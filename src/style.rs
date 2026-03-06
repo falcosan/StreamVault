@@ -123,6 +123,12 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .badge-movie { background: var(--accent); color: var(--accent-text); }
 .badge-series { background: #0091d5; color: white; }
 .poster-year { font-size: 10px; color: #b0b0b0; }
+.poster-provider {
+    position: absolute; top: 6px; left: 6px;
+    font-size: 8px; font-weight: 700; color: white;
+    background: rgba(0,0,0,0.7); padding: 2px 6px; border-radius: 3px;
+    z-index: 1; text-transform: uppercase; letter-spacing: 0.5px;
+}
 .poster-score {
     position: absolute; top: 6px; right: 6px;
     font-size: 10px; font-weight: 700; color: var(--accent-text);
@@ -158,6 +164,11 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
     display: flex; align-items: center; gap: 10px;
 }
 .details-kind-badge { font-size: 10px; padding: 2px 10px; border-radius: 3px; }
+.details-provider-badge {
+    font-size: 10px; padding: 2px 10px; border-radius: 3px;
+    background: rgba(255,255,255,0.12); color: var(--text2);
+    text-transform: uppercase; letter-spacing: 0.5px;
+}
 .details-year { font-size: 13px; color: #bbbbbb; }
 .details-actions { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
 .details-desc {

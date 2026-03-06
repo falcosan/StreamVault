@@ -41,6 +41,15 @@ fn poster_color(name: &str) -> String {
     format!("rgb({r},{g},{b})")
 }
 
+fn provider_label(idx: usize) -> &'static str {
+    match idx {
+        0 => "StreamingCommunity",
+        1 => "RaiPlay",
+        2 => "GuardaSerie",
+        _ => "Unknown",
+    }
+}
+
 #[component]
 pub fn Navbar(
     screen: Signal<Screen>,
@@ -211,12 +220,14 @@ fn PosterCard(entry: MediaEntry, on_select: EventHandler<MediaEntry>) -> Element
     };
     let yr = entry.year_display().to_string();
     let kind_label = if is_movie { "MOVIE" } else { "SERIES" };
+    let prov = provider_label(entry.provider);
 
     rsx! {
         button {
             class: "poster-card",
             style: "{style}",
             onclick: move |_| on_select.call(entry.clone()),
+            span { class: "poster-provider", "{prov}" }
             if let Some(ref sc) = entry.score {
                 span { class: "poster-score", "★ {sc}" }
             }
@@ -255,6 +266,7 @@ pub fn DetailsView(
     };
     let kind_label = if is_movie { "MOVIE" } else { "SERIES" };
     let yr = entry.year_display().to_string();
+    let prov = provider_label(entry.provider);
     let name = entry.name.clone();
     let description = entry.description.clone();
     let score = entry.score.clone();
@@ -275,6 +287,7 @@ pub fn DetailsView(
                     div { class: "details-title", "{name}" }
                     div { class: "details-meta",
                         span { class: "details-kind-badge", style: "background: {kind_color}; color: {kind_text};", "{kind_label}" }
+                        span { class: "details-provider-badge", "{prov}" }
                         span { class: "details-year", "{yr}" }
                     }
                     if is_movie {
