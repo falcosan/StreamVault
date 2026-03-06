@@ -125,7 +125,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .poster-year { font-size: 10px; color: #b0b0b0; }
 .poster-provider {
     position: absolute; top: 6px; left: 6px;
-    font-size: 8px; font-weight: 700; color: white;
+    font-size: 7px; font-weight: 700; color: white;
     background: rgba(0,0,0,0.7); padding: 2px 6px; border-radius: 3px;
     z-index: 1; text-transform: uppercase; letter-spacing: 0.5px;
 }
