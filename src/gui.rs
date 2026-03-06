@@ -41,6 +41,13 @@ fn poster_color(name: &str) -> String {
     format!("rgb({r},{g},{b})")
 }
 
+fn format_score(s: &str) -> String {
+    match s.parse::<f64>() {
+        Ok(v) => format!("{v:.1}"),
+        Err(_) => s.to_string(),
+    }
+}
+
 fn provider_label(idx: usize) -> &'static str {
     match idx {
         0 => "StreamingCommunity",
@@ -230,7 +237,7 @@ fn PosterCard(entry: MediaEntry, on_select: EventHandler<MediaEntry>) -> Element
             onclick: move |_| on_select.call(entry.clone()),
             span { class: "poster-provider", "{prov}" }
             if let Some(ref sc) = entry.score {
-                span { class: "poster-score", "★ {sc}" }
+                { let s = format_score(sc); rsx! { span { class: "poster-score", "★ {s}" } } }
             }
             div { class: "poster-overlay",
                 div { class: "poster-title", "{entry.name}" }
@@ -301,7 +308,7 @@ pub fn DetailsView(
                         p { class: "details-desc", "{desc}" }
                     }
                     if let Some(ref sc) = score {
-                        div { class: "details-score", "★ {sc}" }
+                        { let s = format_score(sc); rsx! { div { class: "details-score", "★ {s}" } } }
                     }
                 }
                 div { class: "details-poster",
@@ -371,7 +378,6 @@ fn EpisodeRow(
         button {
             class: "episode-row",
             onclick: move |_| on_play.call((season, number)),
-            span { class: "ep-num", "{number}" }
             div { class: "ep-info",
                 div { class: "ep-name", "{name}" }
                 div { class: "ep-dur", "{duration}" }

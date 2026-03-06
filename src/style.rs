@@ -204,7 +204,6 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
     width: 100%; text-align: left; color: var(--text);
 }
 .episode-row:hover { background: var(--surface2); }
-.ep-num { font-size: 18px; color: var(--text3); width: 30px; text-align: center; flex-shrink: 0; }
 .ep-info { flex: 1; }
 .ep-name { font-size: 13px; color: var(--text); }
 .ep-dur { font-size: 11px; color: var(--text3); margin-top: 2px; }
