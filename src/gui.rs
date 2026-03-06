@@ -45,7 +45,7 @@ fn provider_label(idx: usize) -> &'static str {
     match idx {
         0 => "StreamingCommunity",
         1 => "RaiPlay",
-        2 => "GuardaSerie",
+        2 => "Nove",
         _ => "Unknown",
     }
 }

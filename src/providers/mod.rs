@@ -1,8 +1,10 @@
 mod models;
+mod nove;
 mod raiplay;
 mod streaming_community;
 
 pub use models::*;
+pub use nove::NoveProvider;
 pub use raiplay::RaiPlayProvider;
 pub use streaming_community::StreamingCommunityProvider;
 

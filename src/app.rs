@@ -1,6 +1,8 @@
 use crate::config::AppConfig;
 use crate::gui::{self, Screen};
-use crate::providers::{MediaEntry, Provider, RaiPlayProvider, StreamingCommunityProvider};
+use crate::providers::{
+    MediaEntry, NoveProvider, Provider, RaiPlayProvider, StreamingCommunityProvider,
+};
 use crate::util::{DownloadEngine, DownloadProgress, DownloadRequest};
 use dioxus::prelude::*;
 use std::sync::Arc;
@@ -16,6 +18,7 @@ pub fn App() -> Element {
                 config.requests.timeout,
             )) as Arc<dyn Provider>,
             Arc::new(RaiPlayProvider::with_config(config.requests.timeout)),
+            Arc::new(NoveProvider::with_config(config.requests.timeout)),
         ]
     });
     let mut provider_online = use_signal(|| false);
@@ -163,10 +166,12 @@ pub fn App() -> Element {
 
                 spawn(async move {
                     if let Ok(entries) = p.search(&q).await {
-                        search_results.write().extend(entries.into_iter().map(|mut e| {
-                            e.provider = idx;
-                            e
-                        }));
+                        search_results
+                            .write()
+                            .extend(entries.into_iter().map(|mut e| {
+                                e.provider = idx;
+                                e
+                            }));
                     }
 
                     let new_pending = search_pending().saturating_sub(1);
