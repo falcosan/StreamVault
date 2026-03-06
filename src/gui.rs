@@ -46,6 +46,7 @@ fn provider_label(idx: usize) -> &'static str {
         0 => "StreamingCommunity",
         1 => "RaiPlay",
         2 => "Nove",
+        3 => "AnimeUnity",
         _ => "Unknown",
     }
 }

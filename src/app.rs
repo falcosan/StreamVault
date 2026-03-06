@@ -1,7 +1,8 @@
 use crate::config::AppConfig;
 use crate::gui::{self, Screen};
 use crate::providers::{
-    MediaEntry, NoveProvider, Provider, RaiPlayProvider, StreamingCommunityProvider,
+    AnimeUnityProvider, MediaEntry, NoveProvider, Provider, RaiPlayProvider,
+    StreamingCommunityProvider,
 };
 use crate::util::{DownloadEngine, DownloadProgress, DownloadRequest};
 use dioxus::prelude::*;
@@ -19,6 +20,7 @@ pub fn App() -> Element {
             )) as Arc<dyn Provider>,
             Arc::new(RaiPlayProvider::with_config(config.requests.timeout)),
             Arc::new(NoveProvider::with_config(config.requests.timeout)),
+            Arc::new(AnimeUnityProvider::with_config(config.requests.timeout)),
         ]
     });
     let mut provider_online = use_signal(|| false);

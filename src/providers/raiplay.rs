@@ -13,10 +13,7 @@ const RAIPLAY_SEARCH: &str =
     "https://www.raiplay.it/atomatic/raiplay-search-service/api/v1/msearch";
 const RAIPLAY_RELINKER: &str = "https://mediapolisvod.rai.it/relinker/relinkerServlet.htm";
 
-fn raiplay_hash(s: &str) -> u64 {
-    s.bytes()
-        .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64))
-}
+use super::provider_hash;
 
 fn raiplay_abs_url(s: &str) -> String {
     if s.starts_with("http") {
@@ -64,7 +61,7 @@ impl RaiPlayProvider {
             })
         });
         Some(MediaEntry {
-            id: raiplay_hash(&slug),
+            id: provider_hash(&slug),
             name,
             slug,
             media_type: MediaType::Series,
@@ -99,7 +96,7 @@ impl RaiPlayProvider {
             _ => MediaType::Series,
         };
         Some(MediaEntry {
-            id: raiplay_hash(&slug),
+            id: provider_hash(&slug),
             name,
             slug,
             media_type,
@@ -321,7 +318,7 @@ impl Provider for RaiPlayProvider {
                 .as_str()
                 .or_else(|| card["url"].as_str())
                 .unwrap_or("");
-            let ep_id = raiplay_hash(&format!("{}{}", entry.slug, weblink));
+            let ep_id = provider_hash(&format!("{}{}", entry.slug, weblink));
             if !weblink.is_empty() {
                 ep_urls.insert(ep_id, raiplay_abs_url(weblink));
             }

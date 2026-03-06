@@ -12,10 +12,7 @@ const NOVE_ENV: &str = "nove";
 const PLAYBACK_URL: &str = "https://public.aurora.enhanced.live/playback/v3/videoPlaybackInfo";
 const DPLAY_PLAYBACK_URL: &str = "https://eu1-prod.disco-api.com/playback/v3/videoPlaybackInfo";
 
-fn nove_hash(s: &str) -> u64 {
-    s.bytes()
-        .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64))
-}
+use super::provider_hash;
 
 fn build_show_url(slug: &str, parent_slug: &str) -> String {
     let normalized = slug.to_lowercase().replace(' ', "-");
@@ -121,7 +118,7 @@ impl Provider for NoveProvider {
             let image_url = item["image"]["url"].as_str().map(String::from);
 
             entries.push(MediaEntry {
-                id: nove_hash(&show_url),
+                id: provider_hash(&show_url),
                 name: title,
                 slug: show_url,
                 media_type: MediaType::Series,
@@ -199,7 +196,7 @@ impl Provider for NoveProvider {
                 None
             };
 
-            let ep_id = nove_hash(&format!("{}-{}-{}", entry.id, season, video_id));
+            let ep_id = provider_hash(&format!("{}-{}-{}", entry.id, season, video_id));
             ep_map.insert(ep_id, (video_id, channel));
 
             episodes.push(Episode {
@@ -304,7 +301,7 @@ impl Provider for NoveProvider {
                 };
                 let parent_slug = item["parentUrl"].as_str().unwrap_or("");
                 let show_url = build_show_url(slug, parent_slug);
-                let id = nove_hash(&show_url);
+                let id = provider_hash(&show_url);
                 if !seen.insert(id) {
                     continue;
                 }

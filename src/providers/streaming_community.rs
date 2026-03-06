@@ -1,6 +1,6 @@
 use super::{
     Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, Season, StreamUrl,
-    DOMAINS_URL, USER_AGENT,
+    USER_AGENT,
 };
 use async_trait::async_trait;
 use regex::Regex;
@@ -9,7 +9,6 @@ use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::sync::{LazyLock, RwLock};
 use std::time::Duration;
-use tokio::time::sleep;
 use url::Url;
 
 pub struct StreamingCommunityProvider {
@@ -46,28 +45,7 @@ impl StreamingCommunityProvider {
     }
 
     async fn resolve_domain(&self) {
-        for attempt in 0u64..3 {
-            match self.client.get(DOMAINS_URL).send().await {
-                Ok(resp) => match resp.json::<serde_json::Value>().await {
-                    Ok(json) => {
-                        if let Some(url) = json["streamingcommunity"]["full_url"].as_str() {
-                            let url = url.trim_end_matches('/').to_string();
-                            if url.starts_with("http") {
-                                eprintln!("[StreamVault] Resolved SC domain: {url}");
-                                *self.base_url.write().unwrap() = url;
-                                return;
-                            }
-                        }
-                    }
-                    Err(e) => eprintln!("[StreamVault] Domain JSON parse failed: {e}"),
-                },
-                Err(e) => eprintln!("[StreamVault] Domain resolve failed: {e}"),
-            }
-            if attempt + 1 < 3 {
-                sleep(Duration::from_millis(300 * (attempt + 1))).await;
-            }
-        }
-        eprintln!("[StreamVault] Failed to resolve domain after 3 attempts");
+        super::resolve_domain_url(&self.client, "streamingcommunity", &self.base_url).await;
     }
 
     fn parse_data_page(html: &str) -> ProviderResult<serde_json::Value> {

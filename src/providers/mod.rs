@@ -1,8 +1,10 @@
+mod animeunity;
 mod models;
 mod nove;
 mod raiplay;
 mod streaming_community;
 
+pub use animeunity::AnimeUnityProvider;
 pub use models::*;
 pub use nove::NoveProvider;
 pub use raiplay::RaiPlayProvider;
@@ -13,6 +15,40 @@ pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_1
 
 pub(crate) const DOMAINS_URL: &str =
     "https://raw.githubusercontent.com/Arrowar/SC_Domains/refs/heads/main/domains.json";
+
+pub(crate) fn provider_hash(s: &str) -> u64 {
+    s.bytes()
+        .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64))
+}
+
+pub(crate) async fn resolve_domain_url(
+    client: &reqwest::Client,
+    key: &str,
+    base_url: &std::sync::RwLock<String>,
+) {
+    for attempt in 0u64..3 {
+        match client.get(DOMAINS_URL).send().await {
+            Ok(resp) => match resp.json::<serde_json::Value>().await {
+                Ok(json) => {
+                    if let Some(url) = json[key]["full_url"].as_str() {
+                        let url = url.trim_end_matches('/').to_string();
+                        if url.starts_with("http") {
+                            eprintln!("[StreamVault] Resolved {key} domain: {url}");
+                            *base_url.write().unwrap() = url;
+                            return;
+                        }
+                    }
+                }
+                Err(e) => eprintln!("[StreamVault] {key} domain parse error: {e}"),
+            },
+            Err(e) => eprintln!("[StreamVault] {key} domain fetch error: {e}"),
+        }
+        if attempt < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * (attempt + 1))).await;
+        }
+    }
+    eprintln!("[StreamVault] Failed to resolve {key} domain after 3 attempts");
+}
 
 #[derive(Debug, Clone)]
 pub enum ProviderError {
