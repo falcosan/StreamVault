@@ -9,7 +9,6 @@ use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::sync::{LazyLock, RwLock};
 use std::time::Duration;
-use url::Url;
 
 pub struct StreamingCommunityProvider {
     client: Client,
@@ -259,17 +258,6 @@ impl StreamingCommunityProvider {
     async fn extract_stream_url(&self, iframe_url: &str) -> ProviderResult<StreamUrl> {
         static SCRIPT_SEL: LazyLock<Selector> =
             LazyLock::new(|| Selector::parse("script").unwrap());
-        static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r#"(?:['"]token['"]|token)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
-        });
-        static EXPIRES_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r#"(?:['"]expires['"]|expires)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
-        });
-        static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r#"(?:['"]url['"]|url)\s*:\s*['"](?P<url>https?://[^'"]+)['"]"#).unwrap()
-        });
-        static FHD_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"window\.canPlayFHD\s*=\s*(true|false)").unwrap());
 
         let resp = self.client.get(iframe_url).send().await?;
         let html = resp.text().await?;
@@ -280,47 +268,11 @@ impl StreamingCommunityProvider {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let token = TOKEN_RE
-            .captures(&script)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
-            .ok_or_else(|| ProviderError::StreamExtraction("No token".into()))?;
-        let expires = EXPIRES_RE
-            .captures(&script)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
-            .ok_or_else(|| ProviderError::StreamExtraction("No expires".into()))?;
-        let base = URL_RE
-            .captures(&script)
-            .and_then(|c| c.name("url"))
-            .map(|m| m.as_str().to_string())
-            .ok_or_else(|| ProviderError::StreamExtraction("No URL".into()))?;
-        let fhd = FHD_RE
-            .captures(&script)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str() == "true")
-            .unwrap_or(false);
-
-        let mut parsed =
-            Url::parse(&base).map_err(|e| ProviderError::Parse(format!("Invalid URL: {e}")))?;
-        let has_b = parsed.query_pairs().any(|(k, v)| k == "b" && v == "1");
-        parsed.set_query(None);
-
-        {
-            let mut pairs = parsed.query_pairs_mut();
-            pairs.clear();
-            if fhd {
-                pairs.append_pair("h", "1");
-            }
-            if has_b {
-                pairs.append_pair("b", "1");
-            }
-            pairs.append_pair("token", &token);
-            pairs.append_pair("expires", &expires);
-        }
+        let url = super::parse_vixcloud_hls(&script)
+            .ok_or_else(|| ProviderError::StreamExtraction("No HLS params in script".into()))?;
 
         Ok(StreamUrl {
-            url: parsed.to_string(),
+            url,
             headers: vec![("User-Agent".into(), USER_AGENT.to_string())],
         })
     }

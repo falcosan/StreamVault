@@ -3,14 +3,12 @@ use super::{
     USER_AGENT,
 };
 use async_trait::async_trait;
-use regex::Regex;
 use reqwest::{Client, RequestBuilder};
 use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use url::Url;
 
 const AUTH_TTL: Duration = Duration::from_secs(300);
 
@@ -188,41 +186,7 @@ impl AnimeUnityProvider {
     }
 
     fn build_hls_url(script: &str) -> Option<String> {
-        static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r#"(?:['"]token['"]|token)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
-        });
-        static EXPIRES_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r#"(?:['"]expires['"]|expires)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
-        });
-        static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r#"(?:['"]url['"]|url)\s*:\s*['"](?P<url>https?://[^'"]+)['"]"#).unwrap()
-        });
-        static FHD_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"window\.canPlayFHD\s*=\s*(true|false)"#).unwrap());
-
-        let token = TOKEN_RE.captures(script)?.get(1)?.as_str();
-        let expires = EXPIRES_RE.captures(script)?.get(1)?.as_str();
-        let base_url = URL_RE.captures(script)?.get(1)?.as_str();
-        let can_fhd = FHD_RE
-            .captures(script)
-            .and_then(|c| c.get(1))
-            .is_some_and(|m| m.as_str() == "true");
-
-        let mut parsed = Url::parse(base_url).ok()?;
-        let has_b = parsed.query_pairs().any(|(k, v)| k == "b" && v == "1");
-        {
-            let mut q = parsed.query_pairs_mut();
-            q.clear();
-            if can_fhd {
-                q.append_pair("h", "1");
-            }
-            if has_b {
-                q.append_pair("b", "1");
-            }
-            q.append_pair("token", token);
-            q.append_pair("expires", expires);
-        }
-        Some(parsed.to_string())
+        super::parse_vixcloud_hls(script)
     }
 }
 
