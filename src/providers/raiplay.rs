@@ -70,7 +70,7 @@ impl RaiPlayProvider {
             description: None,
             score: None,
             provider: 0,
-            language: String::new(),
+            language: "it".to_string(),
         })
     }
 
@@ -105,7 +105,7 @@ impl RaiPlayProvider {
             description,
             score: None,
             provider: 0,
-            language: String::new(),
+            language: "it".to_string(),
         })
     }
 
@@ -394,8 +394,7 @@ impl Provider for RaiPlayProvider {
                 if item["type"].as_str() != Some("RaiPlay Programma Item") {
                     continue;
                 }
-                if let Some(mut e) = Self::parse_catalog_result(item) {
-                    e.language = "it".to_string();
+                if let Some(e) = Self::parse_catalog_result(item) {
                     if seen.insert(e.id) {
                         entries.push(e);
                     }

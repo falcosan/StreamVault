@@ -4,12 +4,17 @@ use super::{
 };
 use async_trait::async_trait;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{Client, RequestBuilder};
 use scraper::{Html, Selector};
 use std::collections::HashSet;
 use std::sync::{LazyLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 use url::Url;
+
+const AUTH_TTL: Duration = Duration::from_secs(300);
+
+static SCRIPT_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("body script").unwrap());
 
 fn percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
@@ -29,9 +34,27 @@ fn percent_decode(input: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
+fn parse_number(val: &serde_json::Value) -> Option<u32> {
+    val.as_u64()
+        .map(|n| n as u32)
+        .or_else(|| val.as_f64().map(|n| n as u32))
+        .or_else(|| {
+            val.as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|n| n as u32)
+        })
+}
+
+struct Auth {
+    xsrf: String,
+    session: String,
+    at: Instant,
+}
+
 pub struct AnimeUnityProvider {
     client: Client,
     base_url: RwLock<String>,
+    auth: Mutex<Option<Auth>>,
 }
 
 impl AnimeUnityProvider {
@@ -44,6 +67,7 @@ impl AnimeUnityProvider {
         Self {
             client,
             base_url: RwLock::new(String::new()),
+            auth: Mutex::new(None),
         }
     }
 
@@ -55,25 +79,13 @@ impl AnimeUnityProvider {
         super::resolve_domain_url(&self.client, "animeunity", &self.base_url).await;
     }
 
-    fn cookie_header(auth: &(String, String)) -> String {
-        format!("XSRF-TOKEN={}; animeunity_session={}", auth.0, auth.1)
-    }
-
-    fn collect_records(
-        json: &serde_json::Value,
-        seen: &mut HashSet<u64>,
-        entries: &mut Vec<MediaEntry>,
-    ) {
-        for record in json["records"].as_array().unwrap_or(&Vec::new()) {
-            if let Some(e) = Self::parse_record(record) {
-                if seen.insert(e.id) {
-                    entries.push(e);
-                }
+    async fn ensure_auth(&self) -> ProviderResult<(String, String)> {
+        let mut guard = self.auth.lock().await;
+        if let Some(ref a) = *guard {
+            if a.at.elapsed() < AUTH_TTL {
+                return Ok((a.xsrf.clone(), a.session.clone()));
             }
         }
-    }
-
-    async fn get_auth(&self) -> ProviderResult<(String, String)> {
         let base = self.base_url();
         let resp = self.client.get(&base).send().await?;
         let mut xsrf = String::new();
@@ -89,7 +101,24 @@ impl AnimeUnityProvider {
         if xsrf.is_empty() {
             return Err(ProviderError::Network("Failed to get XSRF token".into()));
         }
+        *guard = Some(Auth {
+            xsrf: xsrf.clone(),
+            session: session.clone(),
+            at: Instant::now(),
+        });
         Ok((xsrf, session))
+    }
+
+    fn auth_request(&self, builder: RequestBuilder, auth: &(String, String)) -> RequestBuilder {
+        let base = self.base_url();
+        builder
+            .header(
+                "cookie",
+                format!("XSRF-TOKEN={}; animeunity_session={}", auth.0, auth.1),
+            )
+            .header("x-xsrf-token", &auth.0)
+            .header("origin", &base)
+            .header("referer", format!("{base}/"))
     }
 
     fn parse_record(record: &serde_json::Value) -> Option<MediaEntry> {
@@ -105,111 +134,60 @@ impl AnimeUnityProvider {
             Some("Movie") | Some("Film") => MediaType::Movie,
             _ => MediaType::Series,
         };
-        let image_url = record["imageurl"].as_str().map(String::from);
-        let episodes_count = record["episodes_count"].as_u64();
-        let score = record["score"]
-            .as_str()
-            .map(String::from)
-            .or_else(|| record["score"].as_f64().map(|s| format!("{s:.1}")));
-        let description = record["plot"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(String::from);
-        let year = record["date"]
-            .as_str()
-            .and_then(|d| d.split('-').next())
-            .map(String::from);
-
         Some(MediaEntry {
             id,
             name,
-            slug: format!("{id}:{slug}:{}", episodes_count.unwrap_or(0)),
+            slug: format!(
+                "{id}:{slug}:{}",
+                record["episodes_count"].as_u64().unwrap_or(0)
+            ),
             media_type,
-            year,
-            image_url,
-            description,
-            score,
+            year: record["date"]
+                .as_str()
+                .and_then(|d| d.split('-').next())
+                .map(String::from),
+            image_url: record["imageurl"].as_str().map(String::from),
+            description: record["plot"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            score: record["score"]
+                .as_str()
+                .map(String::from)
+                .or_else(|| record["score"].as_f64().map(|s| format!("{s:.1}"))),
             provider: 0,
             language: "ja".to_string(),
         })
     }
 
     fn parse_slug(slug: &str) -> (u64, u64) {
-        let parts: Vec<&str> = slug.split(':').collect();
-        let media_id = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let ep_count = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let mut parts = slug.split(':');
+        let media_id = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let ep_count = parts.nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
         (media_id, ep_count)
     }
 
-    async fn fetch_episodes_batch(
-        &self,
-        media_id: u64,
-        start: u64,
-        end: u64,
-        auth: &(String, String),
-    ) -> ProviderResult<Vec<serde_json::Value>> {
-        let base = self.base_url();
-        let url = format!("{base}/info_api/{media_id}/1");
-        let resp = self
-            .client
-            .get(&url)
-            .query(&[
-                ("start_range", start.to_string()),
-                ("end_range", end.to_string()),
-            ])
-            .header("cookie", Self::cookie_header(&auth))
-            .header("x-xsrf-token", &auth.0)
-            .header("referer", format!("{base}/"))
-            .send()
-            .await?;
-        let json: serde_json::Value = resp.json().await?;
-        Ok(json["episodes"].as_array().cloned().unwrap_or_default())
-    }
-
-    async fn get_embed_url(
-        &self,
-        episode_id: u64,
-        auth: &(String, String),
-    ) -> ProviderResult<String> {
-        let base = self.base_url();
-        let resp = self
-            .client
-            .get(format!("{base}/embed-url/{episode_id}"))
-            .header("cookie", Self::cookie_header(&auth))
-            .header("x-xsrf-token", &auth.0)
-            .header("referer", format!("{base}/"))
-            .send()
-            .await?;
-        let text = resp.text().await?;
-        let url = text.trim().to_string();
-        if url.is_empty() || !url.starts_with("http") {
-            return Err(ProviderError::StreamExtraction("Empty embed URL".into()));
-        }
-        Ok(url)
-    }
-
-    fn extract_mp4(html: &str) -> Option<String> {
-        static SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("body script").unwrap());
+    fn extract_stream(html: &str) -> Option<String> {
         let doc = Html::parse_document(html);
-        let scripts: Vec<_> = doc.select(&SEL).collect();
-        if scripts.len() < 2 {
-            return None;
+        let scripts: Vec<String> = doc
+            .select(&SCRIPT_SEL)
+            .map(|el| el.text().collect())
+            .collect();
+
+        if scripts.len() >= 2 {
+            if let Some(url) = scripts[1].split(" = ").nth(1) {
+                let mp4 = url.replace('\'', "").trim().to_string();
+                if mp4.starts_with("http") {
+                    return Some(mp4);
+                }
+            }
         }
-        let text: String = scripts[1].text().collect();
-        let url = text
-            .split(" = ")
-            .nth(1)?
-            .replace('\'', "")
-            .trim()
-            .to_string();
-        if url.starts_with("http") {
-            Some(url)
-        } else {
-            None
-        }
+
+        let script = scripts.first()?;
+        Self::build_hls_url(script)
     }
 
-    fn extract_hls(html: &str) -> Option<String> {
+    fn build_hls_url(script: &str) -> Option<String> {
         static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
             Regex::new(r#"(?:['"]token['"]|token)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
         });
@@ -222,20 +200,15 @@ impl AnimeUnityProvider {
         static FHD_RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r#"window\.canPlayFHD\s*=\s*(true|false)"#).unwrap());
 
-        static SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("body script").unwrap());
-        let doc = Html::parse_document(html);
-        let script_el = doc.select(&SEL).next()?;
-        let script: String = script_el.text().collect();
-
-        let token = TOKEN_RE.captures(&script)?.get(1)?.as_str();
-        let expires = EXPIRES_RE.captures(&script)?.get(1)?.as_str();
-        let base_url_str = URL_RE.captures(&script)?.get(1)?.as_str();
+        let token = TOKEN_RE.captures(script)?.get(1)?.as_str();
+        let expires = EXPIRES_RE.captures(script)?.get(1)?.as_str();
+        let base_url = URL_RE.captures(script)?.get(1)?.as_str();
         let can_fhd = FHD_RE
-            .captures(&script)
-            .map(|c| c.get(1).map(|m| m.as_str()) == Some("true"))
-            .unwrap_or(false);
+            .captures(script)
+            .and_then(|c| c.get(1))
+            .is_some_and(|m| m.as_str() == "true");
 
-        let mut parsed = Url::parse(base_url_str).ok()?;
+        let mut parsed = Url::parse(base_url).ok()?;
         let has_b = parsed.query_pairs().any(|(k, v)| k == "b" && v == "1");
         {
             let mut q = parsed.query_pairs_mut();
@@ -266,8 +239,7 @@ impl Provider for AnimeUnityProvider {
                 "AnimeUnity domain not resolved".into(),
             ));
         }
-        let auth = self.get_auth().await?;
-        let cookie = Self::cookie_header(&auth);
+        let auth = self.ensure_auth().await?;
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
 
@@ -275,19 +247,20 @@ impl Provider for AnimeUnityProvider {
             "title={}",
             url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()
         );
-        let resp = self
+        let req = self
             .client
             .post(format!("{base}/livesearch"))
-            .header("cookie", &cookie)
-            .header("x-xsrf-token", &auth.0)
-            .header("origin", &base)
-            .header("referer", format!("{base}/"))
             .header("content-type", "application/x-www-form-urlencoded")
-            .body(form_body)
-            .send()
-            .await?;
+            .body(form_body);
+        let resp = self.auth_request(req, &auth).send().await?;
         let json: serde_json::Value = resp.json().await?;
-        Self::collect_records(&json, &mut seen, &mut entries);
+        for record in json["records"].as_array().unwrap_or(&Vec::new()) {
+            if let Some(e) = Self::parse_record(record) {
+                if seen.insert(e.id) {
+                    entries.push(e);
+                }
+            }
+        }
 
         let body = serde_json::json!({
             "title": query,
@@ -300,18 +273,19 @@ impl Provider for AnimeUnityProvider {
             "dubbed": false,
             "season": false
         });
-        let resp = self
+        let req = self
             .client
             .post(format!("{base}/archivio/get-animes"))
-            .header("cookie", &cookie)
-            .header("x-xsrf-token", &auth.0)
-            .header("origin", &base)
-            .header("referer", format!("{base}/"))
-            .json(&body)
-            .send()
-            .await?;
+            .json(&body);
+        let resp = self.auth_request(req, &auth).send().await?;
         let json: serde_json::Value = resp.json().await?;
-        Self::collect_records(&json, &mut seen, &mut entries);
+        for record in json["records"].as_array().unwrap_or(&Vec::new()) {
+            if let Some(e) = Self::parse_record(record) {
+                if seen.insert(e.id) {
+                    entries.push(e);
+                }
+            }
+        }
 
         Ok(entries)
     }
@@ -326,20 +300,14 @@ impl Provider for AnimeUnityProvider {
 
     async fn get_episodes(&self, entry: &MediaEntry, _season: u32) -> ProviderResult<Vec<Episode>> {
         let (media_id, ep_count) = Self::parse_slug(&entry.slug);
-        let auth = self.get_auth().await?;
+        let auth = self.ensure_auth().await?;
+        let base = self.base_url();
 
         let total = if ep_count > 0 {
             ep_count
         } else {
-            let base = self.base_url();
-            let resp = self
-                .client
-                .get(format!("{base}/info_api/{media_id}/"))
-                .header("cookie", Self::cookie_header(&auth))
-                .header("x-xsrf-token", &auth.0)
-                .header("referer", format!("{base}/"))
-                .send()
-                .await?;
+            let req = self.client.get(format!("{base}/info_api/{media_id}/"));
+            let resp = self.auth_request(req, &auth).send().await?;
             let json: serde_json::Value = resp.json().await?;
             json["episodes_count"]
                 .as_u64()
@@ -350,23 +318,31 @@ impl Provider for AnimeUnityProvider {
         let mut start = 1u64;
         while start <= total {
             let end = (start + 119).min(total);
-            let batch = self
-                .fetch_episodes_batch(media_id, start, end, &auth)
-                .await?;
-            all_eps.extend(batch);
+            let req = self
+                .client
+                .get(format!("{base}/info_api/{media_id}/1"))
+                .query(&[
+                    ("start_range", start.to_string()),
+                    ("end_range", end.to_string()),
+                ]);
+            let resp = self.auth_request(req, &auth).send().await?;
+            let json: serde_json::Value = resp.json().await?;
+            all_eps.extend(json["episodes"].as_array().cloned().unwrap_or_default());
             start = end + 1;
         }
 
         let mut episodes: Vec<Episode> = all_eps
             .iter()
-            .filter_map(|ep| {
+            .enumerate()
+            .filter_map(|(idx, ep)| {
                 let id = ep["id"].as_u64()?;
-                let number = ep["number"]
-                    .as_f64()
-                    .map(|n| n as u32)
-                    .or_else(|| ep["number"].as_u64().map(|n| n as u32))
-                    .unwrap_or(0);
-                let name = format!("Episode {number}");
+                let number = parse_number(&ep["number"]).unwrap_or((idx + 1) as u32);
+                let name = ep["title"]
+                    .as_str()
+                    .or_else(|| ep["title_it"].as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("Episode {number}"));
                 Some(Episode {
                     id,
                     number,
@@ -388,29 +364,23 @@ impl Provider for AnimeUnityProvider {
     ) -> ProviderResult<StreamUrl> {
         let ep =
             episode.ok_or_else(|| ProviderError::StreamExtraction("Episode required".into()))?;
-        let auth = self.get_auth().await?;
-        let embed_url = self.get_embed_url(ep.id, &auth).await?;
+        let auth = self.ensure_auth().await?;
+        let base = self.base_url();
 
-        let resp = self.client.get(&embed_url).send().await?;
-        let html = resp.text().await?;
-
-        if let Some(mp4) = Self::extract_mp4(&html) {
-            return Ok(StreamUrl {
-                url: mp4,
-                headers: Vec::new(),
-            });
+        let req = self.client.get(format!("{base}/embed-url/{}", ep.id));
+        let resp = self.auth_request(req, &auth).send().await?;
+        let embed_url = resp.text().await?.trim().to_string();
+        if !embed_url.starts_with("http") {
+            return Err(ProviderError::StreamExtraction("Empty embed URL".into()));
         }
 
-        if let Some(hls) = Self::extract_hls(&html) {
-            return Ok(StreamUrl {
-                url: hls,
+        let html = self.client.get(&embed_url).send().await?.text().await?;
+        Self::extract_stream(&html)
+            .map(|url| StreamUrl {
+                url,
                 headers: Vec::new(),
-            });
-        }
-
-        Err(ProviderError::StreamExtraction(
-            "Could not extract stream URL from embed page".into(),
-        ))
+            })
+            .ok_or_else(|| ProviderError::StreamExtraction("Could not extract stream URL".into()))
     }
 
     async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>> {
@@ -418,11 +388,10 @@ impl Provider for AnimeUnityProvider {
         if base.is_empty() {
             return Ok(Vec::new());
         }
-        let auth = match self.get_auth().await {
+        let auth = match self.ensure_auth().await {
             Ok(a) => a,
             Err(_) => return Ok(Vec::new()),
         };
-        let cookie = Self::cookie_header(&auth);
 
         let body = serde_json::json!({
             "title": "",
@@ -435,18 +404,11 @@ impl Provider for AnimeUnityProvider {
             "dubbed": false,
             "season": false
         });
-        let resp = self
+        let req = self
             .client
             .post(format!("{base}/archivio/get-animes"))
-            .header("cookie", &cookie)
-            .header("x-xsrf-token", &auth.0)
-            .header("origin", &base)
-            .header("referer", format!("{base}/"))
-            .json(&body)
-            .send()
-            .await;
-
-        let resp = match resp {
+            .json(&body);
+        let resp = match self.auth_request(req, &auth).send().await {
             Ok(r) => r,
             Err(_) => return Ok(Vec::new()),
         };
