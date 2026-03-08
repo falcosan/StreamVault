@@ -8,20 +8,12 @@ use crate::util::{DownloadEngine, DownloadProgress, DownloadRequest};
 use dioxus::prelude::*;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 fn normalize_search(s: &str) -> String {
-    s.chars()
-        .flat_map(char::to_lowercase)
-        .map(|c| match c {
-            'à' | 'á' | 'â' | 'ä' | 'ã' => 'a',
-            'è' | 'é' | 'ê' | 'ë' => 'e',
-            'ì' | 'í' | 'î' | 'ï' => 'i',
-            'ò' | 'ó' | 'ô' | 'ö' | 'õ' => 'o',
-            'ù' | 'ú' | 'û' | 'ü' => 'u',
-            'ñ' => 'n',
-            'ç' => 'c',
-            _ => c,
-        })
+    s.to_lowercase()
+        .nfkd()
+        .filter(|c| !is_combining_mark(*c))
         .collect()
 }
 
