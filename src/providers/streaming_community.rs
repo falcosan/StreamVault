@@ -118,9 +118,16 @@ impl StreamingCommunityProvider {
             "film" | "movie" | "ova" => MediaType::Movie,
             _ => MediaType::Series,
         };
+        let alternative_names = v["original_name"]
+            .as_str()
+            .filter(|s| !s.is_empty() && *s != name)
+            .into_iter()
+            .map(String::from)
+            .collect();
         Some(MediaEntry {
             id,
             name,
+            alternative_names,
             slug,
             media_type,
             year: Self::extract_year(v),

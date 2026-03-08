@@ -63,6 +63,7 @@ impl RaiPlayProvider {
         Some(MediaEntry {
             id: provider_hash(&slug),
             name,
+            alternative_names: Vec::new(),
             slug,
             media_type: MediaType::Series,
             year,
@@ -98,6 +99,7 @@ impl RaiPlayProvider {
         Some(MediaEntry {
             id: provider_hash(&slug),
             name,
+            alternative_names: Vec::new(),
             slug,
             media_type,
             year: None,

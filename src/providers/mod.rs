@@ -146,6 +146,7 @@ mod tests {
         MediaEntry {
             id: 1,
             name: "Inception".into(),
+            alternative_names: Vec::new(),
             slug: "inception".into(),
             media_type: MediaType::Movie,
             year: Some("2010".into()),
@@ -161,6 +162,7 @@ mod tests {
         MediaEntry {
             id: 2,
             name: "Lost".into(),
+            alternative_names: Vec::new(),
             slug: "lost".into(),
             media_type: MediaType::Series,
             year: None,

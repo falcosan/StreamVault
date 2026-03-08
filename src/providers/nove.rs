@@ -120,6 +120,7 @@ impl Provider for NoveProvider {
             entries.push(MediaEntry {
                 id: provider_hash(&show_url),
                 name: title,
+                alternative_names: Vec::new(),
                 slug: show_url,
                 media_type: MediaType::Series,
                 year,
@@ -316,6 +317,7 @@ impl Provider for NoveProvider {
                 entries.push(MediaEntry {
                     id,
                     name: title,
+                    alternative_names: Vec::new(),
                     slug: show_url,
                     media_type: MediaType::Series,
                     year: None,

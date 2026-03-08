@@ -14,6 +14,7 @@ pub struct MediaEntry {
     pub provider: usize,
     pub language: String,
     pub media_type: MediaType,
+    pub alternative_names: Vec<String>,
     pub year: Option<String>,
     pub score: Option<String>,
     pub image_url: Option<String>,

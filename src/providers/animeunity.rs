@@ -122,19 +122,24 @@ impl AnimeUnityProvider {
     fn parse_record(record: &serde_json::Value) -> Option<MediaEntry> {
         let id = record["id"].as_u64()?;
         let slug = record["slug"].as_str().unwrap_or("").to_string();
-        let name = record["title_eng"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .or_else(|| record["title"].as_str().filter(|s| !s.is_empty()))
-            .or_else(|| record["title_it"].as_str().filter(|s| !s.is_empty()))?
-            .to_string();
+        let title_eng = record["title_eng"].as_str().filter(|s| !s.is_empty());
+        let title = record["title"].as_str().filter(|s| !s.is_empty());
+        let title_it = record["title_it"].as_str().filter(|s| !s.is_empty());
+        let name = title_eng.or(title).or(title_it)?.to_string();
         let media_type = match record["type"].as_str() {
             Some("Movie") | Some("Film") => MediaType::Movie,
             _ => MediaType::Series,
         };
+        let alternative_names = [title_eng, title, title_it]
+            .into_iter()
+            .flatten()
+            .filter(|t| *t != name)
+            .map(|t| t.to_string())
+            .collect();
         Some(MediaEntry {
             id,
             name,
+            alternative_names,
             slug: format!(
                 "{id}:{slug}:{}",
                 record["episodes_count"].as_u64().unwrap_or(0)

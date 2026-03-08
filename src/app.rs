@@ -9,6 +9,64 @@ use dioxus::prelude::*;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+fn normalize_search(s: &str) -> String {
+    s.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'à' | 'á' | 'â' | 'ä' | 'ã' => 'a',
+            'è' | 'é' | 'ê' | 'ë' => 'e',
+            'ì' | 'í' | 'î' | 'ï' => 'i',
+            'ò' | 'ó' | 'ô' | 'ö' | 'õ' => 'o',
+            'ù' | 'ú' | 'û' | 'ü' => 'u',
+            'ñ' => 'n',
+            'ç' => 'c',
+            _ => c,
+        })
+        .collect()
+}
+
+fn score_name(name: &str, query: &str) -> u16 {
+    if name == query {
+        1000
+    } else if name.starts_with(query) {
+        800
+    } else if let Some(pos) = name.find(query) {
+        600 - (pos.min(100) as u16)
+    } else {
+        0
+    }
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let n = b.len();
+    let mut row: Vec<usize> = (0..=n).collect();
+    for ca in a.chars() {
+        let mut prev = row[0];
+        row[0] += 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let old = row[j + 1];
+            row[j + 1] = if ca == cb {
+                prev
+            } else {
+                prev.min(row[j]).min(row[j + 1]) + 1
+            };
+            prev = old;
+        }
+    }
+    row[n]
+}
+
+fn fuzzy_word_match(word: &str, text: &str) -> bool {
+    if text.contains(word) {
+        return true;
+    }
+    word.len() >= 4
+        && text
+            .split_whitespace()
+            .any(|w| w.len().abs_diff(word.len()) <= 1 && edit_distance(w, word) <= 1)
+}
+
 #[component]
 pub fn App() -> Element {
     let mut screen = use_signal(|| Screen::Home);
@@ -156,14 +214,14 @@ pub fn App() -> Element {
             screen.set(Screen::Search);
             search_pending.set(providers.len());
 
-            let q_lower = Arc::new(q.to_lowercase());
+            let q_norm = Arc::new(normalize_search(&q));
             let q_words: Arc<Vec<String>> =
-                Arc::new(q_lower.split_whitespace().map(str::to_owned).collect());
+                Arc::new(q_norm.split_whitespace().map(str::to_owned).collect());
 
             for (idx, p) in providers.iter().enumerate() {
                 let p = p.clone();
                 let q = q.clone();
-                let q_lower = Arc::clone(&q_lower);
+                let q_norm = Arc::clone(&q_norm);
                 let q_words = Arc::clone(&q_words);
 
                 spawn(async move {
@@ -185,27 +243,39 @@ pub fn App() -> Element {
                         let mut scored: Vec<(u16, _)> = unsorted
                             .into_iter()
                             .map(|e| {
-                                let t = e.name.to_lowercase();
-                                let score = if t == *q_lower {
-                                    1000_u16
-                                } else if t.starts_with(q_lower.as_str()) {
-                                    800
-                                } else if let Some(pos) = t.find(q_lower.as_str()) {
-                                    600 - (pos.min(100) as u16)
+                                let names: Vec<String> = std::iter::once(&e.name)
+                                    .chain(e.alternative_names.iter())
+                                    .map(|n| normalize_search(n))
+                                    .collect();
+
+                                let best_name_score = names
+                                    .iter()
+                                    .map(|t| score_name(t, &q_norm))
+                                    .max()
+                                    .unwrap_or(0);
+
+                                let score = if best_name_score > 0 {
+                                    best_name_score
                                 } else {
-                                    let d = e.description.as_ref().map(|s| s.to_lowercase());
-                                    if d.as_ref().is_some_and(|d| d.contains(q_lower.as_str())) {
+                                    let d = e.description.as_ref().map(|s| normalize_search(s));
+                                    if d.as_ref().is_some_and(|d| d.contains(q_norm.as_str())) {
                                         450
                                     } else {
+                                        let total = q_words.len() as u16;
                                         let matches = q_words
                                             .iter()
                                             .filter(|w| {
-                                                t.contains(w.as_str())
+                                                names.iter().any(|t| fuzzy_word_match(w, t))
                                                     || d.as_ref()
                                                         .is_some_and(|d| d.contains(w.as_str()))
                                             })
-                                            .count();
-                                        (matches * 200).min(400) as u16
+                                            .count()
+                                            as u16;
+                                        if total > 0 {
+                                            matches * 500 / total
+                                        } else {
+                                            0
+                                        }
                                     }
                                 };
                                 (score, e)
