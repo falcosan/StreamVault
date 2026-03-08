@@ -346,15 +346,16 @@ pub fn DetailsView(
                 } else {
                     div { class: "episodes-list",
                         for ep in episodes_list.iter() {
-                            { let season = sel.unwrap_or(1); let n = ep.number; let ep_name = ep.name.clone(); let dur = ep.duration.map(|d| format!("{d} min")).unwrap_or_default(); rsx! {
+                            { let season = sel.unwrap_or(1); let n = ep.number; let ep_name = ep.name.clone(); let dur = ep.duration.map(|d| format!("{d} min")).unwrap_or_default(); let ep_img = ep.image_url.clone(); rsx! {
                                 EpisodeRow {
+                                    season,
                                     key: "{n}",
                                     number: n,
                                     name: ep_name,
                                     duration: dur,
-                                    season,
-                                    on_play: on_play_episode,
+                                    image_url: ep_img,
                                     on_dl: on_dl_episode,
+                                    on_play: on_play_episode,
                                 }
                             }}
                         }
@@ -370,6 +371,7 @@ fn EpisodeRow(
     number: u32,
     name: String,
     duration: String,
+    image_url: Option<String>,
     season: u32,
     on_play: EventHandler<(u32, u32)>,
     on_dl: EventHandler<(u32, u32)>,
@@ -379,6 +381,9 @@ fn EpisodeRow(
             class: "episode-row",
             onclick: move |_| on_play.call((season, number)),
             div { class: "ep-info",
+                if let Some(ref url) = image_url {
+                    img { class: "ep-thumb", src: "{url}", alt: "{name}", loading: "lazy" }
+                }
                 span { class: "ep-num", "{number}" }
                 span { class: "ep-name", "{name}" }
             }

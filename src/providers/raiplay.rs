@@ -322,11 +322,17 @@ impl Provider for RaiPlayProvider {
             if !weblink.is_empty() {
                 ep_urls.insert(ep_id, raiplay_abs_url(weblink));
             }
+            let image_url = card["immagine"]
+                .as_str()
+                .or_else(|| card["image"].as_str())
+                .filter(|s| !s.is_empty())
+                .map(raiplay_abs_url);
             episodes.push(Episode {
                 id: ep_id,
                 number: ep_num,
                 name,
                 duration,
+                image_url,
             });
         }
         self.episode_data.lock().await.extend(ep_urls);

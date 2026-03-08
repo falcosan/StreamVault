@@ -243,6 +243,7 @@ mod tests {
             number: 5,
             name: "Pilot".into(),
             duration: Some(42),
+            image_url: None,
         };
         let json = serde_json::to_string(&ep).unwrap();
         let loaded: Episode = serde_json::from_str(&json).unwrap();

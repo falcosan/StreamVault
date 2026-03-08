@@ -205,6 +205,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 }
 .episode-row:hover { background: var(--surface2); }
 .ep-info { flex: 1; display: flex; align-items: center; gap: 8px; }
+.ep-thumb { width: 80px; height: 45px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
 .ep-num { font-size: 13px; color: var(--text3); font-weight: 600; min-width: 20px; }
 .ep-name { font-size: 13px; color: var(--text); }
 .ep-play {

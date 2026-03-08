@@ -348,6 +348,7 @@ impl Provider for StreamingCommunityProvider {
                     number: ep["number"].as_u64()? as u32,
                     name: ep["name"].as_str().unwrap_or("").to_string(),
                     duration: ep["duration"].as_u64().map(|d| d as u32),
+                    image_url: self.extract_image_url(ep),
                 })
             })
             .collect();

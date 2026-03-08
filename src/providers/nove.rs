@@ -199,11 +199,13 @@ impl Provider for NoveProvider {
             let ep_id = provider_hash(&format!("{}-{}-{}", entry.id, season, video_id));
             ep_map.insert(ep_id, (video_id, channel));
 
+            let image_url = ep["image"]["url"].as_str().map(String::from);
             episodes.push(Episode {
                 id: ep_id,
                 number: ep_num,
                 name,
                 duration,
+                image_url,
             });
         }
         drop(lock);

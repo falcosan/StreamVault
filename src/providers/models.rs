@@ -33,6 +33,7 @@ pub struct Episode {
     pub number: u32,
     pub name: String,
     pub duration: Option<u32>,
+    pub image_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]

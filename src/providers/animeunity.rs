@@ -312,6 +312,7 @@ impl Provider for AnimeUnityProvider {
                     number,
                     name,
                     duration: None,
+                    image_url: ep["imageurl"].as_str().map(String::from),
                 })
             })
             .collect();
