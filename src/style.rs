@@ -204,9 +204,9 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
     width: 100%; text-align: left; color: var(--text);
 }
 .episode-row:hover { background: var(--surface2); }
-.ep-info { flex: 1; }
+.ep-info { flex: 1; display: flex; align-items: center; gap: 8px; }
+.ep-num { font-size: 13px; color: var(--text3); font-weight: 600; min-width: 20px; }
 .ep-name { font-size: 13px; color: var(--text); }
-.ep-dur { font-size: 11px; color: var(--text3); margin-top: 2px; }
 .ep-play {
     background: var(--accent); border: none; color: var(--accent-text);
     padding: 7px 14px; font-size: 12px; font-weight: 600; cursor: pointer; border-radius: 3px;

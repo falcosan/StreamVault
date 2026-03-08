@@ -379,8 +379,8 @@ fn EpisodeRow(
             class: "episode-row",
             onclick: move |_| on_play.call((season, number)),
             div { class: "ep-info",
-                div { class: "ep-name", "{name}" }
-                div { class: "ep-dur", "{duration}" }
+                span { class: "ep-num", "{number}" }
+                span { class: "ep-name", "{name}" }
             }
             button { class: "ep-play", onclick: move |e| { e.stop_propagation(); on_play.call((season, number)); }, "▶" }
             button { class: "ep-dl", onclick: move |e| { e.stop_propagation(); on_dl.call((season, number)); }, "⬇" }
