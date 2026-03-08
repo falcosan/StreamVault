@@ -322,8 +322,12 @@ impl Provider for RaiPlayProvider {
             if !weblink.is_empty() {
                 ep_urls.insert(ep_id, raiplay_abs_url(weblink));
             }
-            let image_url = card["immagine"]
+            let image_url = card["images"]["landscape"]
                 .as_str()
+                .or_else(|| card["images"]["portrait_logo"].as_str())
+                .or_else(|| card["images"]["portrait"].as_str())
+                .or_else(|| card["images"]["square"].as_str())
+                .or_else(|| card["immagine"].as_str())
                 .or_else(|| card["image"].as_str())
                 .filter(|s| !s.is_empty())
                 .map(raiplay_abs_url);
