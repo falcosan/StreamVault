@@ -95,7 +95,10 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .section-title { font-size: 18px; color: var(--text); }
 .section-count { font-size: 12px; color: var(--text3); }
 
-.continue-section { padding: 0 0 8px; }
+.continue-section { 
+    padding-bottom: 12px; margin-bottom: 16px;
+    border-bottom: 1px solid var(--border); 
+}
 .continue-row {
     display: flex; gap: 12px; padding: 0 20px;
     overflow-x: auto; scroll-behavior: smooth;
@@ -117,7 +120,7 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
     opacity: 0; transition: opacity 0.15s;
 }
 .continue-card:hover .continue-remove { opacity: 1; }
-.continue-remove:hover { background: var(--danger); }
+.continue-remove:hover { background: var(--accent); color: var(--accent-text); }
 .continue-overlay {
     position: absolute; bottom: 0; left: 0; right: 0;
     background: linear-gradient(transparent, rgba(0,0,0,0.9));
