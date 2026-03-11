@@ -5,37 +5,30 @@
 <h1 align="center">StreamVault</h1>
 
 <p align="center">
-  A native macOS desktop application for browsing and downloading streaming content, built with Rust and <a href="https://dioxuslabs.com/">Dioxus</a>.
+  Native macOS app to browse and download streaming content, built with Rust + <a href="https://dioxuslabs.com/">Dioxus</a>.
 </p>
 
 ---
 
-## Overview
-
-StreamVault is a lightweight, native desktop app that aggregates content from multiple streaming providers into a single interface. It lets you search, browse catalogs, view details, and download media — all from one place.
-
 ## Features
 
-- **Unified Search** — Query multiple providers simultaneously and view aggregated results.
-- **Catalog Browsing** — Browse trending/popular content from each provider on the home screen.
-- **Detail View** — View metadata including year, score, description, and poster art.
-- **Season & Episode Navigation** — Browse seasons and episodes for TV series.
-- **Integrated Downloads** — Download streams via [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) with progress tracking.
-- **Post-Processing** — Automatic muxing with [FFmpeg](https://ffmpeg.org/) (GPU acceleration optional).
-- **Configurable** — JSON-based configuration for output paths, download threads, video/audio/subtitle track selection, proxy settings, and more.
-- **Auto-Update** — Detects new versions and rebuilds from source with one click. Building locally means you can audit the code before updating, and the resulting binary is ad-hoc signed to satisfy macOS Gatekeeper.
-- **Dark UI** — Custom-styled dark interface with a Netflix-inspired layout.
+- Multi-provider search and catalog browsing
+- Show details, seasons, and episodes
+- Download streams with [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE)
+- Post-process with [FFmpeg](https://ffmpeg.org/) (optional GPU)
+- JSON configuration for paths, download behavior, tracks, and requests
+- In-app update flow (rebuilds from source)
 
 ## Requirements
 
 - **macOS** (the app uses a native WebView via Dioxus Desktop)
-- **Rust** toolchain (1.75+ recommended)
-- **FFmpeg** — for post-download muxing
-- **N_m3u8DL-RE** — for HLS/DASH stream downloading
+- **Rust** toolchain
+- **FFmpeg**
+- **N_m3u8DL-RE**
 
 ## Installation
 
-### Quick Install (macOS)
+### Quick Install
 
 Run a single command to install `StreamVault.app`:
 
@@ -43,38 +36,33 @@ Run a single command to install `StreamVault.app`:
 curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/package.sh" | bash
 ```
 
-> **Note:** Any build dependency installed during the process (e.g. Rust toolchain) is automatically removed after packaging. Nothing is left behind.
+### Build from Source
 
-### Building from Source
-
-#### Development
+Run in development:
 
 ```bash
-cargo build
 cargo run
 ```
 
-#### Release
+Build release:
 
 ```bash
 cargo build --release
 ```
 
-#### Packaging (.app bundle)
-
-The included packaging script builds a release binary, downloads FFmpeg and N_m3u8DL-RE, and assembles a self-contained `.app` bundle:
+Package `.app` bundle:
 
 ```bash
 ./scripts/package.sh
 ```
 
-The resulting `StreamVault.app` will be in the `dist/` directory with all dependencies bundled under `Contents/Resources/bin/`.
+Output: `dist/StreamVault.app`
 
 ## Configuration
 
-StreamVault stores its configuration in a JSON file. On first launch, a default config is created automatically.
+Config is stored in JSON. On first launch, StreamVault creates a default config automatically.
 
-### Config Sections
+Main sections:
 
 | Section            | Key Options                                                                                             |
 | ------------------ | ------------------------------------------------------------------------------------------------------- |
@@ -82,16 +70,6 @@ StreamVault stores its configuration in a JSON file. On first launch, a default 
 | **download** | `thread_count` (default: 8), `retry_count`, `concurrent_download`, `max_speed`, track selection |
 | **process**  | `use_gpu`, `merge_audio`, `merge_subtitle`, `extension` (default: mp4)                          |
 | **requests** | `timeout` (default: 30s), `max_retry`, `use_proxy`, `proxy_url`                                 |
-
-## Project Structure
-
-| Directory          | Description                                                                                                              |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `src/`           | Application source code — UI components, state management, configuration, download engine, and provider implementations |
-| `src/providers/` | Pluggable streaming provider modules with a shared trait interface and data models                                       |
-| `resources/`     | macOS app bundle metadata (`Info.plist`)                                                                               |
-| `scripts/`       | Build, packaging, and update automation scripts                                                                          |
-| `assets/`        | Logo and branding assets                                                                                                 |
 
 ## License
 
