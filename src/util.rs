@@ -5,51 +5,6 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-fn bundled_bin_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
-    let resources_bin = exe_dir.parent().map(|c| c.join("Resources").join("bin"));
-    if let Some(p) = resources_bin {
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-    let dev_bin = exe_dir.join("bin");
-    if dev_bin.is_dir() {
-        return Some(dev_bin);
-    }
-    None
-}
-
-fn is_executable(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-pub fn find_binary(name: &str) -> PathBuf {
-    if let Some(bin_dir) = bundled_bin_dir() {
-        let bundled = bin_dir.join(name);
-        if is_executable(&bundled) {
-            return bundled;
-        }
-    }
-    let candidates = [
-        PathBuf::from(format!("/opt/homebrew/bin/{name}")),
-        PathBuf::from(format!("/usr/local/bin/{name}")),
-        PathBuf::from(format!("/usr/bin/{name}")),
-        dirs::home_dir()
-            .unwrap_or_default()
-            .join(".local/bin")
-            .join(name),
-    ];
-    candidates
-        .into_iter()
-        .find(|p| is_executable(p))
-        .unwrap_or_else(|| PathBuf::from(name))
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum DownloadStatus {
     Queued,
@@ -415,6 +370,51 @@ impl DownloadEngine {
             .replace("%(episode)", &format!("{ep:02}"))
             .replace("%(show_name)", show)
     }
+}
+
+fn bundled_bin_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    let resources_bin = exe_dir.parent().map(|c| c.join("Resources").join("bin"));
+    if let Some(p) = resources_bin {
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    let dev_bin = exe_dir.join("bin");
+    if dev_bin.is_dir() {
+        return Some(dev_bin);
+    }
+    None
+}
+
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+pub fn find_binary(name: &str) -> PathBuf {
+    if let Some(bin_dir) = bundled_bin_dir() {
+        let bundled = bin_dir.join(name);
+        if is_executable(&bundled) {
+            return bundled;
+        }
+    }
+    let candidates = [
+        PathBuf::from(format!("/opt/homebrew/bin/{name}")),
+        PathBuf::from(format!("/usr/local/bin/{name}")),
+        PathBuf::from(format!("/usr/bin/{name}")),
+        dirs::home_dir()
+            .unwrap_or_default()
+            .join(".local/bin")
+            .join(name),
+    ];
+    candidates
+        .into_iter()
+        .find(|p| is_executable(p))
+        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 #[inline]

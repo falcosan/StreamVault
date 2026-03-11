@@ -16,6 +16,54 @@ pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_1
 pub(crate) const DOMAINS_URL: &str =
     "https://raw.githubusercontent.com/Arrowar/SC_Domains/refs/heads/main/domains.json";
 
+#[derive(Debug, Clone)]
+pub enum ProviderError {
+    Network(String),
+    Parse(String),
+    StreamExtraction(String),
+}
+
+impl std::fmt::Display for ProviderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Network(m) => write!(f, "Network error: {m}"),
+            Self::Parse(m) => write!(f, "Parse error: {m}"),
+            Self::StreamExtraction(m) => write!(f, "Stream extraction error: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for ProviderError {}
+
+impl From<reqwest::Error> for ProviderError {
+    fn from(e: reqwest::Error) -> Self {
+        Self::Network(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for ProviderError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Parse(e.to_string())
+    }
+}
+
+pub type ProviderResult<T> = Result<T, ProviderError>;
+
+#[async_trait::async_trait]
+pub trait Provider: Send + Sync {
+    async fn init(&self) {}
+    async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>>;
+    async fn get_seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<Season>>;
+    async fn get_episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>>;
+    async fn get_stream_url(
+        &self,
+        entry: &MediaEntry,
+        episode: Option<&Episode>,
+        season: Option<u32>,
+    ) -> ProviderResult<StreamUrl>;
+    async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>>;
+}
+
 pub(crate) fn provider_hash(s: &str) -> u64 {
     s.bytes()
         .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64))
@@ -88,54 +136,6 @@ pub(crate) fn parse_vixcloud_hls(script: &str) -> Option<String> {
         q.append_pair("expires", expires);
     }
     Some(parsed.to_string())
-}
-
-#[derive(Debug, Clone)]
-pub enum ProviderError {
-    Network(String),
-    Parse(String),
-    StreamExtraction(String),
-}
-
-impl std::fmt::Display for ProviderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Network(m) => write!(f, "Network error: {m}"),
-            Self::Parse(m) => write!(f, "Parse error: {m}"),
-            Self::StreamExtraction(m) => write!(f, "Stream extraction error: {m}"),
-        }
-    }
-}
-
-impl std::error::Error for ProviderError {}
-
-impl From<reqwest::Error> for ProviderError {
-    fn from(e: reqwest::Error) -> Self {
-        Self::Network(e.to_string())
-    }
-}
-
-impl From<serde_json::Error> for ProviderError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Parse(e.to_string())
-    }
-}
-
-pub type ProviderResult<T> = Result<T, ProviderError>;
-
-#[async_trait::async_trait]
-pub trait Provider: Send + Sync {
-    async fn init(&self) {}
-    async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>>;
-    async fn get_seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<Season>>;
-    async fn get_episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>>;
-    async fn get_stream_url(
-        &self,
-        entry: &MediaEntry,
-        episode: Option<&Episode>,
-        season: Option<u32>,
-    ) -> ProviderResult<StreamUrl>;
-    async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>>;
 }
 
 #[cfg(test)]

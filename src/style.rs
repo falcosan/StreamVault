@@ -95,6 +95,50 @@ body { scrollbar-width: none; -ms-overflow-style: none; }
 .section-title { font-size: 18px; color: var(--text); }
 .section-count { font-size: 12px; color: var(--text3); }
 
+.continue-section { padding: 0 0 8px; }
+.continue-row {
+    display: flex; gap: 12px; padding: 0 20px;
+    overflow-x: auto; scroll-behavior: smooth;
+}
+.continue-card {
+    width: 250px; min-width: 250px; aspect-ratio: 16/9;
+    border-radius: 6px; position: relative; overflow: hidden;
+    cursor: pointer; border: none; padding: 0; text-align: left;
+    background-size: cover; background-position: center;
+    transition: transform 0.15s;
+}
+.continue-card:hover { transform: scale(1.02); }
+.continue-remove {
+    position: absolute; top: 6px; right: 6px; z-index: 2;
+    background: rgba(0,0,0,0.7); border: none; color: white;
+    width: 24px; height: 24px; border-radius: 50%;
+    cursor: pointer; font-size: 12px; display: flex;
+    align-items: center; justify-content: center;
+    opacity: 0; transition: opacity 0.15s;
+}
+.continue-card:hover .continue-remove { opacity: 1; }
+.continue-remove:hover { background: var(--danger); }
+.continue-overlay {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    background: linear-gradient(transparent, rgba(0,0,0,0.9));
+    padding: 24px 10px 8px;
+}
+.continue-name {
+    font-size: 12px; color: white; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+}
+.continue-episode {
+    font-size: 10px; color: #b0b0b0; margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.continue-progress {
+    height: 3px; background: rgba(255,255,255,0.2);
+    border-radius: 2px; margin-top: 6px; overflow: hidden;
+}
+.continue-progress-bar {
+    height: 100%; background: var(--accent); border-radius: 2px;
+}
+
 .media-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));

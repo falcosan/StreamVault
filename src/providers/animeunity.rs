@@ -14,35 +14,6 @@ const AUTH_TTL: Duration = Duration::from_secs(300);
 
 static SCRIPT_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("body script").unwrap());
 
-fn percent_decode(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(val) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
-                out.push(val);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).to_string()
-}
-
-fn parse_number(val: &serde_json::Value) -> Option<u32> {
-    val.as_u64()
-        .map(|n| n as u32)
-        .or_else(|| val.as_f64().map(|n| n as u32))
-        .or_else(|| {
-            val.as_str()
-                .and_then(|s| s.parse::<f64>().ok())
-                .map(|n| n as u32)
-        })
-}
-
 struct Auth {
     xsrf: String,
     session: String,
@@ -398,4 +369,33 @@ impl Provider for AnimeUnityProvider {
         }
         Ok(entries)
     }
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(val) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
+                out.push(val);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn parse_number(val: &serde_json::Value) -> Option<u32> {
+    val.as_u64()
+        .map(|n| n as u32)
+        .or_else(|| val.as_f64().map(|n| n as u32))
+        .or_else(|| {
+            val.as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|n| n as u32)
+        })
 }

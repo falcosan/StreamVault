@@ -1,3 +1,4 @@
+use crate::config::WatchItem;
 use crate::providers::MediaEntry;
 use crate::style::{LOGO_SVG, UPDATE_SVG};
 use crate::util::{DownloadProgress, DownloadStatus};
@@ -10,52 +11,6 @@ pub enum Screen {
     Details,
     Player,
     Downloads,
-}
-
-const POSTER_COLORS: &[(u8, u8, u8)] = &[
-    (0x8B, 0x1A, 0x1A),
-    (0x0D, 0x3B, 0x66),
-    (0x3B, 0x0A, 0x5C),
-    (0x14, 0x40, 0x14),
-    (0x6B, 0x3A, 0x00),
-    (0x5C, 0x0E, 0x0E),
-    (0x0A, 0x2A, 0x4A),
-    (0x40, 0x0A, 0x50),
-    (0x4A, 0x0E, 0x0E),
-    (0x00, 0x3A, 0x3A),
-    (0x3E, 0x21, 0x23),
-    (0x1B, 0x2A, 0x41),
-    (0x2D, 0x1B, 0x00),
-    (0x1A, 0x0A, 0x2E),
-    (0x0E, 0x33, 0x1A),
-    (0x33, 0x1A, 0x0E),
-];
-
-fn name_hash(name: &str) -> usize {
-    name.bytes()
-        .fold(0u32, |a, b| a.wrapping_mul(37).wrapping_add(b as u32)) as usize
-}
-
-fn poster_color(name: &str) -> String {
-    let (r, g, b) = POSTER_COLORS[name_hash(name) % POSTER_COLORS.len()];
-    format!("rgb({r},{g},{b})")
-}
-
-fn format_score(s: &str) -> String {
-    match s.parse::<f64>() {
-        Ok(v) => format!("{v:.1}"),
-        Err(_) => s.to_string(),
-    }
-}
-
-fn provider_label(idx: usize) -> &'static str {
-    match idx {
-        0 => "StreamingCommunity",
-        1 => "RaiPlay",
-        2 => "Nove",
-        3 => "AnimeUnity",
-        _ => "Unknown",
-    }
 }
 
 #[component]
@@ -137,10 +92,14 @@ pub fn Navbar(
 pub fn HomeView(
     catalog: ReadSignal<Vec<MediaEntry>>,
     is_loading: ReadSignal<bool>,
+    continue_watching: ReadSignal<Vec<WatchItem>>,
     on_select: EventHandler<MediaEntry>,
+    on_resume: EventHandler<WatchItem>,
+    on_remove_watch: EventHandler<(usize, u64)>,
 ) -> Element {
     let items = catalog();
     let loading = is_loading();
+    let watching = continue_watching();
 
     if items.is_empty() && loading {
         return rsx! {
@@ -158,9 +117,80 @@ pub fn HomeView(
 
     rsx! {
         div { class: "catalog-view",
+            if !watching.is_empty() {
+                div { class: "continue-section",
+                    div { class: "section-header",
+                        span { class: "section-title", "Continue Watching" }
+                    }
+                    div { class: "continue-row",
+                        for item in watching.iter() {
+                            ContinueCard {
+                                key: "{item.entry.provider}-{item.entry.id}",
+                                item: item.clone(),
+                                on_resume,
+                                on_remove: on_remove_watch,
+                            }
+                        }
+                    }
+                }
+            }
             div { class: "media-grid",
                 for entry in items.iter() {
                     PosterCard { key: "{entry.provider}-{entry.id}", entry: entry.clone(), on_select }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn ContinueCard(
+    item: WatchItem,
+    on_resume: EventHandler<WatchItem>,
+    on_remove: EventHandler<(usize, u64)>,
+) -> Element {
+    let bg = poster_color(&item.entry.name);
+    let img = item
+        .episode
+        .as_ref()
+        .and_then(|ep| ep.image_url.as_ref())
+        .or(item.entry.image_url.as_ref());
+    let style = match img {
+        Some(url) => format!("background-color: {bg}; background-image: url('{url}');"),
+        None => format!("background-color: {bg};"),
+    };
+    let pct = format!("{:.1}%", item.progress_pct());
+    let name = item.entry.name.clone();
+    let subtitle = match (&item.season, &item.episode) {
+        (Some(s), Some(ep)) => format!("S{s:02}E{:02} - {}", ep.number, ep.name),
+        _ => String::new(),
+    };
+    let provider = item.entry.provider;
+    let id = item.entry.id;
+
+    rsx! {
+        button {
+            class: "continue-card",
+            style: "{style}",
+            onclick: {
+                let item = item.clone();
+                move |_| on_resume.call(item.clone())
+            },
+            button {
+                class: "continue-remove",
+                onclick: move |e: Event<MouseData>| {
+                    e.stop_propagation();
+                    on_remove.call((provider, id));
+                },
+                "✕"
+            }
+            div { class: "continue-overlay",
+                div { class: "continue-name", "{name}" }
+                if !subtitle.is_empty() {
+                    div { class: "continue-episode", "{subtitle}" }
+                }
+                div { class: "continue-progress",
+                    div { class: "continue-progress-bar", style: "width: {pct};" }
                 }
             }
         }
@@ -398,12 +428,62 @@ pub fn PlayerView(
     stream_url: ReadSignal<Option<String>>,
     playing_title: ReadSignal<String>,
     has_next_episode: ReadSignal<bool>,
+    start_time: ReadSignal<Option<f64>>,
     on_stop: EventHandler<()>,
     on_next_episode: EventHandler<()>,
+    on_time_update: EventHandler<(f64, f64)>,
+    on_ended: EventHandler<()>,
 ) -> Element {
     let title = playing_title();
     let url = stream_url();
     let show_next = has_next_episode();
+
+    use_future(move || async move {
+        let mut seeked = false;
+        let mut ended_sent = false;
+        loop {
+            let delay = if seeked { 3 } else { 1 };
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            let mut eval = document::eval(
+                r#"
+                const v = document.querySelector('.player-video');
+                if (v && v.readyState >= 2 && !isNaN(v.duration)) {
+                    dioxus.send([v.currentTime, v.duration, v.ended]);
+                } else {
+                    dioxus.send(null);
+                }
+                "#,
+            );
+            let Ok(val) = eval.recv::<serde_json::Value>().await else {
+                continue;
+            };
+            let Some(arr) = val.as_array() else {
+                continue;
+            };
+            let t = arr.first().and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let d = arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let e = arr.get(2).and_then(|v| v.as_bool()).unwrap_or(false);
+            if !seeked {
+                if let Some(seek_to) = start_time() {
+                    if seek_to > 0.0 {
+                        document::eval(&format!(
+                            "const v=document.querySelector('.player-video');if(v)v.currentTime={seek_to};"
+                        ));
+                    }
+                }
+                seeked = true;
+            }
+            if e && !ended_sent {
+                ended_sent = true;
+                on_ended.call(());
+            } else if !e {
+                ended_sent = false;
+                if t > 10.0 {
+                    on_time_update.call((t, d));
+                }
+            }
+        }
+    });
 
     rsx! {
         div {
@@ -496,5 +576,51 @@ fn DlCard(progress: DownloadProgress) -> Element {
                 span { class: "dl-card-status", color: "{status_color}", "{status_text}" }
             }
         }
+    }
+}
+
+const POSTER_COLORS: &[(u8, u8, u8)] = &[
+    (0x8B, 0x1A, 0x1A),
+    (0x0D, 0x3B, 0x66),
+    (0x3B, 0x0A, 0x5C),
+    (0x14, 0x40, 0x14),
+    (0x6B, 0x3A, 0x00),
+    (0x5C, 0x0E, 0x0E),
+    (0x0A, 0x2A, 0x4A),
+    (0x40, 0x0A, 0x50),
+    (0x4A, 0x0E, 0x0E),
+    (0x00, 0x3A, 0x3A),
+    (0x3E, 0x21, 0x23),
+    (0x1B, 0x2A, 0x41),
+    (0x2D, 0x1B, 0x00),
+    (0x1A, 0x0A, 0x2E),
+    (0x0E, 0x33, 0x1A),
+    (0x33, 0x1A, 0x0E),
+];
+
+fn name_hash(name: &str) -> usize {
+    name.bytes()
+        .fold(0u32, |a, b| a.wrapping_mul(37).wrapping_add(b as u32)) as usize
+}
+
+fn poster_color(name: &str) -> String {
+    let (r, g, b) = POSTER_COLORS[name_hash(name) % POSTER_COLORS.len()];
+    format!("rgb({r},{g},{b})")
+}
+
+fn format_score(s: &str) -> String {
+    match s.parse::<f64>() {
+        Ok(v) => format!("{v:.1}"),
+        Err(_) => s.to_string(),
+    }
+}
+
+fn provider_label(idx: usize) -> &'static str {
+    match idx {
+        0 => "StreamingCommunity",
+        1 => "RaiPlay",
+        2 => "Nove",
+        3 => "AnimeUnity",
+        _ => "Unknown",
     }
 }

@@ -15,14 +15,6 @@ const RAIPLAY_RELINKER: &str = "https://mediapolisvod.rai.it/relinker/relinkerSe
 
 use super::provider_hash;
 
-fn raiplay_abs_url(s: &str) -> String {
-    if s.starts_with("http") {
-        s.to_string()
-    } else {
-        format!("{RAIPLAY_BASE}{s}")
-    }
-}
-
 pub struct RaiPlayProvider {
     client: Client,
     season_data: tokio::sync::Mutex<HashMap<u64, Vec<(String, String)>>>,
@@ -418,5 +410,13 @@ impl Provider for RaiPlayProvider {
         }
         entries.truncate(limit);
         Ok(entries)
+    }
+}
+
+fn raiplay_abs_url(s: &str) -> String {
+    if s.starts_with("http") {
+        s.to_string()
+    } else {
+        format!("{RAIPLAY_BASE}{s}")
     }
 }

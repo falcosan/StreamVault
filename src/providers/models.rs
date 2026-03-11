@@ -28,7 +28,7 @@ pub struct Season {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Episode {
     pub id: u64,
     pub number: u32,

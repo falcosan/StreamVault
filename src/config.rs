@@ -1,3 +1,4 @@
+use crate::providers::{Episode, MediaEntry};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -43,6 +44,15 @@ pub struct RequestsConfig {
     pub max_retry: u32,
     pub use_proxy: bool,
     pub proxy_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchItem {
+    pub entry: MediaEntry,
+    pub current_time: f64,
+    pub duration: f64,
+    pub season: Option<u32>,
+    pub episode: Option<Episode>,
 }
 
 impl Default for OutputConfig {
@@ -111,10 +121,7 @@ impl AppConfig {
     pub fn load() -> Self {
         let path = Self::config_path();
         if path.exists() {
-            fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
+            read_json(&path).unwrap_or_default()
         } else {
             let cfg = Self::default();
             cfg.save();
@@ -123,21 +130,7 @@ impl AppConfig {
     }
 
     pub fn save(&self) {
-        let path = Self::config_path();
-        if let Some(parent) = path.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
-                eprintln!("[StreamVault] config dir error: {e}");
-                return;
-            }
-        }
-        match serde_json::to_string_pretty(self) {
-            Ok(json) => {
-                if let Err(e) = fs::write(&path, json) {
-                    eprintln!("[StreamVault] config write error: {e}");
-                }
-            }
-            Err(e) => eprintln!("[StreamVault] config serialize error: {e}"),
-        }
+        write_json(&Self::config_path(), self, "config");
     }
 
     pub fn download_dir(&self) -> PathBuf {
@@ -157,9 +150,70 @@ impl AppConfig {
     }
 }
 
+impl WatchItem {
+    pub fn progress_pct(&self) -> f64 {
+        if self.duration > 0.0 {
+            (self.current_time / self.duration * 100.0).min(100.0)
+        } else {
+            0.0
+        }
+    }
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+fn write_json(path: &std::path::Path, value: &(impl Serialize + ?Sized), label: &str) {
+    if let Some(parent) = path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("[StreamVault] {label} dir error: {e}");
+            return;
+        }
+    }
+    match serde_json::to_string_pretty(value) {
+        Ok(json) => {
+            if let Err(e) = fs::write(path, json) {
+                eprintln!("[StreamVault] {label} write error: {e}");
+            }
+        }
+        Err(e) => eprintln!("[StreamVault] {label} serialize error: {e}"),
+    }
+}
+
+fn watch_items_path() -> PathBuf {
+    AppConfig::config_dir().join("continue_watching.json")
+}
+
+pub fn load_watch_items() -> Vec<WatchItem> {
+    read_json(&watch_items_path()).unwrap_or_default()
+}
+
+pub fn save_watch_items(items: &[WatchItem]) {
+    write_json(&watch_items_path(), items, "watch progress");
+}
+
+pub fn upsert_watch_item(items: &mut Vec<WatchItem>, item: WatchItem) {
+    if let Some(pos) = items
+        .iter()
+        .position(|i| i.entry.provider == item.entry.provider && i.entry.id == item.entry.id)
+    {
+        items[pos] = item;
+    } else {
+        items.insert(0, item);
+    }
+}
+
+pub fn remove_watch_item(items: &mut Vec<WatchItem>, provider: usize, id: u64) {
+    items.retain(|i| i.entry.provider != provider || i.entry.id != id);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::MediaType;
 
     #[test]
     fn default_config_has_expected_values() {
@@ -227,5 +281,109 @@ mod tests {
         assert!(!r.use_proxy);
         assert!(r.proxy_url.is_empty());
         assert_eq!(r.max_retry, 8);
+    }
+
+    fn make_entry(provider: usize, id: u64) -> MediaEntry {
+        MediaEntry {
+            id,
+            name: format!("Title {id}"),
+            slug: String::new(),
+            provider,
+            language: String::new(),
+            media_type: MediaType::Movie,
+            alternative_names: Vec::new(),
+            year: None,
+            score: None,
+            image_url: None,
+            description: None,
+        }
+    }
+
+    fn make_watch(provider: usize, id: u64, time: f64, dur: f64) -> WatchItem {
+        WatchItem {
+            entry: make_entry(provider, id),
+            current_time: time,
+            duration: dur,
+            season: None,
+            episode: None,
+        }
+    }
+
+    #[test]
+    fn progress_pct_normal() {
+        let w = make_watch(0, 1, 30.0, 60.0);
+        assert!((w.progress_pct() - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn progress_pct_zero_duration() {
+        assert_eq!(make_watch(0, 1, 10.0, 0.0).progress_pct(), 0.0);
+    }
+
+    #[test]
+    fn progress_pct_clamped_at_100() {
+        assert_eq!(make_watch(0, 1, 200.0, 100.0).progress_pct(), 100.0);
+    }
+
+    #[test]
+    fn upsert_inserts_new_at_front() {
+        let mut items = vec![make_watch(0, 1, 10.0, 60.0)];
+        upsert_watch_item(&mut items, make_watch(0, 2, 20.0, 90.0));
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].entry.id, 2);
+    }
+
+    #[test]
+    fn upsert_updates_existing() {
+        let mut items = vec![make_watch(0, 1, 10.0, 60.0)];
+        upsert_watch_item(&mut items, make_watch(0, 1, 45.0, 60.0));
+        assert_eq!(items.len(), 1);
+        assert!((items[0].current_time - 45.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn upsert_matches_on_provider_and_id() {
+        let mut items = vec![make_watch(0, 1, 10.0, 60.0)];
+        upsert_watch_item(&mut items, make_watch(1, 1, 20.0, 60.0));
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn remove_watch_item_removes_match() {
+        let mut items = vec![make_watch(0, 1, 10.0, 60.0), make_watch(0, 2, 20.0, 90.0)];
+        remove_watch_item(&mut items, 0, 1);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].entry.id, 2);
+    }
+
+    #[test]
+    fn remove_watch_item_no_match_unchanged() {
+        let mut items = vec![make_watch(0, 1, 10.0, 60.0)];
+        remove_watch_item(&mut items, 1, 99);
+        assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn watch_item_serde_round_trip() {
+        let w = WatchItem {
+            entry: make_entry(2, 42),
+            current_time: 123.5,
+            duration: 3600.0,
+            season: Some(3),
+            episode: Some(Episode {
+                id: 7,
+                number: 5,
+                name: "Test Ep".into(),
+                duration: Some(45),
+                image_url: None,
+            }),
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        let loaded: WatchItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.entry.id, 42);
+        assert_eq!(loaded.entry.provider, 2);
+        assert!((loaded.current_time - 123.5).abs() < 0.01);
+        assert_eq!(loaded.season, Some(3));
+        assert_eq!(loaded.episode.unwrap().number, 5);
     }
 }

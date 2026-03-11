@@ -1,4 +1,6 @@
-use crate::config::AppConfig;
+use crate::config::{
+    load_watch_items, remove_watch_item, save_watch_items, upsert_watch_item, AppConfig, WatchItem,
+};
 use crate::gui::{self, Screen};
 use crate::providers::{
     AnimeUnityProvider, MediaEntry, NoveProvider, Provider, RaiPlayProvider,
@@ -9,55 +11,6 @@ use dioxus::prelude::*;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
-
-fn normalize_search(s: &str) -> String {
-    s.to_lowercase()
-        .nfkd()
-        .filter(|c| !is_combining_mark(*c))
-        .collect()
-}
-
-fn score_name(name: &str, query: &str) -> u16 {
-    if name == query {
-        1000
-    } else if name.starts_with(query) {
-        800
-    } else if let Some(pos) = name.find(query) {
-        600 - (pos.min(100) as u16)
-    } else {
-        0
-    }
-}
-
-fn edit_distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let n = b.len();
-    let mut row: Vec<usize> = (0..=n).collect();
-    for ca in a.chars() {
-        let mut prev = row[0];
-        row[0] += 1;
-        for (j, &cb) in b.iter().enumerate() {
-            let old = row[j + 1];
-            row[j + 1] = if ca == cb {
-                prev
-            } else {
-                prev.min(row[j]).min(row[j + 1]) + 1
-            };
-            prev = old;
-        }
-    }
-    row[n]
-}
-
-fn fuzzy_word_match(word: &str, text: &str) -> bool {
-    if text.contains(word) {
-        return true;
-    }
-    word.len() >= 4
-        && text
-            .split_whitespace()
-            .any(|w| w.len().abs_diff(word.len()) <= 1 && edit_distance(w, word) <= 1)
-}
 
 #[component]
 pub fn App() -> Element {
@@ -95,6 +48,9 @@ pub fn App() -> Element {
     let mut history: Signal<Vec<Screen>> = use_signal(Vec::new);
     let mut has_update = use_signal(|| false);
     let mut is_updating = use_signal(|| false);
+    let mut continue_watching: Signal<Vec<WatchItem>> = use_signal(load_watch_items);
+    let mut resume_time: Signal<Option<f64>> = use_signal(|| None);
+    let mut playing_episode: Signal<Option<crate::providers::Episode>> = use_signal(|| None);
 
     use_future(move || async move {
         let Ok(resp) = reqwest::get(
@@ -350,6 +306,8 @@ pub fn App() -> Element {
         move |_: ()| {
             if let Some(entry) = selected_entry() {
                 error_msg.set(None);
+                playing_episode.set(None);
+                resume_time.set(None);
                 let title = entry.display_title();
                 let p = providers[entry.provider].clone();
                 let current = screen();
@@ -375,6 +333,8 @@ pub fn App() -> Element {
             if let Some(entry) = selected_entry() {
                 error_msg.set(None);
                 let episode = episodes().iter().find(|x| x.number == ep_num).cloned();
+                playing_episode.set(episode.clone());
+                resume_time.set(None);
                 let title = format!("{} S{s:02}E{ep_num:02}", entry.name);
                 let p = providers[entry.provider].clone();
                 let current = screen();
@@ -480,6 +440,8 @@ pub fn App() -> Element {
         playing_title.set(String::new());
         playing_season.set(None);
         playing_episode_num.set(None);
+        playing_episode.set(None);
+        resume_time.set(None);
         let prev = history.write().pop().unwrap_or(Screen::Home);
         screen.set(prev);
     };
@@ -507,6 +469,8 @@ pub fn App() -> Element {
                 error_msg.set(None);
                 let ep_num = next_ep.number;
                 let episode = next_ep.clone();
+                playing_episode.set(Some(episode.clone()));
+                resume_time.set(None);
                 let title = format!("{} S{s:02}E{ep_num:02}", entry.name);
                 let p = providers[entry.provider].clone();
                 spawn(async move {
@@ -527,6 +491,80 @@ pub fn App() -> Element {
     let on_back = move |_| {
         let prev = history.write().pop().unwrap_or(Screen::Home);
         screen.set(prev);
+    };
+
+    let on_time_update = move |(current, dur): (f64, f64)| {
+        if current < 10.0 || dur <= 0.0 || current / dur > 0.95 {
+            return;
+        }
+        if let Some(entry) = selected_entry() {
+            let item = WatchItem {
+                entry,
+                current_time: current,
+                duration: dur,
+                season: playing_season(),
+                episode: playing_episode(),
+            };
+            let mut items = continue_watching.write();
+            upsert_watch_item(&mut items, item);
+            save_watch_items(&items);
+        }
+    };
+
+    let on_ended = move |_: ()| {
+        if let Some(entry) = selected_entry() {
+            let mut items = continue_watching.write();
+            remove_watch_item(&mut items, entry.provider, entry.id);
+            save_watch_items(&items);
+        }
+    };
+
+    let on_remove_watch = move |(provider, id): (usize, u64)| {
+        let mut items = continue_watching.write();
+        remove_watch_item(&mut items, provider, id);
+        save_watch_items(&items);
+    };
+
+    let on_resume = {
+        let providers = providers.clone();
+        move |item: WatchItem| {
+            selected_entry.set(Some(item.entry.clone()));
+            playing_episode.set(item.episode.clone());
+            error_msg.set(None);
+            let title = match (&item.season, &item.episode) {
+                (Some(s), Some(ep)) => format!("{} S{s:02}E{:02}", item.entry.name, ep.number),
+                _ => item.entry.display_title(),
+            };
+            let p = providers[item.entry.provider].clone();
+            let current = screen();
+            let resume_at = item.current_time;
+            let WatchItem {
+                entry,
+                episode,
+                season,
+                ..
+            } = item;
+            spawn(async move {
+                match p.get_stream_url(&entry, episode.as_ref(), season).await {
+                    Ok(stream) => {
+                        eprintln!("[StreamVault] Playing: {}", stream.url);
+                        playing_title.set(title);
+                        stream_url.set(Some(stream.url));
+                        playing_season.set(season);
+                        playing_episode_num.set(episode.as_ref().map(|e| e.number));
+                        resume_time.set(Some(resume_at));
+                        history.write().push(current);
+                        screen.set(Screen::Player);
+                        if let Some(s) = season {
+                            if let Ok(eps) = p.get_episodes(&entry, s).await {
+                                episodes.set(eps);
+                            }
+                        }
+                    }
+                    Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
+                }
+            });
+        }
     };
 
     let current_entry = selected_entry();
@@ -557,7 +595,10 @@ pub fn App() -> Element {
                         gui::HomeView {
                             catalog: ReadSignal::from(catalog),
                             is_loading: ReadSignal::from(catalog_loading),
+                            continue_watching: ReadSignal::from(continue_watching),
                             on_select: on_select_entry,
+                            on_resume,
+                            on_remove_watch,
                         }
                     },
                     Screen::Search => rsx! {
@@ -590,7 +631,10 @@ pub fn App() -> Element {
                                 gui::HomeView {
                                     catalog: ReadSignal::from(catalog),
                                     is_loading: ReadSignal::from(catalog_loading),
+                                    continue_watching: ReadSignal::from(continue_watching),
                                     on_select: on_select_entry,
+                                    on_resume,
+                                    on_remove_watch,
                                 }
                             }
                         }
@@ -600,8 +644,11 @@ pub fn App() -> Element {
                             stream_url: ReadSignal::from(stream_url),
                             playing_title: ReadSignal::from(playing_title),
                             has_next_episode: ReadSignal::from(has_next_episode),
+                            start_time: ReadSignal::from(resume_time),
                             on_stop,
                             on_next_episode,
+                            on_time_update,
+                            on_ended,
                         }
                     },
                     Screen::Downloads => rsx! {
@@ -614,4 +661,53 @@ pub fn App() -> Element {
             }
         }
     }
+}
+
+fn normalize_search(s: &str) -> String {
+    s.to_lowercase()
+        .nfkd()
+        .filter(|c| !is_combining_mark(*c))
+        .collect()
+}
+
+fn score_name(name: &str, query: &str) -> u16 {
+    if name == query {
+        1000
+    } else if name.starts_with(query) {
+        800
+    } else if let Some(pos) = name.find(query) {
+        600 - (pos.min(100) as u16)
+    } else {
+        0
+    }
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let n = b.len();
+    let mut row: Vec<usize> = (0..=n).collect();
+    for ca in a.chars() {
+        let mut prev = row[0];
+        row[0] += 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let old = row[j + 1];
+            row[j + 1] = if ca == cb {
+                prev
+            } else {
+                prev.min(row[j]).min(row[j + 1]) + 1
+            };
+            prev = old;
+        }
+    }
+    row[n]
+}
+
+fn fuzzy_word_match(word: &str, text: &str) -> bool {
+    if text.contains(word) {
+        return true;
+    }
+    word.len() >= 4
+        && text
+            .split_whitespace()
+            .any(|w| w.len().abs_diff(word.len()) <= 1 && edit_distance(w, word) <= 1)
 }

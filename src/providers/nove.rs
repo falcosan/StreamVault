@@ -14,29 +14,6 @@ const DPLAY_PLAYBACK_URL: &str = "https://eu1-prod.disco-api.com/playback/v3/vid
 
 use super::provider_hash;
 
-fn build_show_url(slug: &str, parent_slug: &str) -> String {
-    let normalized = slug.to_lowercase().replace(' ', "-");
-    format!(
-        "{AURORA_BASE}/site/page/{normalized}/?include=default&filter[environment]={NOVE_ENV}&v=2&parent_slug={parent_slug}"
-    )
-}
-
-fn video_id_from_json(ep: &serde_json::Value) -> Option<String> {
-    ep["id"]
-        .as_str()
-        .map(String::from)
-        .or_else(|| ep["id"].as_u64().map(|n| n.to_string()))
-        .or_else(|| ep["id"].as_i64().map(|n| n.to_string()))
-}
-
-fn channel_from_json(ep: &serde_json::Value) -> String {
-    if ep["channel"].is_null() {
-        "X-REALM-IT".to_string()
-    } else {
-        "X-REALM-DPLAY".to_string()
-    }
-}
-
 pub struct NoveProvider {
     client: Client,
     show_data: Mutex<HashMap<u64, Vec<serde_json::Value>>>,
@@ -336,5 +313,28 @@ impl Provider for NoveProvider {
             }
         }
         Ok(entries)
+    }
+}
+
+fn build_show_url(slug: &str, parent_slug: &str) -> String {
+    let normalized = slug.to_lowercase().replace(' ', "-");
+    format!(
+        "{AURORA_BASE}/site/page/{normalized}/?include=default&filter[environment]={NOVE_ENV}&v=2&parent_slug={parent_slug}"
+    )
+}
+
+fn video_id_from_json(ep: &serde_json::Value) -> Option<String> {
+    ep["id"]
+        .as_str()
+        .map(String::from)
+        .or_else(|| ep["id"].as_u64().map(|n| n.to_string()))
+        .or_else(|| ep["id"].as_i64().map(|n| n.to_string()))
+}
+
+fn channel_from_json(ep: &serde_json::Value) -> String {
+    if ep["channel"].is_null() {
+        "X-REALM-IT".to_string()
+    } else {
+        "X-REALM-DPLAY".to_string()
     }
 }
