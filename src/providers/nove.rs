@@ -199,19 +199,31 @@ impl Provider for NoveProvider {
 
     async fn get_stream_url(
         &self,
-        _entry: &MediaEntry,
+        entry: &MediaEntry,
         episode: Option<&Episode>,
-        _season: Option<u32>,
+        season: Option<u32>,
     ) -> ProviderResult<StreamUrl> {
         let ep = episode
             .ok_or_else(|| ProviderError::StreamExtraction("Episode required for Nove".into()))?;
-        let (video_id, channel) = self
-            .episode_data
-            .lock()
-            .await
-            .get(&ep.id)
-            .cloned()
-            .ok_or_else(|| ProviderError::StreamExtraction("Episode data not cached".into()))?;
+        let cached = self.episode_data.lock().await.get(&ep.id).cloned();
+        let (video_id, channel) = match cached {
+            Some(data) => data,
+            None => {
+                let s = season.ok_or_else(|| {
+                    ProviderError::StreamExtraction("Season required to fetch episode data".into())
+                })?;
+                self.get_seasons(entry).await?;
+                self.get_episodes(entry, s).await?;
+                self.episode_data
+                    .lock()
+                    .await
+                    .get(&ep.id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ProviderError::StreamExtraction("Episode data not found after fetch".into())
+                    })?
+            }
+        };
 
         let tokens = self.get_bearer_tokens().await?;
         let (endpoint, key) = tokens.get(&channel).ok_or_else(|| {

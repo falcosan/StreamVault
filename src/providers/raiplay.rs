@@ -342,15 +342,32 @@ impl Provider for RaiPlayProvider {
         &self,
         entry: &MediaEntry,
         episode: Option<&Episode>,
-        _season: Option<u32>,
+        season: Option<u32>,
     ) -> ProviderResult<StreamUrl> {
         let page_url = if let Some(ep) = episode {
-            self.episode_data
-                .lock()
-                .await
-                .get(&ep.id)
-                .cloned()
-                .ok_or_else(|| ProviderError::Parse("Episode URL not cached".into()))?
+            let cached = self.episode_data.lock().await.get(&ep.id).cloned();
+            match cached {
+                Some(url) => url,
+                None => {
+                    let s = season.ok_or_else(|| {
+                        ProviderError::StreamExtraction(
+                            "Season required to fetch episode data".into(),
+                        )
+                    })?;
+                    self.get_seasons(entry).await?;
+                    self.get_episodes(entry, s).await?;
+                    self.episode_data
+                        .lock()
+                        .await
+                        .get(&ep.id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            ProviderError::StreamExtraction(
+                                "Episode URL not found after fetch".into(),
+                            )
+                        })?
+                }
+            }
         } else {
             let path = entry.slug.trim_start_matches('/');
             format!("{RAIPLAY_BASE}/{path}")
