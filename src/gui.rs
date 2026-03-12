@@ -464,13 +464,13 @@ pub fn PlayerView(
             let d = arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
             let e = arr.get(2).and_then(|v| v.as_bool()).unwrap_or(false);
             if !seeked {
-                if let Some(seek_to) = start_time() {
-                    if seek_to > 0.0 {
-                        document::eval(&format!(
-                            "const v=document.querySelector('.player-video');if(v)v.currentTime={seek_to};"
-                        ));
-                    }
-                }
+                let seek = start_time()
+                    .filter(|&t| t > 0.0)
+                    .map(|t| format!("v.currentTime={t};"))
+                    .unwrap_or_default();
+                document::eval(&format!(
+                    "const v=document.querySelector('.player-video');if(v){{{seek}v.play().catch(()=>{{}});}}"
+                ));
                 seeked = true;
             }
             if e && !ended_sent {
