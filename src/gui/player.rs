@@ -7,6 +7,7 @@ pub fn PlayerView(
     has_next_episode: ReadSignal<bool>,
     start_time: ReadSignal<Option<f64>>,
     on_stop: EventHandler<()>,
+    on_go_details: EventHandler<()>,
     on_next_episode: EventHandler<()>,
     on_time_update: EventHandler<(f64, f64)>,
     on_ended: EventHandler<()>,
@@ -81,7 +82,9 @@ pub fn PlayerView(
             },
             div { class: "player-top-bar",
                 button { class: "btn-ghost", onclick: move |_| on_stop.call(()), "← Stop" }
-                span { class: "player-title-text", "{title}" }
+                div { class: "player-title-wrapper",
+                    span { class: "player-title-link", onclick: move |_| on_go_details.call(()), "{title}" }
+                }
                 if show_next {
                     button { class: "btn-next-episode", onclick: move |_| on_next_episode.call(()), "Next →" }
                 }

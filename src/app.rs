@@ -491,6 +491,11 @@ pub fn App() -> Element {
         screen.set(prev);
     };
 
+    let on_go_details = move |_: ()| {
+        history.write().push(Screen::Player);
+        screen.set(Screen::Details);
+    };
+
     let on_time_update = move |(current, dur): (f64, f64)| {
         if current < 10.0 || dur <= 0.0 {
             return;
@@ -723,6 +728,7 @@ pub fn App() -> Element {
                             has_next_episode: ReadSignal::from(has_next_episode),
                             start_time: ReadSignal::from(resume_time),
                             on_stop,
+                            on_go_details,
                             on_next_episode,
                             on_time_update,
                             on_ended,

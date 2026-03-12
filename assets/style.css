@@ -782,13 +782,18 @@ body {
   z-index: 1;
 }
 
-.player-title-text {
+.player-title-wrapper {
+  flex: 1;
+  overflow: hidden;
+}
+.player-title-link {
   font-size: 14px;
   color: var(--text);
-  flex: 1;
+  cursor: pointer;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+.player-title-link:hover {
+  text-decoration: underline;
 }
 
 .player-video-container {
