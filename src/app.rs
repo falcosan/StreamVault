@@ -515,12 +515,24 @@ pub fn App() -> Element {
             save_watch_items(&items);
             return;
         }
+        let mut items = continue_watching.write();
+        let stored = items
+            .iter()
+            .find(|i| i.entry.provider == entry.provider && i.entry.id == entry.id);
+        match stored {
+            None => return,
+            Some(i) if i.episode.as_ref().map(|e| e.number) != playing_episode_num() => return,
+            _ => {}
+        }
         let cur_ep = match (playing_episode_num(), playing_season()) {
             (Some(ep), Some(s)) if entry.media_type == MediaType::Series => (ep, s),
-            _ => return,
+            _ => {
+                remove_watch_item(&mut items, entry.provider, entry.id);
+                save_watch_items(&items);
+                return;
+            }
         };
         let eps = episodes();
-        let mut items = continue_watching.write();
         if advance_watch_item(&mut items, entry, &eps, cur_ep.0, cur_ep.1) {
             save_watch_items(&items);
         }
