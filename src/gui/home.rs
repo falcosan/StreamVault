@@ -99,7 +99,10 @@ fn ContinueCard(
                     e.stop_propagation();
                     on_remove.call((provider, id));
                 },
-                "✕"
+            span {
+                class: "continue-remove-icon",
+                    "✕"
+                }
             }
             div { class: "continue-overlay",
                 div { class: "continue-name", "{name}" }

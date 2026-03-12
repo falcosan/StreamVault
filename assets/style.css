@@ -362,6 +362,10 @@ body {
   transition: opacity 0.15s;
 }
 
+.continue-remove-icon {
+  transform: translateY(-1px);
+}
+
 .continue-card:hover .continue-remove {
   opacity: 1;
 }
