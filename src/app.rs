@@ -308,17 +308,16 @@ pub fn App() -> Element {
                 error_msg.set(None);
                 playing_episode.set(None);
                 resume_time.set(None);
-                let title = entry.display_title();
+                playing_title.set(entry.display_title());
+                stream_url.set(None);
+                history.write().push(screen());
+                screen.set(Screen::Player);
                 let p = providers[entry.provider].clone();
-                let current = screen();
                 spawn(async move {
                     match p.get_stream_url(&entry, None, None).await {
                         Ok(stream) => {
                             eprintln!("[StreamVault] Playing: {}", stream.url);
-                            playing_title.set(title);
                             stream_url.set(Some(stream.url));
-                            history.write().push(current);
-                            screen.set(Screen::Player);
                         }
                         Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
                     }
@@ -335,19 +334,18 @@ pub fn App() -> Element {
                 let episode = episodes().iter().find(|x| x.number == ep_num).cloned();
                 playing_episode.set(episode.clone());
                 resume_time.set(None);
-                let title = format!("{} S{s:02}E{ep_num:02}", entry.name);
+                playing_title.set(format!("{} S{s:02}E{ep_num:02}", entry.name));
+                playing_season.set(Some(s));
+                playing_episode_num.set(Some(ep_num));
+                stream_url.set(None);
+                history.write().push(screen());
+                screen.set(Screen::Player);
                 let p = providers[entry.provider].clone();
-                let current = screen();
                 spawn(async move {
                     match p.get_stream_url(&entry, episode.as_ref(), Some(s)).await {
                         Ok(stream) => {
                             eprintln!("[StreamVault] Playing: {}", stream.url);
-                            playing_title.set(title);
                             stream_url.set(Some(stream.url));
-                            playing_season.set(Some(s));
-                            playing_episode_num.set(Some(ep_num));
-                            history.write().push(current);
-                            screen.set(Screen::Player);
                         }
                         Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
                     }
@@ -471,15 +469,15 @@ pub fn App() -> Element {
                 let episode = next_ep.clone();
                 playing_episode.set(Some(episode.clone()));
                 resume_time.set(None);
-                let title = format!("{} S{s:02}E{ep_num:02}", entry.name);
+                playing_title.set(format!("{} S{s:02}E{ep_num:02}", entry.name));
+                playing_episode_num.set(Some(ep_num));
+                stream_url.set(None);
                 let p = providers[entry.provider].clone();
                 spawn(async move {
                     match p.get_stream_url(&entry, Some(&episode), Some(s)).await {
                         Ok(stream) => {
                             eprintln!("[StreamVault] Playing: {}", stream.url);
-                            playing_title.set(title);
                             stream_url.set(Some(stream.url));
-                            playing_episode_num.set(Some(ep_num));
                         }
                         Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
                     }
@@ -528,16 +526,25 @@ pub fn App() -> Element {
     let on_resume = {
         let providers = providers.clone();
         move |item: WatchItem| {
+            {
+                let mut items = continue_watching.write();
+                upsert_watch_item(&mut items, item.clone());
+                save_watch_items(&items);
+            }
             selected_entry.set(Some(item.entry.clone()));
             playing_episode.set(item.episode.clone());
             error_msg.set(None);
-            let title = match (&item.season, &item.episode) {
+            playing_title.set(match (&item.season, &item.episode) {
                 (Some(s), Some(ep)) => format!("{} S{s:02}E{:02}", item.entry.name, ep.number),
                 _ => item.entry.display_title(),
-            };
+            });
+            playing_season.set(item.season);
+            playing_episode_num.set(item.episode.as_ref().map(|e| e.number));
+            resume_time.set(Some(item.current_time));
+            stream_url.set(None);
+            history.write().push(screen());
+            screen.set(Screen::Player);
             let p = providers[item.entry.provider].clone();
-            let current = screen();
-            let resume_at = item.current_time;
             let WatchItem {
                 entry,
                 episode,
@@ -548,13 +555,7 @@ pub fn App() -> Element {
                 match p.get_stream_url(&entry, episode.as_ref(), season).await {
                     Ok(stream) => {
                         eprintln!("[StreamVault] Playing: {}", stream.url);
-                        playing_title.set(title);
                         stream_url.set(Some(stream.url));
-                        playing_season.set(season);
-                        playing_episode_num.set(episode.as_ref().map(|e| e.number));
-                        resume_time.set(Some(resume_at));
-                        history.write().push(current);
-                        screen.set(Screen::Player);
                         if let Some(s) = season {
                             if let Ok(eps) = p.get_episodes(&entry, s).await {
                                 episodes.set(eps);

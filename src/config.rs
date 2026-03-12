@@ -200,10 +200,9 @@ pub fn upsert_watch_item(items: &mut Vec<WatchItem>, item: WatchItem) {
         .iter()
         .position(|i| i.entry.provider == item.entry.provider && i.entry.id == item.entry.id)
     {
-        items[pos] = item;
-    } else {
-        items.insert(0, item);
+        items.remove(pos);
     }
+    items.insert(0, item);
 }
 
 pub fn remove_watch_item(items: &mut Vec<WatchItem>, provider: usize, id: u64) {
@@ -339,6 +338,21 @@ mod tests {
         upsert_watch_item(&mut items, make_watch(0, 1, 45.0, 60.0));
         assert_eq!(items.len(), 1);
         assert!((items[0].current_time - 45.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn upsert_moves_existing_to_front() {
+        let mut items = vec![
+            make_watch(0, 1, 10.0, 60.0),
+            make_watch(0, 2, 20.0, 90.0),
+            make_watch(0, 3, 30.0, 120.0),
+        ];
+        upsert_watch_item(&mut items, make_watch(0, 3, 55.0, 120.0));
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].entry.id, 3);
+        assert!((items[0].current_time - 55.0).abs() < 0.01);
+        assert_eq!(items[1].entry.id, 1);
+        assert_eq!(items[2].entry.id, 2);
     }
 
     #[test]
