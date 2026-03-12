@@ -1,12 +1,12 @@
 mod animeunity;
+mod aurora;
 mod models;
-mod nove;
 mod raiplay;
 mod streaming_community;
 
 pub use animeunity::AnimeUnityProvider;
+pub use aurora::AuroraProvider;
 pub use models::*;
-pub use nove::NoveProvider;
 pub use raiplay::RaiPlayProvider;
 pub use streaming_community::StreamingCommunityProvider;
 

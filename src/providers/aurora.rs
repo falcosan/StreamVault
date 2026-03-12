@@ -1,6 +1,6 @@
 use super::{
-    Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, Season, StreamUrl,
-    USER_AGENT,
+    provider_hash, Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, Season,
+    StreamUrl, USER_AGENT,
 };
 use async_trait::async_trait;
 use reqwest::Client;
@@ -8,20 +8,19 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use tokio::sync::Mutex;
 
 const AURORA_BASE: &str = "https://public.aurora.enhanced.live";
-const NOVE_ENV: &str = "nove";
 const PLAYBACK_URL: &str = "https://public.aurora.enhanced.live/playback/v3/videoPlaybackInfo";
 const DPLAY_PLAYBACK_URL: &str = "https://eu1-prod.disco-api.com/playback/v3/videoPlaybackInfo";
 
-use super::provider_hash;
-
-pub struct NoveProvider {
+pub struct AuroraProvider {
     client: Client,
+    env: &'static str,
+    provider_name: &'static str,
     show_data: Mutex<HashMap<u64, Vec<serde_json::Value>>>,
     episode_data: Mutex<HashMap<u64, (String, String)>>,
 }
 
-impl NoveProvider {
-    pub fn with_config(timeout: u64) -> Self {
+impl AuroraProvider {
+    fn new(timeout: u64, env: &'static str, provider_name: &'static str) -> Self {
         let client = Client::builder()
             .user_agent(USER_AGENT)
             .timeout(std::time::Duration::from_secs(timeout))
@@ -29,9 +28,27 @@ impl NoveProvider {
             .expect("reqwest client");
         Self {
             client,
+            env,
+            provider_name,
             show_data: Mutex::new(HashMap::new()),
             episode_data: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn nove(timeout: u64) -> Self {
+        Self::new(timeout, "nove", "Nove")
+    }
+
+    pub fn realtime(timeout: u64) -> Self {
+        Self::new(timeout, "realtime", "RealTime")
+    }
+
+    fn build_show_url(&self, slug: &str, parent_slug: &str) -> String {
+        let normalized = slug.to_lowercase().replace(' ', "-");
+        format!(
+            "{AURORA_BASE}/site/page/{normalized}/?include=default&filter[environment]={}&v=2&parent_slug={parent_slug}",
+            self.env
+        )
     }
 
     async fn get_bearer_tokens(&self) -> ProviderResult<HashMap<String, (String, String)>> {
@@ -64,15 +81,16 @@ impl NoveProvider {
 }
 
 #[async_trait]
-impl Provider for NoveProvider {
+impl Provider for AuroraProvider {
     fn name(&self) -> &'static str {
-        "Nove"
+        self.provider_name
     }
 
     async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>> {
         let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
         let url = format!(
-            "{AURORA_BASE}/site/search/page/?include=default&filter[environment]={NOVE_ENV}&v=2&q={encoded}&page[number]=1&page[size]=20"
+            "{AURORA_BASE}/site/search/page/?include=default&filter[environment]={}&v=2&q={encoded}&page[number]=1&page[size]=20",
+            self.env
         );
         let resp = self.client.get(&url).send().await?;
         let json: serde_json::Value = resp.json().await?;
@@ -91,7 +109,7 @@ impl Provider for NoveProvider {
             };
             let slug = item["slug"].as_str().unwrap_or("");
             let parent_slug = item["parentSlug"].as_str().unwrap_or("");
-            let show_url = build_show_url(slug, parent_slug);
+            let show_url = self.build_show_url(slug, parent_slug);
             let year = item["dateLastModified"]
                 .as_str()
                 .and_then(|d| d.split('-').next())
@@ -122,19 +140,23 @@ impl Provider for NoveProvider {
         let blocks = json["blocks"]
             .as_array()
             .ok_or_else(|| ProviderError::Parse("No blocks in response".into()))?;
-        let items = blocks
-            .get(1)
-            .and_then(|b| b["items"].as_array())
-            .ok_or_else(|| ProviderError::Parse("No items in blocks[1]".into()))?;
 
-        self.show_data.lock().await.insert(entry.id, items.clone());
-
+        let mut all_items = Vec::new();
         let mut season_nums = BTreeSet::new();
-        for ep in items {
-            if let Some(n) = ep["seasonNumber"].as_u64() {
-                season_nums.insert(n as u32);
+        for block in blocks {
+            if let Some(items) = block["items"].as_array() {
+                for item in items {
+                    if let Some(n) = item["seasonNumber"].as_u64() {
+                        if episode_number(item).is_some() {
+                            season_nums.insert(n as u32);
+                            all_items.push(item.clone());
+                        }
+                    }
+                }
             }
         }
+
+        self.show_data.lock().await.insert(entry.id, all_items);
 
         Ok(season_nums
             .into_iter()
@@ -165,19 +187,19 @@ impl Provider for NoveProvider {
                 None => continue,
             };
             let channel = channel_from_json(ep);
-            let ep_num = ep["episodeNumber"].as_u64().unwrap_or(0) as u32;
-            let name = ep["title"].as_str().unwrap_or("").to_string();
-            let name = if name.is_empty() {
-                format!("Episode {ep_num}")
-            } else {
-                name
+            let ep_num = match episode_number(ep) {
+                Some(n) => n,
+                None => continue,
             };
-            let duration_ms = ep["videoDuration"].as_u64().unwrap_or(0);
-            let duration = if duration_ms > 0 {
-                Some((duration_ms / 1000 / 60) as u32)
-            } else {
-                None
-            };
+            let name = ep["title"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .unwrap_or_else(|| format!("Episode {ep_num}"));
+            let duration = ep["videoDuration"]
+                .as_u64()
+                .filter(|&ms| ms > 0)
+                .map(|ms| (ms / 1000 / 60) as u32);
 
             let ep_id = provider_hash(&format!("{}-{}-{}", entry.id, season, video_id));
             ep_map.insert(ep_id, (video_id, channel));
@@ -208,8 +230,8 @@ impl Provider for NoveProvider {
         episode: Option<&Episode>,
         season: Option<u32>,
     ) -> ProviderResult<StreamUrl> {
-        let ep = episode
-            .ok_or_else(|| ProviderError::StreamExtraction("Episode required for Nove".into()))?;
+        let ep =
+            episode.ok_or_else(|| ProviderError::StreamExtraction("Episode required".into()))?;
         let cached = self.episode_data.lock().await.get(&ep.id).cloned();
         let (video_id, channel) = match cached {
             Some(data) => data,
@@ -268,11 +290,12 @@ impl Provider for NoveProvider {
 
     async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>> {
         let url = format!(
-            "{AURORA_BASE}/site/page/homepage/?include=default&filter[environment]={NOVE_ENV}&v=2"
+            "{AURORA_BASE}/site/page/homepage/?include=default&filter[environment]={}&v=2",
+            self.env
         );
         let resp = self.client.get(&url).send().await?;
         let json: serde_json::Value = resp.json().await?;
-        let blocks = json["blocks"].as_array().unwrap_or(&Vec::new()).clone();
+        let blocks = json["blocks"].as_array().cloned().unwrap_or_default();
 
         let mut entries = Vec::new();
         let mut seen = HashSet::new();
@@ -301,7 +324,7 @@ impl Provider for NoveProvider {
                     None => continue,
                 };
                 let parent_slug = item["parentUrl"].as_str().unwrap_or("");
-                let show_url = build_show_url(slug, parent_slug);
+                let show_url = self.build_show_url(slug, parent_slug);
                 let id = provider_hash(&show_url);
                 if !seen.insert(id) {
                     continue;
@@ -334,19 +357,24 @@ impl Provider for NoveProvider {
     }
 }
 
-fn build_show_url(slug: &str, parent_slug: &str) -> String {
-    let normalized = slug.to_lowercase().replace(' ', "-");
-    format!(
-        "{AURORA_BASE}/site/page/{normalized}/?include=default&filter[environment]={NOVE_ENV}&v=2&parent_slug={parent_slug}"
-    )
-}
-
 fn video_id_from_json(ep: &serde_json::Value) -> Option<String> {
     ep["id"]
         .as_str()
         .map(String::from)
         .or_else(|| ep["id"].as_u64().map(|n| n.to_string()))
         .or_else(|| ep["id"].as_i64().map(|n| n.to_string()))
+}
+
+fn episode_number(ep: &serde_json::Value) -> Option<u32> {
+    if let Some(n) = ep["episodeNumber"].as_u64() {
+        return Some(n as u32);
+    }
+    let title = ep["title"].as_str()?;
+    let rest = title.strip_prefix("Episodio ")?;
+    rest.split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
 }
 
 fn channel_from_json(ep: &serde_json::Value) -> String {

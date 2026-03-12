@@ -4,7 +4,7 @@ use crate::config::{
 };
 use crate::gui::{self, Screen};
 use crate::providers::{
-    AnimeUnityProvider, MediaEntry, MediaType, NoveProvider, Provider, RaiPlayProvider,
+    AnimeUnityProvider, AuroraProvider, MediaEntry, MediaType, Provider, RaiPlayProvider,
     StreamingCommunityProvider,
 };
 use crate::search;
@@ -23,7 +23,8 @@ pub fn App() -> Element {
                 config.requests.timeout,
             )) as Arc<dyn Provider>,
             Arc::new(RaiPlayProvider::with_config(config.requests.timeout)),
-            Arc::new(NoveProvider::with_config(config.requests.timeout)),
+            Arc::new(AuroraProvider::nove(config.requests.timeout)),
+            Arc::new(AuroraProvider::realtime(config.requests.timeout)),
             Arc::new(AnimeUnityProvider::with_config(config.requests.timeout)),
         ]
     });
