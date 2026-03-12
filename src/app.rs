@@ -399,7 +399,13 @@ pub fn App() -> Element {
         let Some(cur) = playing_episode_num() else {
             return false;
         };
-        episodes().iter().any(|e| e.number > cur)
+        if episodes().iter().any(|e| e.number > cur) {
+            return true;
+        }
+        if let Some(s) = playing_season() {
+            return seasons().iter().any(|sn| sn.number > s);
+        }
+        false
     });
 
     let on_next_episode = {
@@ -409,12 +415,16 @@ pub fn App() -> Element {
                 return;
             };
             let Some(s) = playing_season() else { return };
+            let Some(entry) = selected_entry() else {
+                return;
+            };
             let eps = episodes();
             let next = eps
                 .iter()
                 .filter(|e| e.number > cur)
                 .min_by_key(|e| e.number);
-            if let (Some(next_ep), Some(entry)) = (next, selected_entry()) {
+            if let Some(next_ep) = next {
+                // Next episode in the same season
                 error_msg.set(None);
                 let ep_num = next_ep.number;
                 let episode = next_ep.clone();
@@ -426,6 +436,45 @@ pub fn App() -> Element {
                 let p = providers[entry.provider].clone();
                 spawn(async move {
                     match p.get_stream_url(&entry, Some(&episode), Some(s)).await {
+                        Ok(stream) => {
+                            eprintln!("[StreamVault] Playing: {}", stream.url);
+                            stream_url.set(Some(stream.url));
+                        }
+                        Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
+                    }
+                });
+            } else {
+                // Last episode of the season: try next season
+                let next_season = seasons()
+                    .iter()
+                    .filter(|sn| sn.number > s)
+                    .min_by_key(|sn| sn.number)
+                    .cloned();
+                let Some(ns) = next_season else { return };
+                error_msg.set(None);
+                stream_url.set(None);
+                let p = providers[entry.provider].clone();
+                let ns_num = ns.number;
+                spawn(async move {
+                    let Ok(new_eps) = p.get_episodes(&entry, ns_num).await else {
+                        error_msg.set(Some("Failed to fetch next season episodes".into()));
+                        return;
+                    };
+                    let Some(first_ep) = new_eps.iter().min_by_key(|e| e.number).cloned() else {
+                        return;
+                    };
+                    episodes.set(new_eps);
+                    let ep_num = first_ep.number;
+                    playing_episode.set(Some(first_ep.clone()));
+                    resume_time.set(None);
+                    playing_title.set(entry.episode_title(ns_num, &first_ep));
+                    playing_episode_num.set(Some(ep_num));
+                    playing_season.set(Some(ns_num));
+                    selected_season.set(Some(ns_num));
+                    match p
+                        .get_stream_url(&entry, Some(&first_ep), Some(ns_num))
+                        .await
+                    {
                         Ok(stream) => {
                             eprintln!("[StreamVault] Playing: {}", stream.url);
                             stream_url.set(Some(stream.url));
