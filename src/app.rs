@@ -334,7 +334,10 @@ pub fn App() -> Element {
                 let episode = episodes().iter().find(|x| x.number == ep_num).cloned();
                 playing_episode.set(episode.clone());
                 resume_time.set(None);
-                playing_title.set(format!("{} S{s:02}E{ep_num:02}", entry.name));
+                playing_title.set(match &episode {
+                    Some(ep) => entry.episode_title(s, ep),
+                    None => format!("{} S{s:02}E{ep_num:02}", entry.name),
+                });
                 playing_season.set(Some(s));
                 playing_episode_num.set(Some(ep_num));
                 stream_url.set(None);
@@ -469,7 +472,7 @@ pub fn App() -> Element {
                 let episode = next_ep.clone();
                 playing_episode.set(Some(episode.clone()));
                 resume_time.set(None);
-                playing_title.set(format!("{} S{s:02}E{ep_num:02}", entry.name));
+                playing_title.set(entry.episode_title(s, &episode));
                 playing_episode_num.set(Some(ep_num));
                 stream_url.set(None);
                 let p = providers[entry.provider].clone();
@@ -535,7 +538,7 @@ pub fn App() -> Element {
             playing_episode.set(item.episode.clone());
             error_msg.set(None);
             playing_title.set(match (&item.season, &item.episode) {
-                (Some(s), Some(ep)) => format!("{} S{s:02}E{:02}", item.entry.name, ep.number),
+                (Some(s), Some(ep)) => item.entry.episode_title(*s, ep),
                 _ => item.entry.display_title(),
             });
             playing_season.set(item.season);

@@ -49,6 +49,11 @@ impl MediaEntry {
         self.media_type == MediaType::Movie
     }
 
+    #[inline]
+    pub fn year_display(&self) -> &str {
+        self.year.as_deref().unwrap_or("")
+    }
+
     pub fn display_title(&self) -> String {
         match &self.year {
             Some(y) => format!("{} ({y})", self.name),
@@ -56,8 +61,11 @@ impl MediaEntry {
         }
     }
 
-    #[inline]
-    pub fn year_display(&self) -> &str {
-        self.year.as_deref().unwrap_or("")
+    pub fn episode_title(&self, season: u32, ep: &Episode) -> String {
+        if ep.name.is_empty() {
+            format!("{} S{season:02}E{:02}", self.name, ep.number)
+        } else {
+            format!("{} S{season:02}E{:02} - {}", self.name, ep.number, ep.name)
+        }
     }
 }
