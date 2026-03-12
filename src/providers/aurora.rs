@@ -141,11 +141,21 @@ impl Provider for AuroraProvider {
             .as_array()
             .ok_or_else(|| ProviderError::Parse("No blocks in response".into()))?;
 
+        let show_id = show_id_from_blocks(blocks);
         let mut all_items = Vec::new();
         let mut season_nums = BTreeSet::new();
         for block in blocks {
+            let bt = block["type"].as_str().unwrap_or("");
+            if bt != "sonicShowBlock" && bt != "sonicPlaylistBlock" {
+                continue;
+            }
             if let Some(items) = block["items"].as_array() {
                 for item in items {
+                    if let Some(ref sid) = show_id {
+                        if item["show"]["id"].as_str() != Some(sid) {
+                            continue;
+                        }
+                    }
                     if let Some(n) = item["seasonNumber"].as_u64() {
                         if episode_number(item).is_some() {
                             season_nums.insert(n as u32);
@@ -355,6 +365,23 @@ impl Provider for AuroraProvider {
         }
         Ok(entries)
     }
+}
+
+fn show_id_from_blocks(blocks: &[serde_json::Value]) -> Option<String> {
+    for bt in &["sonicShowBlock", "sonicPlaylistBlock"] {
+        for block in blocks {
+            if block["type"].as_str() == Some(bt) {
+                if let Some(id) = block["items"]
+                    .as_array()
+                    .and_then(|items| items.first())
+                    .and_then(|item| item["show"]["id"].as_str())
+                {
+                    return Some(id.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn video_id_from_json(ep: &serde_json::Value) -> Option<String> {
