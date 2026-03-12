@@ -3,7 +3,7 @@ use crate::config::{
 };
 use crate::gui::{self, Screen};
 use crate::providers::{
-    AnimeUnityProvider, MediaEntry, NoveProvider, Provider, RaiPlayProvider,
+    AnimeUnityProvider, MediaEntry, MediaType, NoveProvider, Provider, RaiPlayProvider,
     StreamingCommunityProvider,
 };
 use crate::util::{DownloadEngine, DownloadProgress, DownloadRequest};
@@ -512,11 +512,74 @@ pub fn App() -> Element {
         }
     };
 
-    let on_ended = move |_: ()| {
-        if let Some(entry) = selected_entry() {
-            let mut items = continue_watching.write();
-            remove_watch_item(&mut items, entry.provider, entry.id);
-            save_watch_items(&items);
+    let on_ended = {
+        let providers = providers.clone();
+        move |_: ()| {
+            let Some(entry) = selected_entry() else {
+                return;
+            };
+            let cur_ep = match (playing_episode_num(), playing_season()) {
+                (Some(ep), Some(s)) if entry.media_type == MediaType::Series => (ep, s),
+                _ => {
+                    let mut items = continue_watching.write();
+                    remove_watch_item(&mut items, entry.provider, entry.id);
+                    save_watch_items(&items);
+                    return;
+                }
+            };
+            let eps = episodes();
+            let next_ep = eps
+                .iter()
+                .filter(|e| e.number > cur_ep.0)
+                .min_by_key(|e| e.number)
+                .cloned();
+
+            if let Some(next) = next_ep {
+                let item = WatchItem {
+                    entry,
+                    current_time: 0.0,
+                    duration: next.duration.map(|d| d as f64).unwrap_or(0.0),
+                    season: Some(cur_ep.1),
+                    episode: Some(next),
+                };
+                let mut items = continue_watching.write();
+                upsert_watch_item(&mut items, item);
+                save_watch_items(&items);
+                return;
+            }
+
+            let p = providers[entry.provider].clone();
+            spawn(async move {
+                let Ok(all_seasons) = p.get_seasons(&entry).await else {
+                    return;
+                };
+                let next_season = all_seasons
+                    .iter()
+                    .filter(|sn| sn.number > cur_ep.1)
+                    .min_by_key(|sn| sn.number);
+                let Some(ns) = next_season else {
+                    let mut items = continue_watching.write();
+                    remove_watch_item(&mut items, entry.provider, entry.id);
+                    save_watch_items(&items);
+                    return;
+                };
+                let Ok(new_eps) = p.get_episodes(&entry, ns.number).await else {
+                    return;
+                };
+                let Some(first_ep) = new_eps.into_iter().min_by_key(|e| e.number) else {
+                    return;
+                };
+                let item = WatchItem {
+                    entry,
+                    current_time: 0.0,
+                    duration: first_ep.duration.map(|d| d as f64).unwrap_or(0.0),
+                    season: Some(ns.number),
+                    episode: Some(first_ep),
+                };
+                let mut items = continue_watching.write();
+                upsert_watch_item(&mut items, item);
+                save_watch_items(&items);
+            });
         }
     };
 
