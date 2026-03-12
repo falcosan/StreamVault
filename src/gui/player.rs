@@ -56,7 +56,7 @@ pub fn PlayerView(
                 on_ended.call(());
             } else if !e {
                 ended_sent = false;
-                if t > 10.0 {
+                if t > 1.0 {
                     on_time_update.call((t, d));
                 }
             }

@@ -497,7 +497,7 @@ pub fn App() -> Element {
     };
 
     let on_time_update = move |(current, dur): (f64, f64)| {
-        if current < 10.0 || dur <= 0.0 {
+        if current < 1.0 || dur <= 0.0 {
             return;
         }
         let Some(entry) = selected_entry() else {

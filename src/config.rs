@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn progress_pct_zero_duration() {
-        assert_eq!(make_watch(0, 1, 10.0, 0.0).progress_pct(), 0.0);
+        assert_eq!(make_watch(0, 1, 1.0, 0.0).progress_pct(), 0.0);
     }
 
     #[test]
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn upsert_inserts_new_at_front() {
-        let mut items = vec![make_watch(0, 1, 10.0, 60.0)];
+        let mut items = vec![make_watch(0, 1, 1.0, 60.0)];
         upsert_watch_item(&mut items, make_watch(0, 2, 20.0, 90.0));
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].entry.id, 2);
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn upsert_updates_existing() {
-        let mut items = vec![make_watch(0, 1, 10.0, 60.0)];
+        let mut items = vec![make_watch(0, 1, 1.0, 60.0)];
         upsert_watch_item(&mut items, make_watch(0, 1, 45.0, 60.0));
         assert_eq!(items.len(), 1);
         assert!((items[0].current_time - 45.0).abs() < 0.01);
@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn upsert_moves_existing_to_front() {
         let mut items = vec![
-            make_watch(0, 1, 10.0, 60.0),
+            make_watch(0, 1, 1.0, 60.0),
             make_watch(0, 2, 20.0, 90.0),
             make_watch(0, 3, 30.0, 120.0),
         ];
@@ -383,14 +383,14 @@ mod tests {
 
     #[test]
     fn upsert_matches_on_provider_and_id() {
-        let mut items = vec![make_watch(0, 1, 10.0, 60.0)];
+        let mut items = vec![make_watch(0, 1, 1.0, 60.0)];
         upsert_watch_item(&mut items, make_watch(1, 1, 20.0, 60.0));
         assert_eq!(items.len(), 2);
     }
 
     #[test]
     fn remove_watch_item_removes_match() {
-        let mut items = vec![make_watch(0, 1, 10.0, 60.0), make_watch(0, 2, 20.0, 90.0)];
+        let mut items = vec![make_watch(0, 1, 1.0, 60.0), make_watch(0, 2, 20.0, 90.0)];
         remove_watch_item(&mut items, 0, 1);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].entry.id, 2);
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn remove_watch_item_no_match_unchanged() {
-        let mut items = vec![make_watch(0, 1, 10.0, 60.0)];
+        let mut items = vec![make_watch(0, 1, 1.0, 60.0)];
         remove_watch_item(&mut items, 1, 99);
         assert_eq!(items.len(), 1);
     }
