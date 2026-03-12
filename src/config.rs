@@ -205,6 +205,31 @@ pub fn upsert_watch_item(items: &mut Vec<WatchItem>, item: WatchItem) {
     items.insert(0, item);
 }
 
+pub fn advance_watch_item(
+    items: &mut Vec<WatchItem>,
+    entry: MediaEntry,
+    episodes: &[Episode],
+    cur_ep: u32,
+    season: u32,
+) -> bool {
+    let next = episodes
+        .iter()
+        .filter(|e| e.number > cur_ep)
+        .min_by_key(|e| e.number);
+    if let Some(next) = next {
+        let item = WatchItem {
+            entry,
+            current_time: 0.0,
+            duration: next.duration.map(|d| d as f64).unwrap_or(0.0),
+            season: Some(season),
+            episode: Some(next.clone()),
+        };
+        upsert_watch_item(items, item);
+        return true;
+    }
+    false
+}
+
 pub fn remove_watch_item(items: &mut Vec<WatchItem>, provider: usize, id: u64) {
     items.retain(|i| i.entry.provider != provider || i.entry.id != id);
 }
@@ -375,6 +400,41 @@ mod tests {
         let mut items = vec![make_watch(0, 1, 10.0, 60.0)];
         remove_watch_item(&mut items, 1, 99);
         assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn advance_watch_item_to_next_episode() {
+        let mut items = vec![make_watch(0, 1, 30.0, 60.0)];
+        let eps: Vec<Episode> = (1..=3)
+            .map(|n| Episode {
+                id: n as u64,
+                number: n,
+                name: format!("Ep {n}"),
+                duration: Some(45),
+                image_url: None,
+            })
+            .collect();
+        let advanced = advance_watch_item(&mut items, make_entry(0, 1), &eps, 1, 1);
+        assert!(advanced);
+        assert_eq!(items.len(), 1);
+        assert!((items[0].current_time).abs() < 0.01);
+        assert_eq!(items[0].episode.as_ref().unwrap().number, 2);
+        assert_eq!(items[0].season, Some(1));
+    }
+
+    #[test]
+    fn advance_watch_item_no_next_episode() {
+        let mut items = vec![make_watch(0, 1, 30.0, 60.0)];
+        let eps = vec![Episode {
+            id: 1,
+            number: 1,
+            name: "Ep 1".into(),
+            duration: Some(45),
+            image_url: None,
+        }];
+        let advanced = advance_watch_item(&mut items, make_entry(0, 1), &eps, 1, 1);
+        assert!(!advanced);
+        assert!((items[0].current_time - 30.0).abs() < 0.01);
     }
 
     #[test]

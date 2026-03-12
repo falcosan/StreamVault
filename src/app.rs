@@ -1,5 +1,6 @@
 use crate::config::{
-    load_watch_items, remove_watch_item, save_watch_items, upsert_watch_item, AppConfig, WatchItem,
+    advance_watch_item, load_watch_items, remove_watch_item, save_watch_items, upsert_watch_item,
+    AppConfig, WatchItem,
 };
 use crate::gui::{self, Screen};
 use crate::providers::{
@@ -495,10 +496,13 @@ pub fn App() -> Element {
     };
 
     let on_time_update = move |(current, dur): (f64, f64)| {
-        if current < 10.0 || dur <= 0.0 || current / dur > 0.95 {
+        if current < 10.0 || dur <= 0.0 {
             return;
         }
-        if let Some(entry) = selected_entry() {
+        let Some(entry) = selected_entry() else {
+            return;
+        };
+        if dur - current > 20.0 {
             let item = WatchItem {
                 entry,
                 current_time: current,
@@ -508,6 +512,16 @@ pub fn App() -> Element {
             };
             let mut items = continue_watching.write();
             upsert_watch_item(&mut items, item);
+            save_watch_items(&items);
+            return;
+        }
+        let cur_ep = match (playing_episode_num(), playing_season()) {
+            (Some(ep), Some(s)) if entry.media_type == MediaType::Series => (ep, s),
+            _ => return,
+        };
+        let eps = episodes();
+        let mut items = continue_watching.write();
+        if advance_watch_item(&mut items, entry, &eps, cur_ep.0, cur_ep.1) {
             save_watch_items(&items);
         }
     };
@@ -528,24 +542,12 @@ pub fn App() -> Element {
                 }
             };
             let eps = episodes();
-            let next_ep = eps
-                .iter()
-                .filter(|e| e.number > cur_ep.0)
-                .min_by_key(|e| e.number)
-                .cloned();
-
-            if let Some(next) = next_ep {
-                let item = WatchItem {
-                    entry,
-                    current_time: 0.0,
-                    duration: next.duration.map(|d| d as f64).unwrap_or(0.0),
-                    season: Some(cur_ep.1),
-                    episode: Some(next),
-                };
+            {
                 let mut items = continue_watching.write();
-                upsert_watch_item(&mut items, item);
-                save_watch_items(&items);
-                return;
+                if advance_watch_item(&mut items, entry.clone(), &eps, cur_ep.0, cur_ep.1) {
+                    save_watch_items(&items);
+                    return;
+                }
             }
 
             let p = providers[entry.provider].clone();
