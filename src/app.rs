@@ -25,6 +25,9 @@ pub fn App() -> Element {
             Arc::new(RaiPlayProvider::with_config(config.requests.timeout)),
             Arc::new(AuroraProvider::nove(config.requests.timeout)),
             Arc::new(AuroraProvider::realtime(config.requests.timeout)),
+            Arc::new(AuroraProvider::dmax(config.requests.timeout)),
+            Arc::new(AuroraProvider::food_network(config.requests.timeout)),
+            Arc::new(AuroraProvider::discovery(config.requests.timeout)),
             Arc::new(AnimeUnityProvider::with_config(config.requests.timeout)),
         ]
     });

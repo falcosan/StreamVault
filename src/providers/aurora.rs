@@ -43,6 +43,18 @@ impl AuroraProvider {
         Self::new(timeout, "realtime", "RealTime")
     }
 
+    pub fn dmax(timeout: u64) -> Self {
+        Self::new(timeout, "dmaxit", "DMAX")
+    }
+
+    pub fn food_network(timeout: u64) -> Self {
+        Self::new(timeout, "foodnetwork", "FoodNetwork")
+    }
+
+    pub fn discovery(timeout: u64) -> Self {
+        Self::new(timeout, "discoverychannelit", "Discovery")
+    }
+
     fn build_show_url(&self, slug: &str, parent_slug: &str) -> String {
         let normalized = slug.to_lowercase().replace(' ', "-");
         format!(
