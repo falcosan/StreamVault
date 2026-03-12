@@ -12,6 +12,7 @@ pub struct MediaEntry {
     pub name: String,
     pub slug: String,
     pub provider: usize,
+    pub provider_name: String,
     pub language: String,
     pub media_type: MediaType,
     pub alternative_names: Vec<String>,

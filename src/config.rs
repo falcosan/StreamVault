@@ -313,6 +313,7 @@ mod tests {
             name: format!("Title {id}"),
             slug: String::new(),
             provider,
+            provider_name: String::new(),
             language: String::new(),
             media_type: MediaType::Movie,
             alternative_names: Vec::new(),

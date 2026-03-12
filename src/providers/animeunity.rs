@@ -130,6 +130,7 @@ impl AnimeUnityProvider {
                 .map(String::from)
                 .or_else(|| record["score"].as_f64().map(|s| format!("{s:.1}"))),
             provider: 0,
+            provider_name: String::new(),
             language: "ja".to_string(),
         })
     }
@@ -168,6 +169,10 @@ impl AnimeUnityProvider {
 
 #[async_trait]
 impl Provider for AnimeUnityProvider {
+    fn name(&self) -> &'static str {
+        "AnimeUnity"
+    }
+
     async fn init(&self) {
         self.resolve_domain().await;
     }

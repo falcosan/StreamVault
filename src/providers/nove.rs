@@ -65,6 +65,10 @@ impl NoveProvider {
 
 #[async_trait]
 impl Provider for NoveProvider {
+    fn name(&self) -> &'static str {
+        "Nove"
+    }
+
     async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>> {
         let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
         let url = format!(
@@ -105,6 +109,7 @@ impl Provider for NoveProvider {
                 description: None,
                 score: None,
                 provider: 0,
+                provider_name: String::new(),
                 language: "it".to_string(),
             });
         }
@@ -317,6 +322,7 @@ impl Provider for NoveProvider {
                         .map(String::from),
                     score: None,
                     provider: 0,
+                    provider_name: String::new(),
                     language: "it".to_string(),
                 });
                 if entries.len() >= limit {

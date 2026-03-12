@@ -63,6 +63,7 @@ impl RaiPlayProvider {
             description: None,
             score: None,
             provider: 0,
+            provider_name: String::new(),
             language: "it".to_string(),
         })
     }
@@ -99,6 +100,7 @@ impl RaiPlayProvider {
             description,
             score: None,
             provider: 0,
+            provider_name: String::new(),
             language: "it".to_string(),
         })
     }
@@ -187,6 +189,10 @@ impl RaiPlayProvider {
 
 #[async_trait]
 impl Provider for RaiPlayProvider {
+    fn name(&self) -> &'static str {
+        "RaiPlay"
+    }
+
     async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>> {
         let body = serde_json::json!({
             "templateIn": "6470a982e4e0301afe1f81f1",

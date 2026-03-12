@@ -51,6 +51,7 @@ pub type ProviderResult<T> = Result<T, ProviderError>;
 
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
+    fn name(&self) -> &'static str;
     async fn init(&self) {}
     async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>>;
     async fn get_seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<Season>>;
@@ -64,7 +65,7 @@ pub trait Provider: Send + Sync {
     async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>>;
 }
 
-pub(crate) fn provider_hash(s: &str) -> u64 {
+pub fn provider_hash(s: &str) -> u64 {
     s.bytes()
         .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64))
 }
@@ -154,6 +155,7 @@ mod tests {
             description: None,
             score: None,
             provider: 0,
+            provider_name: String::new(),
             language: String::new(),
         }
     }
@@ -170,6 +172,7 @@ mod tests {
             description: None,
             score: None,
             provider: 0,
+            provider_name: String::new(),
             language: String::new(),
         }
     }

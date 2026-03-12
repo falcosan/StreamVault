@@ -135,6 +135,7 @@ impl StreamingCommunityProvider {
             description: Self::extract_description(v),
             score: v["score"].as_str().map(String::from),
             provider: 0,
+            provider_name: String::new(),
             language: String::new(),
         })
     }
@@ -287,6 +288,10 @@ impl StreamingCommunityProvider {
 
 #[async_trait]
 impl Provider for StreamingCommunityProvider {
+    fn name(&self) -> &'static str {
+        "StreamingCommunity"
+    }
+
     async fn init(&self) {
         self.resolve_domain().await;
     }
