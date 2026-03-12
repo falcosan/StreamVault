@@ -17,7 +17,7 @@ pub use search_view::SearchView;
 pub enum Screen {
     Home,
     Search,
-    Details,
     Player,
+    Details,
     Downloads,
 }

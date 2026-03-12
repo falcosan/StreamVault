@@ -384,13 +384,17 @@ pub fn App() -> Element {
         }
     };
 
-    let on_stop = move |_: ()| {
+    let mut clear_player = move || {
         stream_url.set(None);
         playing_title.set(String::new());
         playing_season.set(None);
         playing_episode_num.set(None);
         playing_episode.set(None);
         resume_time.set(None);
+    };
+
+    let on_stop = move |_: ()| {
+        clear_player();
         let prev = history.write().pop().unwrap_or(Screen::Home);
         screen.set(prev);
     };
@@ -424,7 +428,6 @@ pub fn App() -> Element {
                 .filter(|e| e.number > cur)
                 .min_by_key(|e| e.number);
             if let Some(next_ep) = next {
-                // Next episode in the same season
                 error_msg.set(None);
                 let ep_num = next_ep.number;
                 let episode = next_ep.clone();
@@ -444,7 +447,6 @@ pub fn App() -> Element {
                     }
                 });
             } else {
-                // Last episode of the season: try next season
                 let next_season = seasons()
                     .iter()
                     .filter(|sn| sn.number > s)
@@ -488,7 +490,12 @@ pub fn App() -> Element {
 
     let on_back = move |_| {
         let prev = history.write().pop().unwrap_or(Screen::Home);
-        screen.set(prev);
+        if prev == Screen::Player {
+            clear_player();
+            screen.set(Screen::Home);
+        } else {
+            screen.set(prev);
+        }
     };
 
     let on_go_details = move |_: ()| {
