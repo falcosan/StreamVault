@@ -156,6 +156,7 @@ impl Provider for AuroraProvider {
         let show_id = show_id_from_blocks(blocks);
         let mut all_items = Vec::new();
         let mut season_nums = BTreeSet::new();
+        let mut seen_ids = HashSet::new();
         for block in blocks {
             let bt = block["type"].as_str().unwrap_or("");
             if bt != "sonicShowBlock" && bt != "sonicPlaylistBlock" {
@@ -168,8 +169,12 @@ impl Provider for AuroraProvider {
                             continue;
                         }
                     }
+                    let vid = match video_id_from_json(item) {
+                        Some(v) => v,
+                        None => continue,
+                    };
                     if let Some(n) = item["seasonNumber"].as_u64() {
-                        if episode_number(item).is_some() {
+                        if episode_number(item).is_some() && seen_ids.insert(vid) {
                             season_nums.insert(n as u32);
                             all_items.push(item.clone());
                         }
