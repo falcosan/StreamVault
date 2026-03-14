@@ -196,39 +196,45 @@ pub fn App() -> Element {
         }
     };
 
-    let on_select_entry = {
+    let load_seasons_episodes = {
         let providers = providers.clone();
+        move |entry: MediaEntry, preferred_season: Option<u32>| {
+            is_loading.set(true);
+            seasons.set(Vec::new());
+            episodes.set(Vec::new());
+            let p = providers[entry.provider].clone();
+            spawn(async move {
+                match p.get_seasons(&entry).await {
+                    Ok(s) => {
+                        let pick = preferred_season
+                            .filter(|t| s.iter().any(|sn| sn.number == *t))
+                            .or_else(|| s.first().map(|f| f.number));
+                        seasons.set(s);
+                        if let Some(n) = pick {
+                            selected_season.set(Some(n));
+                            match p.get_episodes(&entry, n).await {
+                                Ok(eps) => episodes.set(eps),
+                                Err(_) => episodes.set(Vec::new()),
+                            }
+                        }
+                    }
+                    Err(_) => seasons.set(Vec::new()),
+                }
+                is_loading.set(false);
+            });
+        }
+    };
+
+    let on_select_entry = {
+        let mut load_seasons_episodes = load_seasons_episodes.clone();
         move |entry: MediaEntry| {
             let is_movie = entry.is_movie();
             selected_entry.set(Some(entry.clone()));
             history.write().push(screen());
             screen.set(Screen::Details);
-            seasons.set(Vec::new());
-            episodes.set(Vec::new());
             selected_season.set(None);
             if !is_movie {
-                is_loading.set(true);
-                let p = providers[entry.provider].clone();
-                spawn(async move {
-                    match p.get_seasons(&entry).await {
-                        Ok(s) => {
-                            let first_num = s.first().map(|f| f.number);
-                            seasons.set(s);
-                            if let Some(n) = first_num {
-                                selected_season.set(Some(n));
-                                if let Some(e) = selected_entry() {
-                                    is_loading.set(true);
-                                    match p.get_episodes(&e, n).await {
-                                        Ok(eps) => episodes.set(eps),
-                                        Err(_) => episodes.set(Vec::new()),
-                                    }
-                                }
-                            }
-                        }
-                        Err(_) => seasons.set(Vec::new()),
-                    }
-                    is_loading.set(false);
-                });
+                load_seasons_episodes(entry, None);
             }
         }
     };
@@ -502,9 +508,22 @@ pub fn App() -> Element {
         }
     };
 
-    let on_go_details = move |_: ()| {
-        history.write().push(Screen::Player);
-        screen.set(Screen::Details);
+    let on_go_details = {
+        let mut load_seasons_episodes = load_seasons_episodes.clone();
+        move |_: ()| {
+            history.write().push(Screen::Player);
+            screen.set(Screen::Details);
+            if let Some(entry) = selected_entry() {
+                if !entry.is_movie() {
+                    let preferred = playing_season();
+                    let has_cached_data = !seasons().is_empty() && !episodes().is_empty();
+                    let season_is_synced = preferred.is_none() || selected_season() == preferred;
+                    if !(has_cached_data && season_is_synced) {
+                        load_seasons_episodes(entry, preferred);
+                    }
+                }
+            }
+        }
     };
 
     let on_time_update = move |(current, dur): (f64, f64)| {
