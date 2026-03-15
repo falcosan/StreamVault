@@ -668,9 +668,13 @@ pub fn App() -> Element {
                         eprintln!("[StreamVault] Playing: {}", stream.url);
                         stream_url.set(Some(stream.url));
                         if let Some(s) = season {
+                            if let Ok(s_list) = p.get_seasons(&entry).await {
+                                seasons.set(s_list);
+                            }
                             if let Ok(eps) = p.get_episodes(&entry, s).await {
                                 episodes.set(eps);
                             }
+                            selected_season.set(Some(s));
                         }
                     }
                     Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
