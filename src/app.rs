@@ -653,6 +653,10 @@ pub fn App() -> Element {
             playing_episode_num.set(item.episode.as_ref().map(|e| e.number));
             resume_time.set(Some(item.current_time));
             stream_url.set(None);
+            if item.season.is_some() {
+                seasons.set(Vec::new());
+                episodes.set(Vec::new());
+            }
             history.write().push(screen());
             screen.set(Screen::Player);
             let p = providers[item.entry.provider].clone();
