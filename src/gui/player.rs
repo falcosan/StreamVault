@@ -70,8 +70,8 @@ pub fn PlayerView(
             class: "player-screen",
             onkeydown: move |e: KeyboardEvent| {
                 let js: Option<&str> = match e.key() {
-                    Key::ArrowLeft => Some("document.querySelector('.player-video').currentTime -= 5;"),
-                    Key::ArrowRight => Some("document.querySelector('.player-video').currentTime += 5;"),
+                    Key::ArrowLeft => Some("document.querySelector('.player-video').currentTime -= 10;"),
+                    Key::ArrowRight => Some("document.querySelector('.player-video').currentTime += 10;"),
                     Key::Character(c) if c == " " => Some("const v=document.querySelector('.player-video');v.paused?v.play():v.pause();"),
                     _ => None,
                 };
