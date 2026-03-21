@@ -18,10 +18,10 @@ pub fn App() -> Element {
     let mut screen = use_signal(|| Screen::Home);
     let config = use_hook(AppConfig::load);
     let providers: Vec<Arc<dyn Provider>> = use_hook(|| {
-        vec![
+        let v: Vec<Arc<dyn Provider>> = vec![
             Arc::new(StreamingCommunityProvider::with_config(
                 config.requests.timeout,
-            )) as Arc<dyn Provider>,
+            )),
             Arc::new(RaiPlayProvider::with_config(config.requests.timeout)),
             Arc::new(AuroraProvider::nove(config.requests.timeout)),
             Arc::new(AuroraProvider::realtime(config.requests.timeout)),
@@ -29,7 +29,8 @@ pub fn App() -> Element {
             Arc::new(AuroraProvider::food_network(config.requests.timeout)),
             Arc::new(AuroraProvider::discovery(config.requests.timeout)),
             Arc::new(AnimeUnityProvider::with_config(config.requests.timeout)),
-        ]
+        ];
+        v
     });
     let mut provider_online = use_signal(|| false);
     let mut catalog_pending = use_signal(|| providers.len());
