@@ -34,11 +34,19 @@ impl StreamingCommunityProvider {
     }
 
     fn base_url(&self) -> String {
-        self.base_url.read().unwrap().clone()
+        self.base_url
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     async fn ensure_base_url(&self) {
-        if self.base_url.read().unwrap().is_empty() {
+        if self
+            .base_url
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+        {
             self.resolve_domain().await;
         }
     }
@@ -146,8 +154,8 @@ impl StreamingCommunityProvider {
                 let key = t["key"].as_str().unwrap_or("");
                 if key == "first_air_date" || key == "release_date" {
                     if let Some(date) = t["value"].as_str() {
-                        if date.len() >= 4 {
-                            return Some(date[..4].to_string());
+                        if let Some(year) = date.get(..4) {
+                            return Some(year.to_string());
                         }
                     }
                 }
@@ -155,8 +163,8 @@ impl StreamingCommunityProvider {
         }
         for field in &["last_air_date", "release_date"] {
             if let Some(date) = v[field].as_str() {
-                if date.len() >= 4 {
-                    return Some(date[..4].to_string());
+                if let Some(year) = date.get(..4) {
+                    return Some(year.to_string());
                 }
             }
         }

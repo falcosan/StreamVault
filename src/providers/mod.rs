@@ -83,7 +83,7 @@ pub(crate) async fn resolve_domain_url(
                         let url = url.trim_end_matches('/').to_string();
                         if url.starts_with("http") {
                             eprintln!("[StreamVault] Resolved {key} domain: {url}");
-                            *base_url.write().unwrap() = url;
+                            *base_url.write().unwrap_or_else(|e| e.into_inner()) = url;
                             return;
                         }
                     }

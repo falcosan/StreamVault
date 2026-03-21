@@ -41,7 +41,10 @@ impl AnimeUnityProvider {
     }
 
     fn base_url(&self) -> String {
-        self.base_url.read().unwrap().clone()
+        self.base_url
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     async fn resolve_domain(&self) {
