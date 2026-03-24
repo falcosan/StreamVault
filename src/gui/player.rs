@@ -96,7 +96,6 @@ pub fn PlayerView(
                         controls: true,
                         autoplay: true,
                         class: "player-video",
-                        oncontextmenu: |e: Event<MouseData>| e.prevent_default(),
                     }
                 }
             }
