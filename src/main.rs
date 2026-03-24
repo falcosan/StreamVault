@@ -12,7 +12,7 @@ fn main() {
             dioxus::desktop::Config::new()
                 .with_disable_context_menu(true)
                 .with_custom_head(
-                    "<script>document.addEventListener('contextmenu',e=>e.preventDefault())</script>"
+                    "<script>document.addEventListener('contextmenu',e=>{e.preventDefault();e.stopPropagation();return false},true)</script><style>video,audio{-webkit-touch-callout:none}</style>"
                         .into(),
                 )
                 .with_window(
