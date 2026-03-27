@@ -17,23 +17,28 @@ pub fn PlayerView(
     let show_next = has_next_episode();
 
     use_future(move || async move {
-        let mut seeked = false;
+        let seek_time = start_time().filter(|&t| t > 0.0).unwrap_or(0.0);
+        let mut eval = document::eval(&format!(
+            r#"
+            if (window._sv_interval) clearInterval(window._sv_interval);
+            window._sv_seeked = false;
+            window._sv_interval = setInterval(() => {{
+                const v = document.querySelector('.player-video');
+                if (!v || v.readyState < 2 || isNaN(v.duration)) return;
+                if (!window._sv_seeked) {{
+                    const seek = {seek_time};
+                    if (seek > 0) v.currentTime = seek;
+                    v.play().catch(() => {{}});
+                    window._sv_seeked = true;
+                }}
+                dioxus.send([v.currentTime, v.duration, v.ended]);
+            }}, 3000);
+            "#
+        ));
         let mut ended_sent = false;
         loop {
-            let delay = if seeked { 3 } else { 1 };
-            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-            let mut eval = document::eval(
-                r#"
-                const v = document.querySelector('.player-video');
-                if (v && v.readyState >= 2 && !isNaN(v.duration)) {
-                    dioxus.send([v.currentTime, v.duration, v.ended]);
-                } else {
-                    dioxus.send(null);
-                }
-                "#,
-            );
             let Ok(val) = eval.recv::<serde_json::Value>().await else {
-                continue;
+                break;
             };
             let Some(arr) = val.as_array() else {
                 continue;
@@ -41,16 +46,6 @@ pub fn PlayerView(
             let t = arr.first().and_then(|v| v.as_f64()).unwrap_or(0.0);
             let d = arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
             let e = arr.get(2).and_then(|v| v.as_bool()).unwrap_or(false);
-            if !seeked {
-                let seek = start_time()
-                    .filter(|&t| t > 0.0)
-                    .map(|t| format!("v.currentTime={t};"))
-                    .unwrap_or_default();
-                document::eval(&format!(
-                    "const v=document.querySelector('.player-video');if(v){{{seek}v.play().catch(()=>{{}});}}"
-                ));
-                seeked = true;
-            }
             if e && !ended_sent {
                 ended_sent = true;
                 on_ended.call(());
@@ -96,6 +91,7 @@ pub fn PlayerView(
                         controls: true,
                         autoplay: true,
                         class: "player-video",
+                        oncontextmenu: |e: Event<MouseData>| e.prevent_default(),
                     }
                 }
             }

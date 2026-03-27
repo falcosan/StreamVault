@@ -12,7 +12,17 @@ fn main() {
             dioxus::desktop::Config::new()
                 .with_disable_context_menu(true)
                 .with_custom_head(
-                    "<script>document.addEventListener('contextmenu',e=>{if(e.target&&e.target.tagName==='VIDEO'){e.preventDefault()}},true)</script>"
+                    r#"<script>
+document.addEventListener('contextmenu', e => e.preventDefault(), true);
+new MutationObserver(() => {
+    document.querySelectorAll('video,audio').forEach(el => {
+        if (!el._svCtx) {
+            el._svCtx = true;
+            el.setAttribute('oncontextmenu', 'return false');
+        }
+    });
+}).observe(document.documentElement, { childList: true, subtree: true });
+</script>"#
                         .into(),
                 )
                 .with_window(
