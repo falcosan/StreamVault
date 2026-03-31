@@ -18,27 +18,40 @@ pub fn PlayerView(
 
     use_future(move || async move {
         let seek_time = start_time().filter(|&t| t > 0.0).unwrap_or(0.0);
-        let mut eval = document::eval(&format!(
-            r#"
-            if (window._sv_interval) clearInterval(window._sv_interval);
-            window._sv_seeked = false;
-            window._sv_interval = setInterval(() => {{
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let mut eval = document::eval(&format!(
+                r#"
                 const v = document.querySelector('.player-video');
-                if (!v || v.readyState < 2 || isNaN(v.duration)) return;
-                if (!window._sv_seeked) {{
+                if (v && v.readyState >= 2 && !isNaN(v.duration)) {{
                     const seek = {seek_time};
                     if (seek > 0) v.currentTime = seek;
                     v.play().catch(() => {{}});
-                    window._sv_seeked = true;
+                    dioxus.send(true);
+                }} else {{
+                    dioxus.send(false);
                 }}
-                dioxus.send([v.currentTime, v.duration, v.ended]);
-            }}, 3000);
-            "#
-        ));
+                "#
+            ));
+            if let Ok(true) = eval.recv::<bool>().await {
+                break;
+            }
+        }
         let mut ended_sent = false;
         loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let mut eval = document::eval(
+                r#"
+                const v = document.querySelector('.player-video');
+                if (v && v.readyState >= 2 && !isNaN(v.duration)) {
+                    dioxus.send([v.currentTime, v.duration, v.ended]);
+                } else {
+                    dioxus.send(null);
+                }
+                "#,
+            );
             let Ok(val) = eval.recv::<serde_json::Value>().await else {
-                break;
+                continue;
             };
             let Some(arr) = val.as_array() else {
                 continue;

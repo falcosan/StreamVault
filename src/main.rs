@@ -13,15 +13,10 @@ fn main() {
                 .with_disable_context_menu(true)
                 .with_custom_head(
                     r#"<script>
-document.addEventListener('contextmenu', e => e.preventDefault(), true);
-new MutationObserver(() => {
-    document.querySelectorAll('video,audio').forEach(el => {
-        if (!el._svCtx) {
-            el._svCtx = true;
-            el.setAttribute('oncontextmenu', 'return false');
-        }
-    });
-}).observe(document.documentElement, { childList: true, subtree: true });
+document.addEventListener('contextmenu', function(e) {
+    if (e.target.closest('.player-video')) return;
+    e.preventDefault();
+}, true);
 </script>"#
                         .into(),
                 )
