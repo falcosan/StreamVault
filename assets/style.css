@@ -786,12 +786,14 @@ body {
   flex: 1;
   overflow: hidden;
 }
+
 .player-title-link {
   font-size: 14px;
   color: var(--text);
   cursor: pointer;
   white-space: nowrap;
 }
+
 .player-title-link:hover {
   text-decoration: underline;
 }
