@@ -332,7 +332,14 @@ impl Provider for AnimeUnityProvider {
             .ok_or_else(|| ProviderError::StreamExtraction("Could not extract stream URL".into()))
     }
 
+    fn catalog_limit(&self) -> usize {
+        0
+    }
+
     async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let base = self.base_url();
         if base.is_empty() {
             return Ok(Vec::new());

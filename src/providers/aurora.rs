@@ -315,7 +315,14 @@ impl Provider for AuroraProvider {
         })
     }
 
+    fn catalog_limit(&self) -> usize {
+        0
+    }
+
     async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let url = format!(
             "{AURORA_BASE}/site/page/homepage/?include=default&filter[environment]={}&v=2",
             self.env

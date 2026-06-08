@@ -390,6 +390,10 @@ impl Provider for StreamingCommunityProvider {
         self.extract_stream_url(&iframe).await
     }
 
+    fn catalog_limit(&self) -> usize {
+        100
+    }
+
     async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>> {
         self.ensure_base_url().await;
         let resp = self.client.get(self.base_url()).send().await?;

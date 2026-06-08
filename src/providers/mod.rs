@@ -63,6 +63,9 @@ pub trait Provider: Send + Sync {
         season: Option<u32>,
     ) -> ProviderResult<StreamUrl>;
     async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>>;
+    fn catalog_limit(&self) -> usize {
+        0
+    }
 }
 
 pub fn provider_hash(s: &str) -> u64 {

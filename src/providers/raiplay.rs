@@ -381,7 +381,14 @@ impl Provider for RaiPlayProvider {
         self.resolve_stream(&page_url).await
     }
 
+    fn catalog_limit(&self) -> usize {
+        0
+    }
+
     async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         static WASHI_RE: LazyLock<Regex> = LazyLock::new(|| {
             Regex::new(r"window\.WashiContext\s*=\s*(\{.*?\});\s*</script>").unwrap()
         });
