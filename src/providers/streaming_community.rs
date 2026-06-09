@@ -13,12 +13,16 @@ use std::time::Duration;
 pub struct StreamingCommunityProvider {
     client: Client,
     base_url: RwLock<String>,
+    browse_sections: RwLock<Vec<(String, Option<String>)>>,
+    browse_cursor: RwLock<(usize, usize)>,
 }
 
 impl StreamingCommunityProvider {
     const LANG: &str = "it";
     const LANGS: &[&str] = &["it", "en"];
     const IMG_PRIORITY: &[&str] = &["poster", "cover", "cover_mobile", "background"];
+    const BROWSE_PAGE_SIZE: usize = 60;
+    const BROWSE_MAX_PAGES: usize = 17;
 
     pub fn with_config(timeout: u64) -> Self {
         let client = Client::builder()
@@ -30,6 +34,8 @@ impl StreamingCommunityProvider {
         Self {
             client,
             base_url: RwLock::new(String::new()),
+            browse_sections: RwLock::new(Vec::new()),
+            browse_cursor: RwLock::new((0, 1)),
         }
     }
 
@@ -210,6 +216,34 @@ impl StreamingCommunityProvider {
                 .as_str()
                 .map(|f| format!("{cdn}/images/{f}"))
         })
+    }
+
+    async fn ensure_browse_sections(&self) -> ProviderResult<()> {
+        if !self
+            .browse_sections
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+        {
+            return Ok(());
+        }
+        let resp = self.client.get(self.base_url()).send().await?;
+        let html = resp.text().await?;
+        let page = Self::parse_data_page(&html)?;
+        let mut sections: Vec<(String, Option<String>)> =
+            vec![("trending".into(), None), ("latest".into(), None)];
+        if let Some(genres) = page["props"]["genres"].as_array() {
+            sections.extend(
+                genres
+                    .iter()
+                    .filter_map(|g| Some(("genre".into(), Some(g["name"].as_str()?.to_string())))),
+            );
+        }
+        *self
+            .browse_sections
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = sections;
+        Ok(())
     }
 
     fn entry_lang(entry: &MediaEntry) -> &str {
@@ -481,5 +515,60 @@ impl Provider for StreamingCommunityProvider {
 
         entries.truncate(limit);
         Ok(entries)
+    }
+
+    async fn get_catalog_more(&self) -> ProviderResult<Vec<MediaEntry>> {
+        self.ensure_base_url().await;
+        self.ensure_browse_sections().await?;
+        loop {
+            let (section, page) = *self
+                .browse_cursor
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            let Some((path, genre)) = self
+                .browse_sections
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(section)
+                .cloned()
+            else {
+                return Ok(Vec::new());
+            };
+            let url = format!("{}/{}/browse/{path}", self.base_url(), Self::LANG);
+            let mut params = vec![("lang", Self::LANG.to_string()), ("page", page.to_string())];
+            if let Some(g) = genre {
+                params.push(("g", g));
+            }
+            let resp = self
+                .client
+                .get(&url)
+                .query(&params)
+                .header("accept", "application/json")
+                .header("x-requested-with", "XMLHttpRequest")
+                .send()
+                .await?;
+            let json: serde_json::Value = resp.json().await?;
+            let titles = json["titles"].as_array().cloned().unwrap_or_default();
+            *self
+                .browse_cursor
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) =
+                if titles.len() >= Self::BROWSE_PAGE_SIZE && page < Self::BROWSE_MAX_PAGES {
+                    (section, page + 1)
+                } else {
+                    (section + 1, 1)
+                };
+            let entries: Vec<MediaEntry> = titles
+                .iter()
+                .filter_map(|t| {
+                    let mut e = self.parse_result(t)?;
+                    e.language = Self::LANG.to_string();
+                    Some(e)
+                })
+                .collect();
+            if !entries.is_empty() {
+                return Ok(entries);
+            }
+        }
     }
 }

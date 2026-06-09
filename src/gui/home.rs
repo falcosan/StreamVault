@@ -9,6 +9,7 @@ use super::helpers::{poster_color, PosterCard};
 pub fn HomeView(
     catalog: ReadSignal<Vec<MediaEntry>>,
     is_loading: ReadSignal<bool>,
+    is_loading_more: ReadSignal<bool>,
     continue_watching: ReadSignal<Vec<WatchItem>>,
     on_select: EventHandler<MediaEntry>,
     on_resume: EventHandler<WatchItem>,
@@ -55,6 +56,9 @@ pub fn HomeView(
                 for entry in items.iter() {
                     PosterCard { key: "{entry.provider}-{entry.id}", entry: entry.clone(), on_select }
                 }
+            }
+            if is_loading_more() {
+                div { class: "loading-msg", "Loading more..." }
             }
         }
     }

@@ -63,6 +63,9 @@ pub trait Provider: Send + Sync {
         season: Option<u32>,
     ) -> ProviderResult<StreamUrl>;
     async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>>;
+    async fn get_catalog_more(&self) -> ProviderResult<Vec<MediaEntry>> {
+        Ok(Vec::new())
+    }
     fn catalog_limit(&self) -> usize {
         0
     }

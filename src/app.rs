@@ -10,6 +10,7 @@ use crate::providers::{
 use crate::search;
 use crate::util::{DownloadEngine, DownloadProgress, DownloadRequest};
 use dioxus::prelude::*;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -51,6 +52,8 @@ pub fn App() -> Element {
     let mut playing_episode_num: Signal<Option<u32>> = use_signal(|| None);
     let mut catalog: Signal<Vec<MediaEntry>> = use_signal(Vec::new);
     let mut catalog_loading = use_signal(|| true);
+    let mut catalog_more_loading = use_signal(|| false);
+    let mut catalog_done = use_signal(|| false);
     let mut history: Signal<Vec<Screen>> = use_signal(Vec::new);
     let mut has_update = use_signal(|| false);
     let mut is_updating = use_signal(|| false);
@@ -123,6 +126,56 @@ pub fn App() -> Element {
             }
         });
     }
+
+    let mut on_load_more = {
+        let providers = providers.clone();
+        move |_: ()| {
+            if catalog_loading() || catalog_more_loading() || catalog_done() {
+                return;
+            }
+            catalog_more_loading.set(true);
+            let providers = providers.clone();
+            spawn(async move {
+                let mut seen: HashSet<(usize, u64)> = catalog
+                    .read()
+                    .iter()
+                    .map(|e| (e.provider, e.id))
+                    .collect();
+                loop {
+                    let mut fresh = Vec::new();
+                    let mut got_data = false;
+                    let mut errored = false;
+                    for (idx, p) in providers.iter().enumerate() {
+                        match p.get_catalog_more().await {
+                            Ok(batch) => {
+                                got_data |= !batch.is_empty();
+                                for mut e in batch {
+                                    if seen.insert((idx, e.id)) {
+                                        e.provider = idx;
+                                        e.provider_name = p.name().to_string();
+                                        fresh.push(e);
+                                    }
+                                }
+                            }
+                            Err(_) => errored = true,
+                        }
+                    }
+                    if !fresh.is_empty() {
+                        catalog.write().extend(fresh);
+                        break;
+                    }
+                    if errored {
+                        break;
+                    }
+                    if !got_data {
+                        catalog_done.set(true);
+                        break;
+                    }
+                }
+                catalog_more_loading.set(false);
+            });
+        }
+    };
 
     let on_update = move |_: ()| {
         is_updating.set(true);
@@ -709,12 +762,24 @@ pub fn App() -> Element {
                     button { class: "dismiss", onclick: move |_| error_msg.set(None), "✕" }
                 }
             }
-            div { class: "content",
+            div {
+                class: "content",
+                onscroll: move |e: Event<ScrollData>| {
+                    if screen() == Screen::Home {
+                        let d = e.data();
+                        if d.scroll_top() + f64::from(d.client_height())
+                            >= f64::from(d.scroll_height()) - 600.0
+                        {
+                            on_load_more(());
+                        }
+                    }
+                },
                 match screen() {
                     Screen::Home => rsx! {
                         gui::HomeView {
                             catalog: ReadSignal::from(catalog),
                             is_loading: ReadSignal::from(catalog_loading),
+                            is_loading_more: ReadSignal::from(catalog_more_loading),
                             continue_watching: ReadSignal::from(continue_watching),
                             on_select: on_select_entry,
                             on_resume,
@@ -751,6 +816,7 @@ pub fn App() -> Element {
                                 gui::HomeView {
                                     catalog: ReadSignal::from(catalog),
                                     is_loading: ReadSignal::from(catalog_loading),
+                                    is_loading_more: ReadSignal::from(catalog_more_loading),
                                     continue_watching: ReadSignal::from(continue_watching),
                                     on_select: on_select_entry,
                                     on_resume,
