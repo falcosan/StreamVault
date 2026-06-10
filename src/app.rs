@@ -54,6 +54,7 @@ pub fn App() -> Element {
     let mut catalog_loading = use_signal(|| true);
     let mut catalog_more_loading = use_signal(|| false);
     let mut catalog_done = use_signal(|| false);
+    let mut home_scroll = use_signal(|| 0.0f64);
     let mut history: Signal<Vec<Screen>> = use_signal(Vec::new);
     let mut has_update = use_signal(|| false);
     let mut is_updating = use_signal(|| false);
@@ -136,11 +137,8 @@ pub fn App() -> Element {
             catalog_more_loading.set(true);
             let providers = providers.clone();
             spawn(async move {
-                let mut seen: HashSet<(usize, u64)> = catalog
-                    .read()
-                    .iter()
-                    .map(|e| (e.provider, e.id))
-                    .collect();
+                let mut seen: HashSet<(usize, u64)> =
+                    catalog.read().iter().map(|e| (e.provider, e.id)).collect();
                 loop {
                     let mut fresh = Vec::new();
                     let mut got_data = false;
@@ -176,6 +174,15 @@ pub fn App() -> Element {
             });
         }
     };
+
+    use_effect(move || {
+        if screen() == Screen::Home {
+            let top = *home_scroll.peek();
+            document::eval(&format!(
+                "document.querySelector('.content').scrollTop = {top};"
+            ));
+        }
+    });
 
     let on_update = move |_: ()| {
         is_updating.set(true);
@@ -767,6 +774,7 @@ pub fn App() -> Element {
                 onscroll: move |e: Event<ScrollData>| {
                     if screen() == Screen::Home {
                         let d = e.data();
+                        home_scroll.set(d.scroll_top());
                         if d.scroll_top() + f64::from(d.client_height())
                             >= f64::from(d.scroll_height()) - 600.0
                         {

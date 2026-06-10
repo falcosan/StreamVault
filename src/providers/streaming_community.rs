@@ -521,10 +521,7 @@ impl Provider for StreamingCommunityProvider {
         self.ensure_base_url().await;
         self.ensure_browse_sections().await?;
         loop {
-            let (section, page) = *self
-                .browse_cursor
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
+            let (section, page) = *self.browse_cursor.read().unwrap_or_else(|e| e.into_inner());
             let Some((path, genre)) = self
                 .browse_sections
                 .read()
