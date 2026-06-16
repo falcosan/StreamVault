@@ -1,6 +1,6 @@
 use crate::config::{
-    advance_watch_item, load_watch_items, remove_watch_item, save_watch_items, upsert_watch_item,
-    AppConfig, WatchItem,
+    advance_watch_item, load_preferred_audio_lang, load_watch_items, remove_watch_item,
+    save_preferred_audio_lang, save_watch_items, upsert_watch_item, AppConfig, WatchItem,
 };
 use crate::gui::{self, Screen};
 use crate::providers::{
@@ -61,6 +61,7 @@ pub fn App() -> Element {
     let mut continue_watching: Signal<Vec<WatchItem>> = use_signal(load_watch_items);
     let mut resume_time: Signal<Option<f64>> = use_signal(|| None);
     let mut playing_episode: Signal<Option<crate::providers::Episode>> = use_signal(|| None);
+    let mut preferred_audio_lang: Signal<Option<String>> = use_signal(load_preferred_audio_lang);
 
     use_future(move || async move {
         let Ok(resp) = reqwest::get(
@@ -694,6 +695,15 @@ pub fn App() -> Element {
         save_watch_items(&items);
     };
 
+    let on_language_change = move |lang: String| {
+        let lang = lang.trim().to_string();
+        if lang.is_empty() || preferred_audio_lang.peek().as_deref() == Some(lang.as_str()) {
+            return;
+        }
+        save_preferred_audio_lang(&lang);
+        preferred_audio_lang.set(Some(lang));
+    };
+
     let on_resume = {
         let providers = providers.clone();
         move |item: WatchItem| {
@@ -839,11 +849,13 @@ pub fn App() -> Element {
                             playing_title: ReadSignal::from(playing_title),
                             has_next_episode: ReadSignal::from(has_next_episode),
                             start_time: ReadSignal::from(resume_time),
+                            preferred_audio_lang: ReadSignal::from(preferred_audio_lang),
                             on_stop,
                             on_go_details,
                             on_next_episode,
                             on_time_update,
                             on_ended,
+                            on_language_change,
                         }
                     },
                     Screen::Downloads => rsx! {

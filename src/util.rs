@@ -281,7 +281,7 @@ impl DownloadEngine {
             return Err("No .ts files found after download".into());
         }
 
-        ts_with_sizes.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        ts_with_sizes.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
         let ts_files: Vec<PathBuf> = ts_with_sizes.into_iter().map(|(p, _)| p).collect();
 
         let mut mux_cmd = Command::new(ffmpeg);

@@ -187,6 +187,10 @@ fn watch_items_path() -> PathBuf {
     AppConfig::config_dir().join("continue_watching.json")
 }
 
+fn preferred_audio_lang_path() -> PathBuf {
+    AppConfig::config_dir().join("preferred_audio_language.json")
+}
+
 pub fn load_watch_items() -> Vec<WatchItem> {
     read_json(&watch_items_path()).unwrap_or_default()
 }
@@ -232,6 +236,18 @@ pub fn advance_watch_item(
 
 pub fn remove_watch_item(items: &mut Vec<WatchItem>, provider: usize, id: u64) {
     items.retain(|i| i.entry.provider != provider || i.entry.id != id);
+}
+
+pub fn load_preferred_audio_lang() -> Option<String> {
+    read_json::<String>(&preferred_audio_lang_path()).filter(|s| !s.trim().is_empty())
+}
+
+pub fn save_preferred_audio_lang(lang: &str) {
+    write_json(
+        &preferred_audio_lang_path(),
+        lang,
+        "preferred audio language",
+    );
 }
 
 #[cfg(test)]

@@ -83,11 +83,7 @@ pub fn rank_results(entries: Vec<MediaEntry>, query: &str) -> Vec<MediaEntry> {
                                 || d.as_ref().is_some_and(|d| d.contains(w.as_str()))
                         })
                         .count() as u16;
-                    if total > 0 {
-                        matches * 500 / total
-                    } else {
-                        0
-                    }
+                    (matches * 500).checked_div(total).unwrap_or(0)
                 }
             };
             (score, e)
