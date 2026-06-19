@@ -187,8 +187,28 @@ fn watch_items_path() -> PathBuf {
     AppConfig::config_dir().join("continue_watching.json")
 }
 
-fn preferred_audio_lang_path() -> PathBuf {
-    AppConfig::config_dir().join("preferred_audio_language.json")
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlayerPrefs {
+    pub audio_lang: String,
+    pub subtitle_lang: String,
+    pub subtitles_on: bool,
+    pub speed: f64,
+}
+
+impl Default for PlayerPrefs {
+    fn default() -> Self {
+        Self {
+            audio_lang: String::new(),
+            subtitle_lang: String::new(),
+            subtitles_on: false,
+            speed: 1.0,
+        }
+    }
+}
+
+fn player_prefs_path() -> PathBuf {
+    AppConfig::config_dir().join("player_prefs.json")
 }
 
 pub fn load_watch_items() -> Vec<WatchItem> {
@@ -238,16 +258,12 @@ pub fn remove_watch_item(items: &mut Vec<WatchItem>, provider: usize, id: u64) {
     items.retain(|i| i.entry.provider != provider || i.entry.id != id);
 }
 
-pub fn load_preferred_audio_lang() -> Option<String> {
-    read_json::<String>(&preferred_audio_lang_path()).filter(|s| !s.trim().is_empty())
+pub fn load_player_prefs() -> PlayerPrefs {
+    read_json(&player_prefs_path()).unwrap_or_default()
 }
 
-pub fn save_preferred_audio_lang(lang: &str) {
-    write_json(
-        &preferred_audio_lang_path(),
-        lang,
-        "preferred audio language",
-    );
+pub fn save_player_prefs(prefs: &PlayerPrefs) {
+    write_json(&player_prefs_path(), prefs, "player prefs");
 }
 
 #[cfg(test)]
@@ -476,5 +492,36 @@ mod tests {
         assert!((loaded.current_time - 123.5).abs() < 0.01);
         assert_eq!(loaded.season, Some(3));
         assert_eq!(loaded.episode.unwrap().number, 5);
+    }
+
+    #[test]
+    fn player_prefs_default_values() {
+        let p = PlayerPrefs::default();
+        assert!(p.audio_lang.is_empty());
+        assert!(p.subtitle_lang.is_empty());
+        assert!(!p.subtitles_on);
+        assert!((p.speed - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn player_prefs_serde_round_trip() {
+        let p = PlayerPrefs {
+            audio_lang: "en".into(),
+            subtitle_lang: "es".into(),
+            subtitles_on: true,
+            speed: 1.5,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let loaded: PlayerPrefs = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded, p);
+    }
+
+    #[test]
+    fn player_prefs_deserializes_partial_with_defaults() {
+        let loaded: PlayerPrefs = serde_json::from_str(r#"{"audio_lang":"it"}"#).unwrap();
+        assert_eq!(loaded.audio_lang, "it");
+        assert!(loaded.subtitle_lang.is_empty());
+        assert!(!loaded.subtitles_on);
+        assert!((loaded.speed - 1.0).abs() < f64::EPSILON);
     }
 }

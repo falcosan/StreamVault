@@ -1,6 +1,6 @@
 use crate::config::{
-    advance_watch_item, load_preferred_audio_lang, load_watch_items, remove_watch_item,
-    save_preferred_audio_lang, save_watch_items, upsert_watch_item, AppConfig, WatchItem,
+    advance_watch_item, load_player_prefs, load_watch_items, remove_watch_item, save_player_prefs,
+    save_watch_items, upsert_watch_item, AppConfig, PlayerPrefs, WatchItem,
 };
 use crate::gui::{self, Screen};
 use crate::providers::{
@@ -61,7 +61,7 @@ pub fn App() -> Element {
     let mut continue_watching: Signal<Vec<WatchItem>> = use_signal(load_watch_items);
     let mut resume_time: Signal<Option<f64>> = use_signal(|| None);
     let mut playing_episode: Signal<Option<crate::providers::Episode>> = use_signal(|| None);
-    let mut preferred_audio_lang: Signal<Option<String>> = use_signal(load_preferred_audio_lang);
+    let mut player_prefs: Signal<PlayerPrefs> = use_signal(load_player_prefs);
 
     use_future(move || async move {
         let Ok(resp) = reqwest::get(
@@ -695,13 +695,12 @@ pub fn App() -> Element {
         save_watch_items(&items);
     };
 
-    let on_language_change = move |lang: String| {
-        let lang = lang.trim().to_string();
-        if lang.is_empty() || preferred_audio_lang.peek().as_deref() == Some(lang.as_str()) {
+    let on_prefs_change = move |prefs: PlayerPrefs| {
+        if *player_prefs.peek() == prefs {
             return;
         }
-        save_preferred_audio_lang(&lang);
-        preferred_audio_lang.set(Some(lang));
+        save_player_prefs(&prefs);
+        player_prefs.set(prefs);
     };
 
     let on_resume = {
@@ -849,13 +848,13 @@ pub fn App() -> Element {
                             playing_title: ReadSignal::from(playing_title),
                             has_next_episode: ReadSignal::from(has_next_episode),
                             start_time: ReadSignal::from(resume_time),
-                            preferred_audio_lang: ReadSignal::from(preferred_audio_lang),
+                            player_prefs: ReadSignal::from(player_prefs),
                             on_stop,
                             on_go_details,
                             on_next_episode,
                             on_time_update,
                             on_ended,
-                            on_language_change,
+                            on_prefs_change,
                         }
                     },
                     Screen::Downloads => rsx! {

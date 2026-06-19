@@ -1,38 +1,81 @@
+use crate::config::PlayerPrefs;
 use dioxus::prelude::*;
 
-const AUDIO_SYNC_JS: &str = r#"
-const v = document.querySelector('.player-video');
-if (!v || !v.audioTracks || v.audioTracks.length === 0) {
-    dioxus.send("");
-} else {
-    const ts = v.audioTracks;
-    const tag = (t) => ((t.language || '') + ' ' + (t.label || '')).trim().toLowerCase();
-    const enabledTag = () => {
-        for (let i = 0; i < ts.length; i++) if (ts[i].enabled) return (ts[i].language || ts[i].label || '');
+const REPORT_CHANNEL_JS: &str =
+    "(window.__sv = window.__sv || {}).report = (s) => { dioxus.send(s); };";
+
+const PREFS_SYNC_JS: &str = "(window.__sv = window.__sv || {}).prefs = __PREFS__;";
+
+const PLAYER_SETUP_JS: &str = r#"
+(function () {
+    const sv = (window.__sv = window.__sv || {});
+    const v = document.querySelector('.player-video');
+    if (!v || v.__svSetup) return;
+    v.__svSetup = true;
+
+    const norm = (s) => (s || '').toString().trim().toLowerCase();
+    const tag = (t) => norm((t.language || '') + ' ' + (t.label || ''));
+    const subTracks = () => {
+        const out = [];
+        const tt = v.textTracks;
+        if (tt) for (let i = 0; i < tt.length; i++) {
+            if (tt[i].kind === 'subtitles' || tt[i].kind === 'captions') out.push(tt[i]);
+        }
+        return out;
+    };
+    const enabledAudio = () => {
+        const ats = v.audioTracks;
+        if (ats) for (let i = 0; i < ats.length; i++) if (ats[i].enabled) return (ats[i].language || ats[i].label || '');
         return '';
     };
-    if (v.__svApplied === undefined) {
-        const want = __WANT__;
-        if (want && ts.length > 1) {
-            let idx = -1;
-            for (let i = 0; i < ts.length; i++) { if (tag(ts[i]).includes(want)) { idx = i; break; } }
-            if (idx < 0) idx = 0;
-            for (let i = 0; i < ts.length; i++) ts[i].enabled = (i === idx);
+    const showingSub = () => {
+        const subs = subTracks();
+        for (let i = 0; i < subs.length; i++) if (subs[i].mode === 'showing') return subs[i];
+        return null;
+    };
+    const state = () => {
+        const s = showingSub();
+        return {
+            audio_lang: enabledAudio(),
+            subtitle_lang: s ? (s.language || s.label || '') : '',
+            subtitles_on: s != null,
+            speed: v.playbackRate || 1,
+        };
+    };
+
+    const pickIndex = (tracks, wantLang) => {
+        if (wantLang) for (let i = 0; i < tracks.length; i++) if (tag(tracks[i]).includes(norm(wantLang))) return i;
+        return 0;
+    };
+    const apply = () => {
+        const want = sv.prefs || {};
+        const ats = v.audioTracks;
+        if (want.audio_lang && ats && ats.length > 1) {
+            const idx = pickIndex(ats, want.audio_lang);
+            for (let i = 0; i < ats.length; i++) ats[i].enabled = (i === idx);
         }
-        const cur = enabledTag();
-        v.__svApplied = cur;
-        v.__svLast = cur;
-        dioxus.send("");
-    } else {
-        const cur = enabledTag();
-        if (cur !== v.__svLast) {
-            v.__svLast = cur;
-            dioxus.send(cur);
-        } else {
-            dioxus.send("");
+        const subs = subTracks();
+        if (subs.length) {
+            const idx = want.subtitles_on ? pickIndex(subs, want.subtitle_lang) : -1;
+            for (let i = 0; i < subs.length; i++) subs[i].mode = (i === idx) ? 'showing' : 'disabled';
         }
-    }
-}
+        if (want.speed && want.speed > 0) v.playbackRate = want.speed;
+        v.__svApplied = JSON.stringify(state());
+    };
+    const report = () => {
+        if (!sv.report) return;
+        const j = JSON.stringify(state());
+        if (j === v.__svApplied) return;
+        v.__svApplied = j;
+        sv.report(state());
+    };
+
+    if (v.readyState >= 2) apply();
+    else v.addEventListener('loadeddata', apply, { once: true });
+    v.addEventListener('ratechange', report);
+    if (v.audioTracks) v.audioTracks.addEventListener('change', report);
+    if (v.textTracks) v.textTracks.addEventListener('change', report);
+})();
 "#;
 
 #[component]
@@ -41,13 +84,13 @@ pub fn PlayerView(
     playing_title: ReadSignal<String>,
     has_next_episode: ReadSignal<bool>,
     start_time: ReadSignal<Option<f64>>,
-    preferred_audio_lang: ReadSignal<Option<String>>,
+    player_prefs: ReadSignal<PlayerPrefs>,
     on_stop: EventHandler<()>,
     on_go_details: EventHandler<()>,
     on_next_episode: EventHandler<()>,
     on_time_update: EventHandler<(f64, f64)>,
     on_ended: EventHandler<()>,
-    on_language_change: EventHandler<String>,
+    on_prefs_change: EventHandler<PlayerPrefs>,
 ) -> Element {
     let title = playing_title();
     let url = stream_url();
@@ -109,18 +152,20 @@ pub fn PlayerView(
     });
 
     use_future(move || async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
-            let want = preferred_audio_lang().unwrap_or_default().to_lowercase();
-            let want_js = serde_json::to_string(&want).unwrap_or_else(|_| "\"\"".to_string());
-            let mut eval = document::eval(&AUDIO_SYNC_JS.replace("__WANT__", &want_js));
-            if let Ok(lang) = eval.recv::<String>().await {
-                let lang = lang.trim().to_string();
-                if !lang.is_empty() {
-                    on_language_change.call(lang);
-                }
-            }
+        let mut eval = document::eval(REPORT_CHANNEL_JS);
+        while let Ok(prefs) = eval.recv::<PlayerPrefs>().await {
+            on_prefs_change.call(prefs);
         }
+    });
+
+    use_effect(move || {
+        let json = serde_json::to_string(&player_prefs()).unwrap_or_else(|_| "{}".to_string());
+        document::eval(&PREFS_SYNC_JS.replace("__PREFS__", &json));
+    });
+
+    use_effect(move || {
+        let _ = stream_url();
+        document::eval(PLAYER_SETUP_JS);
     });
 
     rsx! {
