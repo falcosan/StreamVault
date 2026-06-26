@@ -2,6 +2,7 @@ use crate::providers::{Episode, MediaEntry};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -106,11 +107,26 @@ impl Default for RequestsConfig {
     }
 }
 
+fn icloud_data_dir() -> Option<PathBuf> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let drive = dirs::home_dir()?.join("Library/Mobile Documents/com~apple~CloudDocs");
+        drive
+            .is_dir()
+            .then(|| drive.join("Contents/Video/StreamVault"))
+    })
+    .clone()
+}
+
+fn legacy_config_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("StreamVault")
+}
+
 impl AppConfig {
     pub fn config_dir() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("StreamVault")
+        icloud_data_dir().unwrap_or_else(legacy_config_dir)
     }
 
     #[inline]
@@ -134,8 +150,8 @@ impl AppConfig {
     }
 
     pub fn download_dir(&self) -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
+        icloud_data_dir()
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
             .join(&self.output.root_path)
     }
 
@@ -288,8 +304,26 @@ mod tests {
     }
 
     #[test]
-    fn config_dir_ends_with_streamvault() {
-        assert!(AppConfig::config_dir().ends_with("StreamVault"));
+    fn legacy_config_dir_ends_with_streamvault() {
+        assert!(legacy_config_dir().ends_with("StreamVault"));
+    }
+
+    #[test]
+    fn icloud_data_dir_when_present_ends_with_streamvault() {
+        if let Some(dir) = icloud_data_dir() {
+            assert!(dir.ends_with("Contents/Video/StreamVault"));
+        }
+    }
+
+    #[test]
+    fn write_json_creates_missing_parent_dirs() {
+        let base = std::env::temp_dir().join(format!("sv_writejson_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let path = base.join("Contents/Video/config.json");
+        assert!(!path.exists());
+        write_json(&path, &"data", "test");
+        assert!(path.is_file());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
