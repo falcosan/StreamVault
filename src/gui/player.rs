@@ -1,18 +1,12 @@
 use crate::config::PlayerPrefs;
 use dioxus::prelude::*;
 
-const REPORT_CHANNEL_JS: &str =
-    "(window.__sv = window.__sv || {}).report = (s) => { dioxus.send(s); };";
-
-const PREFS_SYNC_JS: &str = "(window.__sv = window.__sv || {}).prefs = __PREFS__;";
-
-const PLAYER_SETUP_JS: &str = r#"
-(function () {
-    const sv = (window.__sv = window.__sv || {});
-    const v = document.querySelector('.player-video');
-    if (!v || v.__svSetup) return;
-    v.__svSetup = true;
-
+const PLAYER_PREFS_JS: &str = r#"
+const v = document.querySelector('.player-video');
+if (!v || v.readyState < 2) {
+    dioxus.send(null);
+} else {
+    const want = __WANT__;
     const norm = (s) => (s || '').toString().trim().toLowerCase();
     const tag = (t) => norm((t.language || '') + ' ' + (t.label || ''));
     const subTracks = () => {
@@ -42,13 +36,11 @@ const PLAYER_SETUP_JS: &str = r#"
             speed: v.playbackRate || 1,
         };
     };
-
     const pickIndex = (tracks, wantLang) => {
         if (wantLang) for (let i = 0; i < tracks.length; i++) if (tag(tracks[i]).includes(norm(wantLang))) return i;
         return 0;
     };
-    const apply = () => {
-        const want = sv.prefs || {};
+    if (v.__svApplied === undefined) {
         const ats = v.audioTracks;
         if (want.audio_lang && ats && ats.length > 1) {
             const idx = pickIndex(ats, want.audio_lang);
@@ -61,21 +53,17 @@ const PLAYER_SETUP_JS: &str = r#"
         }
         if (want.speed && want.speed > 0) v.playbackRate = want.speed;
         v.__svApplied = JSON.stringify(state());
-    };
-    const report = () => {
-        if (!sv.report) return;
+        dioxus.send(null);
+    } else {
         const j = JSON.stringify(state());
-        if (j === v.__svApplied) return;
-        v.__svApplied = j;
-        sv.report(state());
-    };
-
-    if (v.readyState >= 2) apply();
-    else v.addEventListener('loadeddata', apply, { once: true });
-    v.addEventListener('ratechange', report);
-    if (v.audioTracks) v.audioTracks.addEventListener('change', report);
-    if (v.textTracks) v.textTracks.addEventListener('change', report);
-})();
+        if (j !== v.__svApplied) {
+            v.__svApplied = j;
+            dioxus.send(state());
+        } else {
+            dioxus.send(null);
+        }
+    }
+}
 "#;
 
 #[component]
@@ -152,20 +140,14 @@ pub fn PlayerView(
     });
 
     use_future(move || async move {
-        let mut eval = document::eval(REPORT_CHANNEL_JS);
-        while let Ok(prefs) = eval.recv::<PlayerPrefs>().await {
-            on_prefs_change.call(prefs);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            let json = serde_json::to_string(&player_prefs()).unwrap_or_else(|_| "{}".to_string());
+            let mut eval = document::eval(&PLAYER_PREFS_JS.replace("__WANT__", &json));
+            if let Ok(Some(prefs)) = eval.recv::<Option<PlayerPrefs>>().await {
+                on_prefs_change.call(prefs);
+            }
         }
-    });
-
-    use_effect(move || {
-        let json = serde_json::to_string(&player_prefs()).unwrap_or_else(|_| "{}".to_string());
-        document::eval(&PREFS_SYNC_JS.replace("__PREFS__", &json));
-    });
-
-    use_effect(move || {
-        let _ = stream_url();
-        document::eval(PLAYER_SETUP_JS);
     });
 
     rsx! {
