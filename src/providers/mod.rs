@@ -13,7 +13,8 @@ pub use streaming_community::StreamingCommunityProvider;
 pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
 
-pub(crate) const DOMAINS_URL: &str = "https://domains-tracker.server66.workers.dev/";
+pub(crate) const DOMAINS_URL: &str = "";
+pub(crate) const DOMAINS_JSON: &str = include_str!("../../assets/domains.json");
 
 #[derive(Debug, Clone)]
 pub enum ProviderError {
@@ -80,6 +81,22 @@ pub(crate) async fn resolve_domain_url(
     key: &str,
     base_url: &std::sync::RwLock<String>,
 ) {
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(DOMAINS_JSON) {
+        if let Some(url) = json[key]["full_url"].as_str() {
+            let url = url.trim_end_matches('/').to_string();
+            if url.starts_with("http") {
+                eprintln!("[StreamVault] Using {key} domain from domains.json: {url}");
+                *base_url.write().unwrap_or_else(|e| e.into_inner()) = url;
+                return;
+            }
+        }
+    }
+
+    if DOMAINS_URL.is_empty() {
+        eprintln!("[StreamVault] No domains.json entry for {key}; remote lookup disabled");
+        return;
+    }
+
     for attempt in 0u64..3 {
         match client.get(DOMAINS_URL).send().await {
             Ok(resp) => match resp.json::<serde_json::Value>().await {
