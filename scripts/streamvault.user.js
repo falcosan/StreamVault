@@ -28,36 +28,56 @@
     (typeof GM_xmlhttpRequest !== "undefined" && GM_xmlhttpRequest) ||
     null;
 
-  function http(method, url, body) {
-    if (gmRequest) {
-      return new Promise((resolve, reject) => {
-        gmRequest({
-          method,
-          url,
-          data: body,
-          headers: body
-            ? { "Content-Type": "text/plain;charset=utf-8" }
-            : undefined,
-          timeout: 30000,
-          onload: (r) => {
-            try {
-              resolve(JSON.parse(r.responseText));
-            } catch (err) {
-              reject(err);
-            }
-          },
-          onerror: () => reject(new Error("network error")),
-          ontimeout: () => reject(new Error("timeout")),
-        });
+  function gmFetch(method, url, body) {
+    return new Promise((resolve, reject) => {
+      gmRequest({
+        method,
+        url,
+        data: body,
+        anonymous: true,
+        headers: body
+          ? { "Content-Type": "text/plain;charset=utf-8" }
+          : undefined,
+        timeout: 30000,
+        onload: (r) => resolve(r.responseText),
+        onerror: () => reject(new Error("network error")),
+        ontimeout: () => reject(new Error("timeout")),
       });
-    }
+    });
+  }
+
+  function webFetch(method, url, body) {
     return fetch(url, {
       method,
       body,
+      credentials: "omit",
       headers: body
         ? { "Content-Type": "text/plain;charset=utf-8" }
         : undefined,
-    }).then((r) => r.json());
+    }).then((r) => r.text());
+  }
+
+  function parseJson(text) {
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      throw new Error(`non-JSON response: ${String(text).slice(0, 80)}`);
+    }
+  }
+
+  async function http(method, url, body) {
+    if (gmRequest) {
+      try {
+        return parseJson(await gmFetch(method, url, body));
+      } catch (_) {}
+    }
+    try {
+      return parseJson(await webFetch(method, url, body));
+    } catch (err) {
+      if (!gmRequest) throw err;
+      await new Promise((r) => setTimeout(r, 1000));
+      return parseJson(await gmFetch(method, url, body));
+    }
   }
 
   const api = {
@@ -445,6 +465,14 @@
     return c ? `${c.mediaId}:${c.episode ? c.episode.id : ""}` : "";
   }
 
+  function pickEpisode(current, previous) {
+    if (!current) return previous;
+    if (previous && previous.id === current.id && !current.number) {
+      return previous;
+    }
+    return current;
+  }
+
   function upsertProgress(ctx, current, duration) {
     return mutateWatch((watch, stamps) => {
       const key = `${PROVIDER}:${ctx.mediaId}`;
@@ -483,9 +511,10 @@
         current_time: current,
         duration,
         season: ctx.season ?? existing?.season ?? null,
-        episode:
-          ctx.episode ||
-          (existing && mediaType === "Series" ? existing.episode : null),
+        episode: pickEpisode(
+          ctx.episode,
+          existing && mediaType === "Series" ? existing.episode : null,
+        ),
       };
       if (idx >= 0) watch.splice(idx, 1);
       watch.unshift(item);
@@ -903,17 +932,32 @@
         });
     }
 
+    let ctxFetchAt = 0;
+    let ctxFetchedFor = "";
+
     function ensureCtxProps() {
       if (!/\/watch\/\d+/.test(location.pathname)) return;
-      if (ctx && ctx.hasTitle && (ctx.episode || ctx.mediaType === "Movie")) {
+      const episodeOk =
+        ctx &&
+        (ctx.mediaType === "Movie"
+          ? !ctx.episode
+          : !!(ctx.episode && ctx.episode.number));
+      if (
+        (ctx && ctx.hasTitle && episodeOk) ||
+        ctxFetchedFor === location.href
+      ) {
         ensurePoster();
         return;
       }
+      const now = Date.now();
+      if (now - ctxFetchAt < 3000) return;
+      ctxFetchAt = now;
       const token = ++ctxFetchToken;
       fetchPage(location.pathname + location.search)
         .then((p) => {
           if (token !== ctxFetchToken || !p || !p.props) return;
           pageCache = p;
+          ctxFetchedFor = location.href;
           ctx = watchContext();
           ensurePoster();
           frames.forEach((w) => sendCtx(w));
@@ -1007,7 +1051,11 @@
         setTimeout(refresh, 300);
         return;
       }
-      if (ctx || !isHome()) return;
+      if (ctx) {
+        ensureCtxProps();
+        return;
+      }
+      if (!isHome()) return;
       const doc = state.doc || readCache();
       if (!doc) return;
       if (!(doc.watch || []).length) {
