@@ -64,6 +64,16 @@ pub fn App() -> Element {
     let mut player_prefs: Signal<PlayerPrefs> = use_signal(load_player_prefs);
 
     use_future(move || async move {
+        let Some(mut rx) = crate::sync::start() else {
+            return;
+        };
+        while let Some(m) = rx.recv().await {
+            continue_watching.set(m.watch);
+            player_prefs.set(m.prefs);
+        }
+    });
+
+    use_future(move || async move {
         let Ok(resp) = reqwest::get(
             "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/Cargo.toml",
         )

@@ -4,6 +4,7 @@ mod gui;
 mod providers;
 mod search;
 mod style;
+mod sync;
 mod util;
 
 fn main() {

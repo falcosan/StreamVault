@@ -2,7 +2,9 @@ use crate::providers::{Episode, MediaEntry};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+
+pub(crate) static FS_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -182,24 +184,41 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T
         .and_then(|s| serde_json::from_str(&s).ok())
 }
 
-fn write_json(path: &std::path::Path, value: &(impl Serialize + ?Sized), label: &str) {
+pub(crate) fn write_json_unlocked(
+    path: &std::path::Path,
+    value: &(impl Serialize + ?Sized),
+    label: &str,
+) -> bool {
     if let Some(parent) = path.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
             eprintln!("[StreamVault] {label} dir error: {e}");
-            return;
+            return false;
         }
     }
     match serde_json::to_string_pretty(value) {
         Ok(json) => {
-            if let Err(e) = fs::write(path, json) {
-                eprintln!("[StreamVault] {label} write error: {e}");
+            let tmp = path.with_extension("tmp");
+            match fs::write(&tmp, json).and_then(|_| fs::rename(&tmp, path)) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("[StreamVault] {label} write error: {e}");
+                    false
+                }
             }
         }
-        Err(e) => eprintln!("[StreamVault] {label} serialize error: {e}"),
+        Err(e) => {
+            eprintln!("[StreamVault] {label} serialize error: {e}");
+            false
+        }
     }
 }
 
-fn watch_items_path() -> PathBuf {
+fn write_json(path: &std::path::Path, value: &(impl Serialize + ?Sized), label: &str) {
+    let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    write_json_unlocked(path, value, label);
+}
+
+pub(crate) fn watch_items_path() -> PathBuf {
     AppConfig::config_dir().join("continue_watching.json")
 }
 
@@ -223,7 +242,7 @@ impl Default for PlayerPrefs {
     }
 }
 
-fn player_prefs_path() -> PathBuf {
+pub(crate) fn player_prefs_path() -> PathBuf {
     AppConfig::config_dir().join("player_prefs.json")
 }
 
