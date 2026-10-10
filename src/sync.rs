@@ -1,11 +1,11 @@
 use crate::config::{
-    player_prefs_path, watch_items_path, write_json_unlocked, AppConfig, PlayerPrefs, WatchItem,
-    FS_LOCK,
+    player_prefs_path, read_json, snapshot_path, watch_items_path, write_json_unlocked, AppConfig,
+    PlayerPrefs, WatchItem, FS_LOCK,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -123,17 +123,6 @@ pub fn start() -> Option<UnboundedReceiver<MergedState>> {
         })
         .ok()?;
     Some(rx)
-}
-
-fn snapshot_path() -> PathBuf {
-    AppConfig::config_dir().join("sync_snapshot.json")
-}
-
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
-    match load_state(path) {
-        FileState::Data(t) => Some(t),
-        _ => None,
-    }
 }
 
 fn load_state<T: serde::de::DeserializeOwned>(path: &Path) -> FileState<T> {

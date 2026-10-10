@@ -5,6 +5,8 @@ mod providers;
 mod search;
 mod style;
 mod sync;
+#[cfg(test)]
+mod test_support;
 mod util;
 
 fn main() {

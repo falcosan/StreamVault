@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
-use std::path::PathBuf;
-use std::process::Stdio;
+use std::path::{Path, PathBuf};
+use std::process::{ExitStatus, Stdio};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -57,48 +57,114 @@ impl DownloadEngine {
         req: DownloadRequest,
         tx: mpsc::UnboundedSender<DownloadProgress>,
     ) {
-        let DownloadRequest {
-            id,
-            title,
-            stream_url,
-            output_dir,
-            filename,
-            headers,
-        } = req;
-        let mut progress = DownloadProgress {
-            id,
-            title,
-            status: DownloadStatus::Downloading,
+        let mut progress = DownloadProgress::new(req.id, req.title.clone());
+        let mut report = |status| {
+            progress.status = status;
+            let _ = tx.send(progress.clone());
         };
-        let _ = tx.send(progress.clone());
+        report(DownloadStatus::Downloading);
+        let work_dir = work_dir(req.id);
+        let status = match self.fetch(&req, &work_dir, &mut report).await {
+            Ok(()) => DownloadStatus::Completed,
+            Err(e) => DownloadStatus::Failed(e),
+        };
+        let _ = tokio::fs::remove_dir_all(&work_dir).await;
+        report(status);
+    }
 
-        if let Err(e) = tokio::fs::create_dir_all(&output_dir).await {
-            progress.status = DownloadStatus::Failed(format!("Cannot create output dir: {e}"));
-            let _ = tx.send(progress);
-            return;
-        }
+    async fn fetch(
+        &self,
+        req: &DownloadRequest,
+        work_dir: &Path,
+        report: &mut impl FnMut(DownloadStatus),
+    ) -> Result<(), String> {
+        tokio::fs::create_dir_all(&req.output_dir)
+            .await
+            .map_err(|e| format!("Cannot create output dir: {e}"))?;
+        let tmp_dir = work_dir.join("tmp");
+        tokio::fs::create_dir_all(&tmp_dir)
+            .await
+            .map_err(|e| format!("Cannot create tmp dir: {e}"))?;
 
         let ffmpeg = find_binary("ffmpeg");
-        let n_m3u8dl = find_binary("N_m3u8DL-RE");
-        let save_name = sanitize_filename(&filename);
+        let save_name = sanitize_filename(&req.filename);
+        let mut child = self
+            .downloader(req, &save_name, work_dir, &tmp_dir, &ffmpeg)
+            .spawn()
+            .map_err(|e| format!("Failed to start N_m3u8DL-RE: {e}"))?;
 
-        let tmp_dir = output_dir.join("tmp").join(id.to_string());
-        if let Err(e) = tokio::fs::create_dir_all(&tmp_dir).await {
-            progress.status = DownloadStatus::Failed(format!("Cannot create tmp dir: {e}"));
-            let _ = tx.send(progress);
-            return;
+        let stderr_handle = child.stderr.take().map(|stderr| {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                let mut collected = String::new();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if !collected.is_empty() {
+                        collected.push('\n');
+                    }
+                    collected.push_str(&line);
+                }
+                collected
+            })
+        });
+
+        let mut muxing = false;
+        if let Some(stdout) = child.stdout.take() {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !muxing
+                    && (line.contains("Muxing") || line.contains("muxing") || line.contains("MUX"))
+                {
+                    muxing = true;
+                    report(DownloadStatus::Muxing);
+                }
+            }
         }
 
-        let mut cmd = Command::new(&n_m3u8dl);
-        cmd.arg(&stream_url)
+        let stderr_output = match stderr_handle {
+            Some(handle) => handle.await.unwrap_or_default(),
+            None => String::new(),
+        };
+
+        let exit = child
+            .wait()
+            .await
+            .map_err(|e| format!("Process error: {e}"))?;
+        let (media, subtitles) = scan_tracks(work_dir, self.config.process.merge_subtitle).await;
+        if !exit.success() && media.is_empty() {
+            return Err(exit_message(exit, &stderr_output));
+        }
+        if !muxing {
+            report(DownloadStatus::Muxing);
+        }
+
+        let file_name = format!("{save_name}.{}", self.config.process.extension);
+        let muxed = work_dir.join(&file_name);
+        self.mux_output(&ffmpeg, &muxed, &media, &subtitles)
+            .await
+            .map_err(|e| format!("Mux failed: {e}"))?;
+        move_file(&muxed, &req.output_dir.join(&file_name))
+            .await
+            .map_err(|e| format!("Cannot save output: {e}"))
+    }
+
+    fn downloader(
+        &self,
+        req: &DownloadRequest,
+        save_name: &str,
+        save_dir: &Path,
+        tmp_dir: &Path,
+        ffmpeg: &Path,
+    ) -> Command {
+        let mut cmd = Command::new(find_binary("N_m3u8DL-RE"));
+        cmd.arg(&req.stream_url)
             .arg("--save-name")
-            .arg(&save_name)
+            .arg(save_name)
             .arg("--save-dir")
-            .arg(&output_dir)
+            .arg(save_dir)
             .arg("--tmp-dir")
-            .arg(&tmp_dir)
+            .arg(tmp_dir)
             .arg("--ffmpeg-binary-path")
-            .arg(&ffmpeg)
+            .arg(ffmpeg)
             .arg("--no-log")
             .arg("--write-meta-json")
             .arg("false")
@@ -130,183 +196,47 @@ impl DownloadEngine {
         if !self.config.process.merge_audio {
             cmd.arg("--drop-audio").arg("all");
         }
-        for (k, v) in &headers {
+        for (k, v) in &req.headers {
             cmd.arg("--header").arg(format!("{k}: {v}"));
         }
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                progress.status =
-                    DownloadStatus::Failed(format!("Failed to start N_m3u8DL-RE: {e}"));
-                let _ = tx.send(progress);
-                return;
-            }
-        };
-
-        let stderr_handle = child.stderr.take().map(|stderr| {
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                let mut collected = String::new();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if !collected.is_empty() {
-                        collected.push('\n');
-                    }
-                    collected.push_str(&line);
-                }
-                collected
-            })
-        });
-
-        if let Some(stdout) = child.stdout.take() {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.contains("Muxing") || line.contains("muxing") || line.contains("MUX") {
-                    progress.status = DownloadStatus::Muxing;
-                    let _ = tx.send(progress.clone());
-                }
-            }
-        }
-
-        let stderr_output = match stderr_handle {
-            Some(handle) => handle.await.unwrap_or_default(),
-            None => String::new(),
-        };
-
-        match child.wait().await {
-            Ok(exit) if exit.success() => {
-                if progress.status != DownloadStatus::Muxing {
-                    progress.status = DownloadStatus::Muxing;
-                    let _ = tx.send(progress.clone());
-                }
-                match self
-                    .mux_output(&ffmpeg, &output_dir, &save_name, &tmp_dir)
-                    .await
-                {
-                    Ok(_) => {
-                        progress.status = DownloadStatus::Completed;
-                    }
-                    Err(e) => {
-                        progress.status = DownloadStatus::Failed(format!("Mux failed: {e}"));
-                    }
-                }
-            }
-            Ok(exit) => {
-                let mut has_ts = false;
-                if let Ok(mut rd) = tokio::fs::read_dir(&output_dir).await {
-                    while let Ok(Some(entry)) = rd.next_entry().await {
-                        if entry.path().extension().map(|x| x == "ts").unwrap_or(false) {
-                            has_ts = true;
-                            break;
-                        }
-                    }
-                }
-
-                if has_ts {
-                    progress.status = DownloadStatus::Muxing;
-                    let _ = tx.send(progress.clone());
-                    match self
-                        .mux_output(&ffmpeg, &output_dir, &save_name, &tmp_dir)
-                        .await
-                    {
-                        Ok(_) => {
-                            progress.status = DownloadStatus::Completed;
-                        }
-                        Err(e) => {
-                            progress.status = DownloadStatus::Failed(format!("Mux failed: {e}"));
-                        }
-                    }
-                } else {
-                    let msg = if stderr_output.is_empty() {
-                        format!("N_m3u8DL-RE exited: {exit}")
-                    } else {
-                        let error_lines: String = stderr_output
-                            .lines()
-                            .filter(|l| {
-                                let t = l.trim();
-                                !t.is_empty() && !t.starts_with("at ") && !t.starts_with("---")
-                            })
-                            .take(5)
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        if error_lines.is_empty() {
-                            format!("N_m3u8DL-RE exited: {exit}")
-                        } else {
-                            format!("N_m3u8DL-RE exited: {exit}\n{error_lines}")
-                        }
-                    };
-                    progress.status = DownloadStatus::Failed(msg);
-                }
-            }
-            Err(e) => {
-                progress.status = DownloadStatus::Failed(format!("Process error: {e}"));
-            }
-        }
-        let _ = tx.send(progress);
+        cmd
     }
 
     async fn mux_output(
         &self,
-        ffmpeg: &std::path::Path,
-        output_dir: &std::path::Path,
-        save_name: &str,
-        tmp_dir: &std::path::Path,
+        ffmpeg: &Path,
+        out_file: &Path,
+        media: &[PathBuf],
+        subtitles: &[PathBuf],
     ) -> Result<(), String> {
-        let ext = &self.config.process.extension;
-        let out_file = output_dir.join(format!("{save_name}.{ext}"));
-        let merge_subtitle = self.config.process.merge_subtitle;
-
-        let mut ts_with_sizes: Vec<(PathBuf, u64)> = Vec::new();
-        let mut vtt_files: Vec<PathBuf> = Vec::new();
-
-        let mut rd = tokio::fs::read_dir(output_dir)
-            .await
-            .map_err(|e| e.to_string())?;
-        while let Ok(Some(entry)) = rd.next_entry().await {
-            let path = entry.path();
-            match path.extension().and_then(|x| x.to_str()) {
-                Some("ts") => {
-                    let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
-                    ts_with_sizes.push((path, size));
-                }
-                Some("vtt") if merge_subtitle => {
-                    vtt_files.push(path);
-                }
-                _ => {}
-            }
-        }
-
-        if ts_with_sizes.is_empty() {
+        if media.is_empty() {
             return Err("No .ts files found after download".into());
         }
 
-        ts_with_sizes.sort_unstable_by_key(|b| std::cmp::Reverse(b.1));
-        let ts_files: Vec<PathBuf> = ts_with_sizes.into_iter().map(|(p, _)| p).collect();
-
         let mut mux_cmd = Command::new(ffmpeg);
         mux_cmd.arg("-y");
-        for f in &ts_files {
+        for f in media.iter().chain(subtitles) {
             mux_cmd.arg("-i").arg(f);
         }
-        for vtt in &vtt_files {
-            mux_cmd.arg("-i").arg(vtt);
-        }
-        for i in 0..ts_files.len() {
+        for i in 0..media.len() {
             mux_cmd.arg("-map").arg(format!("{i}:v?"));
             mux_cmd.arg("-map").arg(format!("{i}:a?"));
         }
-        let ts_count = ts_files.len();
-        for i in 0..vtt_files.len() {
-            mux_cmd.arg("-map").arg(format!("{}:s?", ts_count + i));
+        for i in 0..subtitles.len() {
+            mux_cmd.arg("-map").arg(format!("{}:s?", media.len() + i));
         }
         mux_cmd.arg("-c:v").arg("copy").arg("-c:a").arg("copy");
-        if !vtt_files.is_empty() {
-            let sub_codec = if ext == "mkv" { "srt" } else { "mov_text" };
+        if !subtitles.is_empty() {
+            let sub_codec = if self.config.process.extension == "mkv" {
+                "srt"
+            } else {
+                "mov_text"
+            };
             mux_cmd.arg("-c:s").arg(sub_codec);
         }
         mux_cmd
-            .arg(&out_file)
+            .arg(out_file)
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
 
@@ -331,15 +261,6 @@ impl DownloadEngine {
                 .join("\n");
             return Err(format!("ffmpeg exited: {}\n{tail}", mux_result.status));
         }
-
-        for f in &ts_files {
-            let _ = tokio::fs::remove_file(f).await;
-        }
-        for vtt in &vtt_files {
-            let _ = tokio::fs::remove_file(vtt).await;
-        }
-        let _ = tokio::fs::remove_dir_all(output_dir.join(save_name)).await;
-        let _ = tokio::fs::remove_dir_all(tmp_dir).await;
 
         Ok(())
     }
@@ -372,6 +293,57 @@ impl DownloadEngine {
     }
 }
 
+fn work_dir(id: uuid::Uuid) -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("StreamVault")
+        .join(id.to_string())
+}
+
+async fn scan_tracks(dir: &Path, with_subtitles: bool) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut media: Vec<(PathBuf, u64)> = Vec::new();
+    let mut subtitles = Vec::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let path = entry.path();
+            match path.extension().and_then(|x| x.to_str()) {
+                Some("ts") => {
+                    let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+                    media.push((path, size));
+                }
+                Some("vtt") if with_subtitles => subtitles.push(path),
+                _ => {}
+            }
+        }
+    }
+    media.sort_unstable_by_key(|(_, size)| std::cmp::Reverse(*size));
+    (media.into_iter().map(|(path, _)| path).collect(), subtitles)
+}
+
+async fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if tokio::fs::rename(from, to).await.is_err() {
+        tokio::fs::copy(from, to).await?;
+    }
+    Ok(())
+}
+
+fn exit_message(exit: ExitStatus, stderr: &str) -> String {
+    let details = stderr
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.is_empty() && !t.starts_with("at ") && !t.starts_with("---")
+        })
+        .take(5)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if details.is_empty() {
+        format!("N_m3u8DL-RE exited: {exit}")
+    } else {
+        format!("N_m3u8DL-RE exited: {exit}\n{details}")
+    }
+}
+
 fn bundled_bin_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
@@ -388,7 +360,7 @@ fn bundled_bin_dir() -> Option<PathBuf> {
     None
 }
 
-fn is_executable(path: &std::path::Path) -> bool {
+fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -430,6 +402,7 @@ fn sanitize_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::scratch_dir;
 
     #[test]
     fn find_binary_returns_name_for_missing() {
@@ -501,5 +474,72 @@ mod tests {
     fn new_progress_starts_queued() {
         let p = DownloadProgress::new(uuid::Uuid::nil(), "test".into());
         assert!(matches!(p.status, DownloadStatus::Queued));
+    }
+
+    #[test]
+    fn work_dir_is_unique_per_download_and_outside_output_tree() {
+        let id = uuid::Uuid::new_v4();
+        let dir = work_dir(id);
+        assert!(dir.ends_with(format!("StreamVault/{id}")));
+        assert!(!dir.starts_with(AppConfig::default().download_dir()));
+        assert_ne!(dir, work_dir(uuid::Uuid::new_v4()));
+    }
+
+    #[tokio::test]
+    async fn scan_tracks_orders_media_by_size_and_filters_subtitles() {
+        let dir = scratch_dir("scan_tracks");
+        std::fs::create_dir_all(dir.join("tmp")).unwrap();
+        std::fs::write(dir.join("small.ts"), [0u8; 1]).unwrap();
+        std::fs::write(dir.join("large.ts"), [0u8; 8]).unwrap();
+        std::fs::write(dir.join("it.vtt"), "WEBVTT").unwrap();
+        std::fs::write(dir.join("notes.txt"), "x").unwrap();
+        let (media, subtitles) = scan_tracks(&dir, true).await;
+        assert_eq!(media, vec![dir.join("large.ts"), dir.join("small.ts")]);
+        assert_eq!(subtitles, vec![dir.join("it.vtt")]);
+        assert!(scan_tracks(&dir, false).await.1.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn scan_tracks_on_missing_dir_is_empty() {
+        let (media, subtitles) = scan_tracks(Path::new("/nonexistent/sv"), true).await;
+        assert!(media.is_empty() && subtitles.is_empty());
+    }
+
+    #[tokio::test]
+    async fn move_file_delivers_content_to_destination() {
+        let dir = scratch_dir("move_file");
+        let (from, to) = (dir.join("work/a.mp4"), dir.join("out/a.mp4"));
+        std::fs::create_dir_all(from.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::write(&from, "video").unwrap();
+        move_file(&from, &to).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "video");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exit_message_keeps_first_meaningful_stderr_lines() {
+        use std::os::unix::process::ExitStatusExt;
+        let exit = ExitStatus::from_raw(256);
+        let stderr = "boom\n   at Foo.Bar()\n---\n\nl2\nl3\nl4\nl5\nl6";
+        assert_eq!(
+            exit_message(exit, stderr),
+            format!("N_m3u8DL-RE exited: {exit}\nboom\nl2\nl3\nl4\nl5")
+        );
+        assert_eq!(
+            exit_message(exit, ""),
+            format!("N_m3u8DL-RE exited: {exit}")
+        );
+    }
+
+    #[tokio::test]
+    async fn mux_output_without_media_fails() {
+        let engine = DownloadEngine::new(AppConfig::default());
+        let err = engine
+            .mux_output(Path::new("ffmpeg"), Path::new("/tmp/out.mp4"), &[], &[])
+            .await
+            .unwrap_err();
+        assert_eq!(err, "No .ts files found after download");
     }
 }

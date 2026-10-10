@@ -1,10 +1,14 @@
 use crate::providers::{Episode, MediaEntry};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 pub(crate) static FS_LOCK: Mutex<()> = Mutex::new(());
+
+const WATCH_FILE: &str = "continue_watching.json";
+const PREFS_FILE: &str = "player_prefs.json";
+const SNAPSHOT_FILE: &str = "sync_snapshot.json";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -120,15 +124,48 @@ fn icloud_data_dir() -> Option<PathBuf> {
     .clone()
 }
 
-fn legacy_config_dir() -> PathBuf {
+fn local_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("StreamVault")
 }
 
+fn state_dir() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = local_dir().join("state");
+        let legacy = AppConfig::config_dir();
+        for name in [WATCH_FILE, PREFS_FILE, SNAPSHOT_FILE] {
+            migrate_file(&legacy.join(name), &dir.join(name));
+        }
+        dir
+    })
+}
+
+fn migrate_file(from: &Path, to: &Path) {
+    if to.exists() || !from.is_file() {
+        return;
+    }
+    if let Err(e) = replace_file(to, |tmp| fs::copy(from, tmp).map(drop)) {
+        eprintln!("[StreamVault] state migration error: {e}");
+    }
+}
+
+fn replace_file(
+    path: &Path,
+    fill: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    fill(&tmp)?;
+    fs::rename(&tmp, path)
+}
+
 impl AppConfig {
     pub fn config_dir() -> PathBuf {
-        icloud_data_dir().unwrap_or_else(legacy_config_dir)
+        icloud_data_dir().unwrap_or_else(local_dir)
     }
 
     #[inline]
@@ -178,48 +215,37 @@ impl WatchItem {
     }
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
+pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
 }
 
 pub(crate) fn write_json_unlocked(
-    path: &std::path::Path,
+    path: &Path,
     value: &(impl Serialize + ?Sized),
     label: &str,
 ) -> bool {
-    if let Some(parent) = path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            eprintln!("[StreamVault] {label} dir error: {e}");
-            return false;
-        }
+    let written = serde_json::to_string_pretty(value)
+        .map_err(std::io::Error::from)
+        .and_then(|json| replace_file(path, |tmp| fs::write(tmp, json)));
+    if let Err(e) = &written {
+        eprintln!("[StreamVault] {label} write error: {e}");
     }
-    match serde_json::to_string_pretty(value) {
-        Ok(json) => {
-            let tmp = path.with_extension("tmp");
-            match fs::write(&tmp, json).and_then(|_| fs::rename(&tmp, path)) {
-                Ok(()) => true,
-                Err(e) => {
-                    eprintln!("[StreamVault] {label} write error: {e}");
-                    false
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("[StreamVault] {label} serialize error: {e}");
-            false
-        }
-    }
+    written.is_ok()
 }
 
-fn write_json(path: &std::path::Path, value: &(impl Serialize + ?Sized), label: &str) {
+fn write_json(path: &Path, value: &(impl Serialize + ?Sized), label: &str) {
     let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     write_json_unlocked(path, value, label);
 }
 
 pub(crate) fn watch_items_path() -> PathBuf {
-    AppConfig::config_dir().join("continue_watching.json")
+    state_dir().join(WATCH_FILE)
+}
+
+pub(crate) fn snapshot_path() -> PathBuf {
+    state_dir().join(SNAPSHOT_FILE)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -243,7 +269,7 @@ impl Default for PlayerPrefs {
 }
 
 pub(crate) fn player_prefs_path() -> PathBuf {
-    AppConfig::config_dir().join("player_prefs.json")
+    state_dir().join(PREFS_FILE)
 }
 
 pub fn load_watch_items() -> Vec<WatchItem> {
@@ -305,6 +331,7 @@ pub fn save_player_prefs(prefs: &PlayerPrefs) {
 mod tests {
     use super::*;
     use crate::providers::MediaType;
+    use crate::test_support::scratch_dir;
 
     #[test]
     fn default_config_has_expected_values() {
@@ -323,8 +350,45 @@ mod tests {
     }
 
     #[test]
-    fn legacy_config_dir_ends_with_streamvault() {
-        assert!(legacy_config_dir().ends_with("StreamVault"));
+    fn local_dir_ends_with_streamvault() {
+        assert!(local_dir().ends_with("StreamVault"));
+    }
+
+    #[test]
+    fn migrate_file_copies_content_and_mtime() {
+        let base = scratch_dir("migrate_copy");
+        let from = base.join("cloud/continue_watching.json");
+        let to = base.join("local/state/continue_watching.json");
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        fs::write(&from, "[1]").unwrap();
+        migrate_file(&from, &to);
+        assert_eq!(fs::read_to_string(&to).unwrap(), "[1]");
+        assert_eq!(
+            fs::metadata(&to).unwrap().modified().unwrap(),
+            fs::metadata(&from).unwrap().modified().unwrap()
+        );
+        assert!(!to.with_extension("tmp").exists());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn migrate_file_keeps_existing_target() {
+        let base = scratch_dir("migrate_keep");
+        let (from, to) = (base.join("old.json"), base.join("new.json"));
+        fs::write(&from, "old").unwrap();
+        fs::write(&to, "new").unwrap();
+        migrate_file(&from, &to);
+        assert_eq!(fs::read_to_string(&to).unwrap(), "new");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn migrate_file_ignores_missing_source() {
+        let base = scratch_dir("migrate_missing");
+        let to = base.join("state/new.json");
+        migrate_file(&base.join("absent.json"), &to);
+        assert!(!to.exists());
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -336,8 +400,7 @@ mod tests {
 
     #[test]
     fn write_json_creates_missing_parent_dirs() {
-        let base = std::env::temp_dir().join(format!("sv_writejson_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = scratch_dir("writejson");
         let path = base.join("Contents/Video/config.json");
         assert!(!path.exists());
         write_json(&path, &"data", "test");

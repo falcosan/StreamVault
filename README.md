@@ -62,6 +62,14 @@ Output: `dist/StreamVault.app`
 
 Config is stored in JSON. On first launch, StreamVault creates a default config automatically.
 
+| Data                                                    | With iCloud Drive                                 | Without iCloud Drive                        |
+| ------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------- |
+| **Settings** (`config.json`, `sync.json`)               | `iCloud Drive/Contents/Video/StreamVault`         | `~/Library/Application Support/StreamVault` |
+| **State** (watch progress, player prefs, sync snapshot) | `~/Library/Application Support/StreamVault/state` | same                                        |
+| **Downloads** (`root_path`)                             | `iCloud Drive/Contents/Video/StreamVault`         | `~`                                         |
+
+State is per device and never stored in iCloud Drive; enable `sync.json` to share it across devices. Downloads are assembled in `~/Library/Caches/StreamVault` and only the finished file is moved into place.
+
 Main sections:
 
 | Section            | Key Options                                                                                             |
