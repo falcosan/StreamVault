@@ -232,16 +232,18 @@ impl Provider for Aurora {
                 })),
         )
         .await?;
-        let url = playback["data"]["attributes"]["streaming"][0]["url"]
-            .as_str()
-            .ok_or_else(|| {
-                ProviderError::StreamExtraction("No streaming URL in response".into())
-            })?;
-        Ok(StreamUrl {
-            url: url.to_owned(),
-            headers: Vec::new(),
-        })
+        playback_url(&playback)
     }
+}
+
+fn playback_url(playback: &Value) -> ProviderResult<StreamUrl> {
+    let url = playback["data"]["attributes"]["streaming"][0]["url"]
+        .as_str()
+        .ok_or_else(|| ProviderError::StreamExtraction("No streaming URL in response".into()))?;
+    Ok(StreamUrl {
+        url: url.to_owned(),
+        headers: Vec::new(),
+    })
 }
 
 #[cfg(test)]
@@ -317,6 +319,37 @@ mod tests {
         assert_eq!(
             videos[1].episode.image_url.as_deref(),
             Some("https://image")
+        );
+    }
+
+    #[test]
+    fn playback_url_reads_first_stream() {
+        let response = json!({ "data": { "attributes": { "streaming": [
+            { "type": "hls", "url": "https://cdn/master.m3u8" },
+            { "type": "dash", "url": "https://cdn/manifest.mpd" }
+        ]}}});
+        assert_eq!(
+            playback_url(&response).unwrap().url,
+            "https://cdn/master.m3u8"
+        );
+        assert!(
+            playback_url(&json!({ "errors": [{ "code": "access.denied.geoblocked" }] })).is_err()
+        );
+    }
+
+    #[test]
+    fn realms_map_to_their_playback_endpoints() {
+        assert_eq!(Realm::It.key(), "X-REALM-IT");
+        assert!(
+            Realm::It
+                .playback()
+                .starts_with("https://public.aurora.enhanced.live/")
+        );
+        assert_eq!(Realm::Dplay.key(), "X-REALM-DPLAY");
+        assert!(
+            Realm::Dplay
+                .playback()
+                .starts_with("https://eu1-prod.disco-api.com/")
         );
     }
 
