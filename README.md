@@ -15,7 +15,7 @@
 - Multi-provider search and catalog browsing
 - Show details, seasons, and episodes
 - Download streams with [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE)
-- Post-process with [FFmpeg](https://ffmpeg.org/) (optional GPU)
+- Post-process with [FFmpeg](https://ffmpeg.org/)
 - JSON configuration for paths, download behavior, tracks, and requests
 - In-app update flow (rebuilds from source)
 
@@ -72,12 +72,12 @@ State is per device and never stored in iCloud Drive; enable `sync.json` to shar
 
 Main sections:
 
-| Section            | Key Options                                                                                             |
-| ------------------ | ------------------------------------------------------------------------------------------------------- |
+| Section      | Key Options                                                                                     |
+| ------------ | ----------------------------------------------------------------------------------------------- |
 | **output**   | `root_path`, `movie_folder_name`, `serie_folder_name`, `map_episode_name`                       |
 | **download** | `thread_count` (default: 8), `retry_count`, `concurrent_download`, `max_speed`, track selection |
-| **process**  | `use_gpu`, `merge_audio`, `merge_subtitle`, `extension` (default: mp4)                          |
-| **requests** | `timeout` (default: 30s), `max_retry`, `use_proxy`, `proxy_url`                                 |
+| **process**  | `merge_audio`, `merge_subtitle`, `extension` (default: mp4)                                     |
+| **requests** | `timeout` (default: 30s)                                                                        |
 
 ## License
 

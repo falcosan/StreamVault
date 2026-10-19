@@ -1,161 +1,181 @@
 use crate::providers::MediaEntry;
-use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
-pub fn normalize(s: &str) -> String {
-    s.to_lowercase()
+const EXACT: usize = 1000;
+const PREFIX: usize = 800;
+const CONTAINS: usize = 600;
+const DESCRIPTION: usize = 450;
+const WORDS: usize = 500;
+
+pub fn rank(entries: Vec<MediaEntry>, query: &str) -> Vec<MediaEntry> {
+    let query = normalize(query);
+    let words: Vec<&str> = query.split_whitespace().collect();
+    let mut scored: Vec<(usize, MediaEntry)> = entries
+        .into_iter()
+        .map(|entry| (score(&entry, &query, &words), entry))
+        .collect();
+    scored.sort_by(|(sa, a), (sb, b)| {
+        sb.cmp(sa)
+            .then(a.name.len().cmp(&b.name.len()))
+            .then(a.name.cmp(&b.name))
+    });
+    scored.into_iter().map(|(_, entry)| entry).collect()
+}
+
+fn score(entry: &MediaEntry, query: &str, words: &[&str]) -> usize {
+    let names: Vec<String> = std::iter::once(&entry.name)
+        .chain(&entry.alternative_names)
+        .map(|n| normalize(n))
+        .collect();
+    let best = names
+        .iter()
+        .map(|n| name_score(n, query))
+        .max()
+        .unwrap_or(0);
+    if best > 0 {
+        return best;
+    }
+    let description = entry.description.as_deref().map(normalize);
+    let described = |text: &str| description.as_deref().is_some_and(|d| d.contains(text));
+    if described(query) {
+        return DESCRIPTION;
+    }
+    let matched = words
+        .iter()
+        .filter(|w| names.iter().any(|n| fuzzy_contains(n, w)) || described(w))
+        .count();
+    (WORDS * matched).checked_div(words.len()).unwrap_or(0)
+}
+
+fn normalize(text: &str) -> String {
+    text.to_lowercase()
         .nfkd()
         .filter(|c| !is_combining_mark(*c))
         .collect()
 }
 
-pub fn score_name(name: &str, query: &str) -> u16 {
+fn name_score(name: &str, query: &str) -> usize {
     if name == query {
-        1000
+        EXACT
     } else if name.starts_with(query) {
-        800
-    } else if let Some(pos) = name.find(query) {
-        600 - (pos.min(100) as u16)
+        PREFIX
+    } else if let Some(position) = name.find(query) {
+        CONTAINS - position.min(100)
     } else {
         0
     }
 }
 
-pub fn edit_distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let n = b.len();
-    let mut row: Vec<usize> = (0..=n).collect();
-    for ca in a.chars() {
-        let mut prev = row[0];
-        row[0] += 1;
-        for (j, &cb) in b.iter().enumerate() {
-            let old = row[j + 1];
-            row[j + 1] = if ca == cb {
-                prev
-            } else {
-                prev.min(row[j]).min(row[j + 1]) + 1
-            };
-            prev = old;
-        }
-    }
-    row[n]
-}
-
-pub fn fuzzy_word_match(word: &str, text: &str) -> bool {
+fn fuzzy_contains(text: &str, word: &str) -> bool {
     if text.contains(word) {
         return true;
     }
-    word.len() >= 4
-        && text
-            .split_whitespace()
-            .any(|w| w.len().abs_diff(word.len()) <= 1 && edit_distance(w, word) <= 1)
+    let length = word.chars().count();
+    length >= 4
+        && text.split_whitespace().any(|candidate| {
+            candidate.chars().count().abs_diff(length) <= 1 && edit_distance(candidate, word) <= 1
+        })
 }
 
-pub fn rank_results(entries: Vec<MediaEntry>, query: &str) -> Vec<MediaEntry> {
-    let q_norm = normalize(query);
-    let q_words: Vec<String> = q_norm.split_whitespace().map(str::to_owned).collect();
-
-    let mut scored: Vec<(u16, MediaEntry)> = entries
-        .into_iter()
-        .map(|e| {
-            let names: Vec<String> = std::iter::once(&e.name)
-                .chain(e.alternative_names.iter())
-                .map(|n| normalize(n))
-                .collect();
-
-            let best_name_score = names
-                .iter()
-                .map(|t| score_name(t, &q_norm))
-                .max()
-                .unwrap_or(0);
-
-            let score = if best_name_score > 0 {
-                best_name_score
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for ca in a.chars() {
+        let mut diagonal = row[0];
+        row[0] += 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = if ca == cb {
+                diagonal
             } else {
-                let d = e.description.as_ref().map(|s| normalize(s));
-                if d.as_ref().is_some_and(|d| d.contains(q_norm.as_str())) {
-                    450
-                } else {
-                    let total = q_words.len() as u16;
-                    let matches = q_words
-                        .iter()
-                        .filter(|w| {
-                            names.iter().any(|t| fuzzy_word_match(w, t))
-                                || d.as_ref().is_some_and(|d| d.contains(w.as_str()))
-                        })
-                        .count() as u16;
-                    (matches * 500).checked_div(total).unwrap_or(0)
-                }
+                diagonal.min(row[j]).min(above) + 1
             };
-            (score, e)
-        })
-        .collect();
-
-    scored.sort_unstable_by(|(sa, ea), (sb, eb)| {
-        sb.cmp(sa)
-            .then(ea.name.len().cmp(&eb.name.len()))
-            .then(ea.name.cmp(&eb.name))
-    });
-
-    scored.into_iter().map(|(_, e)| e).collect()
+            diagonal = above;
+        }
+    }
+    row[b.len()]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn normalize_strips_accents() {
-        assert_eq!(normalize("Café"), "cafe");
+    fn entry(name: &str, description: Option<&str>) -> MediaEntry {
+        MediaEntry {
+            name: name.into(),
+            description: description.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    fn names(entries: &[MediaEntry]) -> Vec<&str> {
+        entries.iter().map(|e| e.name.as_str()).collect()
     }
 
     #[test]
-    fn normalize_lowercases() {
-        assert_eq!(normalize("HELLO"), "hello");
+    fn normalize_strips_accents_and_case() {
+        assert_eq!(normalize("CAFÉ"), "cafe");
     }
 
     #[test]
-    fn score_exact_match() {
-        assert_eq!(score_name("foo", "foo"), 1000);
+    fn name_score_orders_exact_prefix_and_substring() {
+        assert_eq!(name_score("foo", "foo"), EXACT);
+        assert_eq!(name_score("foobar", "foo"), PREFIX);
+        assert_eq!(name_score("bazfoo", "foo"), CONTAINS - 3);
+        assert_eq!(name_score("abc", "xyz"), 0);
     }
 
     #[test]
-    fn score_prefix() {
-        assert_eq!(score_name("foobar", "foo"), 800);
-    }
-
-    #[test]
-    fn score_contains() {
-        let s = score_name("bazfoo", "foo");
-        assert!(s > 0 && s < 600);
-    }
-
-    #[test]
-    fn score_no_match() {
-        assert_eq!(score_name("abc", "xyz"), 0);
-    }
-
-    #[test]
-    fn edit_distance_identical() {
+    fn edit_distance_matches_levenshtein() {
         assert_eq!(edit_distance("kitten", "kitten"), 0);
-    }
-
-    #[test]
-    fn edit_distance_known() {
         assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("", "abc"), 3);
     }
 
     #[test]
-    fn fuzzy_exact_substring() {
-        assert!(fuzzy_word_match("hello", "say hello world"));
+    fn fuzzy_contains_tolerates_one_typo_in_long_words() {
+        assert!(fuzzy_contains("say hello world", "hello"));
+        assert!(fuzzy_contains("say helo world", "hell"));
+        assert!(!fuzzy_contains("cd ef", "ab"));
+        assert!(fuzzy_contains("ちびまる", "ちびまる子"));
     }
 
     #[test]
-    fn fuzzy_close_word() {
-        assert!(fuzzy_word_match("hell", "say helo world"));
+    fn rank_orders_by_relevance_then_shorter_name() {
+        let ranked = rank(
+            vec![
+                entry("The Office", None),
+                entry("Office Space", None),
+                entry("Office", None),
+                entry("Unrelated", Some("an office drama")),
+                entry("Nothing", None),
+            ],
+            "Office",
+        );
+        assert_eq!(
+            names(&ranked),
+            [
+                "Office",
+                "Office Space",
+                "The Office",
+                "Unrelated",
+                "Nothing"
+            ]
+        );
     }
 
     #[test]
-    fn fuzzy_short_word_no_fuzzy() {
-        assert!(!fuzzy_word_match("ab", "cd ef"));
+    fn rank_scores_partial_word_matches() {
+        let ranked = rank(
+            vec![entry("Breaking Bad", None), entry("Bad Day", None)],
+            "breakin badd",
+        );
+        assert_eq!(names(&ranked), ["Breaking Bad", "Bad Day"]);
+    }
+
+    #[test]
+    fn rank_handles_long_queries() {
+        let query = "word ".repeat(200);
+        assert_eq!(rank(vec![entry("word", None)], &query).len(), 1);
     }
 }

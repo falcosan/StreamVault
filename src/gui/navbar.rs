@@ -1,43 +1,40 @@
-use crate::style::{LOGO_SVG, UPDATE_SVG};
+use super::LOGO;
+use crate::app::{AppState, Screen};
 use dioxus::prelude::*;
 
-use super::Screen;
+const SEARCH_ICON: &str = include_str!("../../assets/icons/search.svg");
+const UPDATE_ICON: &str = include_str!("../../assets/icons/update.svg");
 
 #[component]
-pub fn Navbar(
-    screen: Signal<Screen>,
-    history: Signal<Vec<Screen>>,
-    search_query: Signal<String>,
-    has_update: ReadSignal<bool>,
-    is_updating: ReadSignal<bool>,
-    is_searching: ReadSignal<bool>,
-    on_update: EventHandler<()>,
-    on_search_submit: EventHandler<String>,
-) -> Element {
-    let current = screen();
-    let update = has_update();
-    let updating = is_updating();
-    let searching = is_searching();
+pub fn Navbar() -> Element {
+    let app = use_context::<AppState>();
+    let mut query = app.search.query;
+    let screen = *app.screen.read();
+    let link = |target: Screen| {
+        if screen == target {
+            "nav-link active"
+        } else {
+            "nav-link"
+        }
+    };
+    let updating = *app.updating.read();
     rsx! {
         nav { class: "navbar",
-            button { class: "logo", onclick: move |_| {
-                    if screen() != Screen::Home { history.write().push(screen()); screen.set(Screen::Home); }
-                },
-                div { class: "logo-icon", dangerous_inner_html: LOGO_SVG }
+            button {
+                class: "logo",
+                aria_label: "Home",
+                onclick: move |_| app.navigate(Screen::Home),
+                div { class: "logo-icon", dangerous_inner_html: LOGO }
             }
             div { class: "nav-spacer" }
             button {
-                class: if current == Screen::Home { "nav-link active" } else { "nav-link" },
-                onclick: move |_| {
-                    if screen() != Screen::Home { history.write().push(screen()); screen.set(Screen::Home); }
-                },
+                class: link(Screen::Home),
+                onclick: move |_| app.navigate(Screen::Home),
                 "Home"
             }
             button {
-                class: if current == Screen::Downloads { "nav-link active" } else { "nav-link" },
-                onclick: move |_| {
-                    if screen() != Screen::Downloads { history.write().push(screen()); screen.set(Screen::Downloads); }
-                },
+                class: link(Screen::Downloads),
+                onclick: move |_| app.navigate(Screen::Downloads),
                 "Downloads"
             }
             div { class: "nav-fill" }
@@ -45,33 +42,33 @@ pub fn Navbar(
                 input {
                     class: "search-input",
                     placeholder: "Search...",
-                    value: "{search_query}",
-                    oninput: move |e| search_query.set(e.value()),
-                    onkeypress: {
-                        let q = search_query;
-                        move |e: KeyboardEvent| {
-                            if e.key() == Key::Enter {
-                                on_search_submit.call(q());
-                            }
+                    aria_label: "Search",
+                    value: "{query}",
+                    oninput: move |e| query.set(e.value()),
+                    onkeydown: move |e: KeyboardEvent| {
+                        if e.key() == Key::Enter {
+                            app.search();
                         }
                     },
                 }
                 button {
                     class: "search-go",
-                    disabled: searching,
-                    onclick: {
-                        let q = search_query;
-                        move |_| on_search_submit.call(q())
-                    },
-                    div { class: "search-icon", dangerous_inner_html: r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>"# }
+                    aria_label: "Search",
+                    disabled: *app.search.busy.read(),
+                    onclick: move |_| app.search(),
+                    div { class: "search-icon", dangerous_inner_html: SEARCH_ICON }
                 }
             }
-            if update || updating {
+            if updating || *app.update_available.read() {
                 button {
                     class: if updating { "update-btn updating" } else { "update-btn" },
-                    onclick: move |_| { if !updating { on_update.call(()); } },
-                    div { class: "update-icon", dangerous_inner_html: UPDATE_SVG }
-                    if !updating { span { class: "update-dot" } }
+                    aria_label: if updating { "Updating" } else { "Install update" },
+                    disabled: updating,
+                    onclick: move |_| app.update(),
+                    div { class: "update-icon", dangerous_inner_html: UPDATE_ICON }
+                    if !updating {
+                        span { class: "update-dot" }
+                    }
                 }
             }
         }

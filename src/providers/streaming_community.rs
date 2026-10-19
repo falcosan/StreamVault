@@ -1,571 +1,516 @@
 use super::{
-    Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, Season, StreamUrl,
-    USER_AGENT,
+    Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl, USER_AGENT,
+    domain, fetch_json, fetch_text, items, non_blank, vixcloud_playlist,
 };
 use async_trait::async_trait;
 use regex::Regex;
 use reqwest::Client;
 use scraper::{Html, Selector};
+use serde_json::{Value, json};
 use std::collections::HashSet;
-use std::sync::{LazyLock, RwLock};
-use std::time::Duration;
+use std::sync::{LazyLock, Mutex, PoisonError};
 
-pub struct StreamingCommunityProvider {
+const DEFAULT_LANG: &str = "it";
+const LANGS: [&str; 2] = ["it", "en"];
+const IMAGE_TYPES: [&str; 4] = ["poster", "cover", "cover_mobile", "background"];
+const CATALOG_SIZE: usize = 100;
+const BROWSE_PAGE_SIZE: usize = 60;
+const BROWSE_MAX_PAGES: usize = 17;
+
+pub struct StreamingCommunity {
     client: Client,
-    base_url: RwLock<String>,
-    browse_sections: RwLock<Vec<(String, Option<String>)>>,
-    browse_cursor: RwLock<(usize, usize)>,
+    base: String,
+    cdn: String,
+    browse: Mutex<Option<Browse>>,
 }
 
-impl StreamingCommunityProvider {
-    const LANG: &str = "it";
-    const LANGS: &[&str] = &["it", "en"];
-    const IMG_PRIORITY: &[&str] = &["poster", "cover", "cover_mobile", "background"];
-    const BROWSE_PAGE_SIZE: usize = 60;
-    const BROWSE_MAX_PAGES: usize = 17;
+struct Browse {
+    sections: Vec<(&'static str, Option<String>)>,
+    section: usize,
+    page: usize,
+}
 
-    pub fn with_config(timeout: u64) -> Self {
-        let client = Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(Duration::from_secs(timeout))
-            .cookie_store(true)
-            .build()
-            .expect("reqwest client");
+impl Browse {
+    fn new(genres: Vec<String>) -> Self {
+        let mut sections = vec![("trending", None), ("latest", None)];
+        sections.extend(genres.into_iter().map(|g| ("genre", Some(g))));
+        Self {
+            sections,
+            section: 0,
+            page: 1,
+        }
+    }
+
+    fn current(&self) -> Option<(&'static str, Option<String>, usize)> {
+        let (path, genre) = self.sections.get(self.section)?;
+        Some((path, genre.clone(), self.page))
+    }
+
+    fn advance(&mut self, titles: usize) {
+        if titles >= BROWSE_PAGE_SIZE && self.page < BROWSE_MAX_PAGES {
+            self.page += 1;
+        } else {
+            self.section += 1;
+            self.page = 1;
+        }
+    }
+}
+
+impl StreamingCommunity {
+    pub fn new(client: Client) -> Self {
+        let base = domain("streamingcommunity");
         Self {
             client,
-            base_url: RwLock::new(String::new()),
-            browse_sections: RwLock::new(Vec::new()),
-            browse_cursor: RwLock::new((0, 1)),
+            cdn: base.replace("stream", "cdn.stream"),
+            base,
+            browse: Mutex::new(None),
         }
     }
 
-    fn base_url(&self) -> String {
-        self.base_url
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+    async fn page(&self, url: &str) -> ProviderResult<Value> {
+        data_page(&fetch_text(self.client.get(url)).await?)
     }
 
-    async fn ensure_base_url(&self) {
-        if self
-            .base_url
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
-        {
-            self.resolve_domain().await;
-        }
-    }
-
-    async fn resolve_domain(&self) {
-        super::resolve_domain_url(&self.client, "streamingcommunity", &self.base_url).await;
-    }
-
-    fn parse_data_page(html: &str) -> ProviderResult<serde_json::Value> {
-        static APP_SEL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("div#app").unwrap());
-        static DATA_PAGE_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"data-page\s*=\s*['"]([^'"]+)['"]"#).unwrap());
-
-        let doc = Html::parse_document(html);
-        if let Some(app) = doc.select(&APP_SEL).next() {
-            if let Some(data) = app.value().attr("data-page") {
-                return serde_json::from_str(data)
-                    .map_err(|e| ProviderError::Parse(format!("Invalid JSON: {e}")));
-            }
-        }
-        if let Some(cap) = DATA_PAGE_RE.captures(html) {
-            if let Some(m) = cap.get(1) {
-                return serde_json::from_str(m.as_str())
-                    .map_err(|e| ProviderError::Parse(format!("Invalid JSON: {e}")));
-            }
-        }
-        Err(ProviderError::Parse("No data-page JSON found".into()))
-    }
-
-    async fn fetch_inertia_version(&self) -> ProviderResult<String> {
-        self.ensure_base_url().await;
-        let resp = self.client.get(self.base_url()).send().await?;
-        let html = resp.text().await?;
-        let page = Self::parse_data_page(&html)?;
-        page["version"]
-            .as_str()
-            .map(String::from)
-            .ok_or_else(|| ProviderError::Parse("No version in data-page".into()))
-    }
-
-    async fn search_lang(
+    async fn inertia(
         &self,
-        query: &str,
-        lang: &str,
         version: &str,
-    ) -> ProviderResult<Vec<MediaEntry>> {
-        self.ensure_base_url().await;
-        let url = format!("{}/{lang}/search", self.base_url());
-        let resp = self
-            .client
-            .get(&url)
-            .query(&[("q", query)])
-            .header("x-inertia", "true")
-            .header("x-inertia-version", version)
-            .send()
-            .await?;
-        let json: serde_json::Value = resp.json().await?;
-        let titles = json["props"]["titles"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        Ok(titles
-            .iter()
-            .filter_map(|t| {
-                let mut entry = self.parse_result(t)?;
-                entry.language = lang.to_string();
-                Some(entry)
-            })
-            .collect())
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> ProviderResult<Value> {
+        fetch_json(
+            self.client
+                .get(format!("{}{path}", self.base))
+                .query(query)
+                .header("x-inertia", "true")
+                .header("x-inertia-version", version),
+        )
+        .await
     }
 
-    fn parse_result(&self, v: &serde_json::Value) -> Option<MediaEntry> {
-        let id = v["id"].as_u64()?;
-        let name = v["name"].as_str()?.to_string();
-        let slug = v["slug"].as_str().unwrap_or("").to_string();
-        let media_type = match v["type"].as_str().unwrap_or("") {
-            "film" | "movie" | "ova" => MediaType::Movie,
-            _ => MediaType::Series,
-        };
-        let alternative_names = v["original_name"]
-            .as_str()
-            .filter(|s| !s.is_empty() && *s != name)
-            .into_iter()
-            .map(String::from)
-            .collect();
-        Some(MediaEntry {
-            id,
-            name,
-            alternative_names,
-            slug,
-            media_type,
-            year: Self::extract_year(v),
-            image_url: self.extract_image_url(v),
-            description: Self::extract_description(v),
-            score: v["score"].as_str().map(String::from),
-            provider: 0,
-            provider_name: String::new(),
-            language: String::new(),
-        })
+    async fn title_page(&self, entry: &MediaEntry) -> ProviderResult<Value> {
+        self.page(&format!("{}{}", self.base, Self::title_path(entry)))
+            .await
     }
 
-    fn extract_year(v: &serde_json::Value) -> Option<String> {
-        if let Some(translations) = v["translations"].as_array() {
-            for t in translations {
-                let key = t["key"].as_str().unwrap_or("");
-                if key == "first_air_date" || key == "release_date" {
-                    if let Some(date) = t["value"].as_str() {
-                        if let Some(year) = date.get(..4) {
-                            return Some(year.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        for field in &["last_air_date", "release_date"] {
-            if let Some(date) = v[field].as_str() {
-                if let Some(year) = date.get(..4) {
-                    return Some(year.to_string());
-                }
-            }
-        }
-        None
+    fn title_path(entry: &MediaEntry) -> String {
+        format!("/{}/titles/{}-{}", Self::lang(entry), entry.id, entry.slug)
     }
 
-    fn extract_description(v: &serde_json::Value) -> Option<String> {
-        if let Some(translations) = v["translations"].as_array() {
-            for t in translations {
-                let key = t["key"].as_str().unwrap_or("");
-                if key == "description" || key == "overview" || key == "plot" {
-                    if let Some(desc) = t["value"].as_str() {
-                        let trimmed = desc.trim();
-                        if !trimmed.is_empty() {
-                            return Some(trimmed.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        v["plot"]
-            .as_str()
-            .or_else(|| v["description"].as_str())
-            .or_else(|| v["overview"].as_str())
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.trim().to_string())
-    }
-
-    fn extract_image_url(&self, v: &serde_json::Value) -> Option<String> {
-        let images = v["images"].as_array()?;
-        let cdn = self.base_url().replace("stream", "cdn.stream");
-        for prio in Self::IMG_PRIORITY {
-            for img in images {
-                if img["type"].as_str() == Some(prio) {
-                    if let Some(f) = img["filename"].as_str() {
-                        return Some(format!("{cdn}/images/{f}"));
-                    }
-                }
-            }
-        }
-        images.first().and_then(|img| {
-            img["filename"]
-                .as_str()
-                .map(|f| format!("{cdn}/images/{f}"))
-        })
-    }
-
-    async fn ensure_browse_sections(&self) -> ProviderResult<()> {
-        if !self
-            .browse_sections
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
-        {
-            return Ok(());
-        }
-        let resp = self.client.get(self.base_url()).send().await?;
-        let html = resp.text().await?;
-        let page = Self::parse_data_page(&html)?;
-        let mut sections: Vec<(String, Option<String>)> =
-            vec![("trending".into(), None), ("latest".into(), None)];
-        if let Some(genres) = page["props"]["genres"].as_array() {
-            sections.extend(
-                genres
-                    .iter()
-                    .filter_map(|g| Some(("genre".into(), Some(g["name"].as_str()?.to_string())))),
-            );
-        }
-        *self
-            .browse_sections
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = sections;
-        Ok(())
-    }
-
-    fn entry_lang(entry: &MediaEntry) -> &str {
+    fn lang(entry: &MediaEntry) -> &str {
         if entry.language.is_empty() {
-            Self::LANG
+            DEFAULT_LANG
         } else {
             &entry.language
         }
     }
 
-    async fn fetch_title_page(
-        &self,
-        entry: &MediaEntry,
-    ) -> ProviderResult<(serde_json::Value, String)> {
-        self.ensure_base_url().await;
-        let lang = Self::entry_lang(entry);
-        let base = self.base_url();
-        let url = format!("{base}/{lang}/titles/{}-{}", entry.id, entry.slug);
-        let resp = self.client.get(&url).send().await?;
-        let html = resp.text().await?;
-        let page = Self::parse_data_page(&html)?;
-        let version = page["version"].as_str().unwrap_or("").to_string();
-        Ok((page, version))
+    fn titles<'a>(
+        &'a self,
+        titles: impl Iterator<Item = &'a Value> + 'a,
+        lang: &'a str,
+    ) -> impl Iterator<Item = MediaEntry> + 'a {
+        titles.filter_map(move |t| self.parse_title(t, lang))
     }
 
-    async fn fetch_iframe_url(
-        &self,
-        lang: &str,
-        media_id: u64,
-        ep_id: Option<u64>,
-    ) -> ProviderResult<String> {
-        static IFRAME_SEL: LazyLock<Selector> =
-            LazyLock::new(|| Selector::parse("iframe").unwrap());
-        static IFRAME_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"<iframe[^>]+src=['"]([^'"]+)['"]"#).unwrap());
-
-        self.ensure_base_url().await;
-        let base = self.base_url();
-        let url = match ep_id {
-            Some(eid) => format!("{base}/{lang}/iframe/{media_id}?episode_id={eid}&next_episode=1"),
-            None => format!("{base}/{lang}/iframe/{media_id}"),
-        };
-        let resp = self.client.get(&url).send().await?;
-        let html = resp.text().await?;
-        let doc = Html::parse_document(&html);
-        if let Some(el) = doc.select(&IFRAME_SEL).next() {
-            if let Some(src) = el.value().attr("src") {
-                return Ok(src.to_string());
-            }
-            if let Some(data_src) = el.value().attr("data-src") {
-                return Ok(data_src.to_string());
-            }
-        }
-        if let Some(cap) = IFRAME_RE.captures(&html) {
-            if let Some(m) = cap.get(1) {
-                return Ok(m.as_str().to_string());
-            }
-        }
-        Err(ProviderError::Parse("No iframe src found".into()))
-    }
-
-    async fn extract_stream_url(&self, iframe_url: &str) -> ProviderResult<StreamUrl> {
-        static SCRIPT_SEL: LazyLock<Selector> =
-            LazyLock::new(|| Selector::parse("script").unwrap());
-
-        let resp = self.client.get(iframe_url).send().await?;
-        let html = resp.text().await?;
-        let doc = Html::parse_document(&html);
-        let script = doc
-            .select(&SCRIPT_SEL)
-            .map(|el| el.inner_html())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let url = super::parse_vixcloud_hls(&script)
-            .ok_or_else(|| ProviderError::StreamExtraction("No HLS params in script".into()))?;
-
-        Ok(StreamUrl {
-            url,
-            headers: vec![("User-Agent".into(), USER_AGENT.to_string())],
+    fn parse_title(&self, v: &Value, lang: &str) -> Option<MediaEntry> {
+        let name = v["name"].as_str()?.to_owned();
+        Some(MediaEntry {
+            id: v["id"].as_u64()?,
+            slug: v["slug"].as_str().unwrap_or_default().to_owned(),
+            language: lang.to_owned(),
+            media_type: match v["type"].as_str() {
+                Some("film" | "movie" | "ova") => MediaType::Movie,
+                _ => MediaType::Series,
+            },
+            alternative_names: v["original_name"]
+                .as_str()
+                .filter(|o| !o.is_empty() && *o != name)
+                .map(String::from)
+                .into_iter()
+                .collect(),
+            year: year(v),
+            score: v["score"].as_str().map(String::from),
+            image_url: self.image(v),
+            description: description(v),
+            name,
+            ..Default::default()
         })
+    }
+
+    fn image(&self, v: &Value) -> Option<String> {
+        let images = v["images"].as_array()?;
+        IMAGE_TYPES
+            .iter()
+            .find_map(|kind| {
+                images
+                    .iter()
+                    .filter(|i| i["type"] == *kind)
+                    .find_map(|i| i["filename"].as_str())
+            })
+            .or_else(|| images.first()?["filename"].as_str())
+            .map(|f| format!("{}/images/{f}", self.cdn))
+    }
+
+    fn browse<T>(&self, f: impl FnOnce(&mut Option<Browse>) -> T) -> T {
+        f(&mut self.browse.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }
 
+fn year(v: &Value) -> Option<String> {
+    let year = |date: &str| date.get(..4).map(String::from);
+    translation(v, &["first_air_date", "release_date"], year).or_else(|| {
+        ["last_air_date", "release_date"]
+            .iter()
+            .find_map(|k| v[k].as_str().and_then(year))
+    })
+}
+
+fn description(v: &Value) -> Option<String> {
+    translation(v, &["description", "overview", "plot"], non_blank).or_else(|| {
+        ["plot", "description", "overview"]
+            .iter()
+            .find_map(|k| v[k].as_str().and_then(non_blank))
+    })
+}
+
+fn translation(v: &Value, keys: &[&str], parse: impl Fn(&str) -> Option<String>) -> Option<String> {
+    items(&v["translations"])
+        .filter(|t| t["key"].as_str().is_some_and(|k| keys.contains(&k)))
+        .find_map(|t| t["value"].as_str().and_then(&parse))
+}
+
+fn genres(page: &Value) -> Vec<String> {
+    items(&page["props"]["genres"])
+        .filter_map(|g| g["name"].as_str().map(String::from))
+        .collect()
+}
+
+fn data_page(html: &str) -> ProviderResult<Value> {
+    static APP: LazyLock<Selector> =
+        LazyLock::new(|| Selector::parse("div#app[data-page]").unwrap());
+    let doc = Html::parse_document(html);
+    let data = doc
+        .select(&APP)
+        .next()
+        .and_then(|app| app.attr("data-page"))
+        .ok_or_else(|| ProviderError::Parse("No data-page JSON found".into()))?;
+    Ok(serde_json::from_str(data)?)
+}
+
+fn iframe_src(html: &str) -> Option<String> {
+    static IFRAME: LazyLock<Selector> = LazyLock::new(|| Selector::parse("iframe").unwrap());
+    static IFRAME_TAG: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"<iframe[^>]+src=['"]([^'"]+)['"]"#).unwrap());
+    let doc = Html::parse_document(html);
+    doc.select(&IFRAME)
+        .next()
+        .and_then(|iframe| iframe.attr("src").or(iframe.attr("data-src")))
+        .map(String::from)
+        .or_else(|| IFRAME_TAG.captures(html).map(|c| c[1].to_owned()))
+}
+
+fn scripts(html: &str) -> String {
+    static SCRIPT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("script").unwrap());
+    Html::parse_document(html)
+        .select(&SCRIPT)
+        .map(|s| s.inner_html())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[async_trait]
-impl Provider for StreamingCommunityProvider {
+impl Provider for StreamingCommunity {
     fn name(&self) -> &'static str {
         "StreamingCommunity"
     }
 
-    async fn init(&self) {
-        self.resolve_domain().await;
-    }
-
     async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>> {
-        let version = self.fetch_inertia_version().await?;
-        let mut all = Vec::new();
+        let home = self.page(&self.base).await?;
+        let version = home["version"]
+            .as_str()
+            .ok_or_else(|| ProviderError::Parse("No version in data-page".into()))?;
         let mut seen = HashSet::new();
-        for lang in Self::LANGS {
-            if let Ok(entries) = self.search_lang(query, lang, &version).await {
-                for e in entries {
-                    if seen.insert(e.id) {
-                        all.push(e);
-                    }
-                }
-            }
-        }
-        Ok(all)
-    }
-
-    async fn get_seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<Season>> {
-        let (page, _) = self.fetch_title_page(entry).await?;
-        let arr = page["props"]["title"]["seasons"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        let mut seasons: Vec<Season> = arr
-            .iter()
-            .filter_map(|s| {
-                Some(Season {
-                    id: s["id"].as_u64()?,
-                    number: s["number"].as_u64()? as u32,
-                    name: s["name"].as_str().map(String::from),
-                })
-            })
-            .collect();
-        seasons.sort_unstable_by_key(|s| s.number);
-        Ok(seasons)
-    }
-
-    async fn get_episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>> {
-        let (_, version) = self.fetch_title_page(entry).await?;
-        let lang = Self::entry_lang(entry);
-        let base = self.base_url();
-        let url = format!(
-            "{base}/{lang}/titles/{}-{}/season-{season}",
-            entry.id, entry.slug
-        );
-        let resp = self
-            .client
-            .get(&url)
-            .header("x-inertia", "true")
-            .header("x-inertia-version", &version)
-            .send()
-            .await?;
-        let json: serde_json::Value = resp.json().await?;
-        let arr = json["props"]["loadedSeason"]["episodes"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        let mut eps: Vec<Episode> = arr
-            .iter()
-            .filter_map(|ep| {
-                Some(Episode {
-                    id: ep["id"].as_u64()?,
-                    number: ep["number"].as_u64()? as u32,
-                    name: ep["name"].as_str().unwrap_or("").to_string(),
-                    duration: ep["duration"].as_u64().map(|d| d as u32),
-                    image_url: self.extract_image_url(ep),
-                })
-            })
-            .collect();
-        eps.sort_unstable_by_key(|e| e.number);
-        Ok(eps)
-    }
-
-    async fn get_stream_url(
-        &self,
-        entry: &MediaEntry,
-        episode: Option<&Episode>,
-        _season: Option<u32>,
-    ) -> ProviderResult<StreamUrl> {
-        let lang = Self::entry_lang(entry);
-        let (page, _) = self.fetch_title_page(entry).await?;
-        let media_id = page["props"]["title"]["id"].as_u64().unwrap_or(entry.id);
-        let ep_id = episode.map(|e| e.id);
-        let iframe = self.fetch_iframe_url(lang, media_id, ep_id).await?;
-        self.extract_stream_url(&iframe).await
-    }
-
-    fn catalog_limit(&self) -> usize {
-        100
-    }
-
-    async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>> {
-        self.ensure_base_url().await;
-        let resp = self.client.get(self.base_url()).send().await?;
-        let html = resp.text().await?;
-        let page = Self::parse_data_page(&html)?;
         let mut entries = Vec::new();
-        let mut seen = HashSet::new();
-
-        'sliders: for slider in page["props"]["sliders"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-        {
-            if let Some(titles) = slider["titles"].as_array() {
-                for t in titles {
-                    if let Some(mut e) = self.parse_result(t) {
-                        e.language = Self::LANG.to_string();
-                        if seen.insert(e.id) {
-                            entries.push(e);
-                            if entries.len() >= limit {
-                                break 'sliders;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if entries.is_empty() {
-            for t in page["props"]["titles"]
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or_default()
+        for lang in LANGS {
+            match self
+                .inertia(version, &format!("/{lang}/search"), &[("q", query)])
+                .await
             {
-                if let Some(mut e) = self.parse_result(t) {
-                    e.language = Self::LANG.to_string();
-                    if seen.insert(e.id) {
-                        entries.push(e);
-                        if entries.len() >= limit {
-                            break;
-                        }
-                    }
-                }
+                Ok(json) => entries.extend(
+                    self.titles(items(&json["props"]["titles"]), lang)
+                        .filter(|e| seen.insert(e.id)),
+                ),
+                Err(e) => eprintln!("[StreamVault] StreamingCommunity {lang} search failed: {e}"),
             }
         }
-
-        let genre_configs: Vec<serde_json::Value> = page["props"]["genres"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|g| {
-                        let name = g["name"].as_str()?;
-                        Some(serde_json::json!({ "name": "genre", "genre": name }))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        if entries.len() < limit && !genre_configs.is_empty() {
-            let payload = serde_json::json!({ "sliders": genre_configs });
-            'outer: for lang in Self::LANGS {
-                let url = format!("{}/api/sliders/fetch?lang={}", self.base_url(), lang);
-                if let Ok(resp) = self.client.post(&url).json(&payload).send().await {
-                    if let Ok(json) = resp.json::<serde_json::Value>().await {
-                        let api_sliders = json.as_array().cloned().unwrap_or_default();
-                        for slider in &api_sliders {
-                            if let Some(titles) = slider["titles"].as_array() {
-                                for t in titles {
-                                    if let Some(mut e) = self.parse_result(t) {
-                                        e.language = lang.to_string();
-                                        if seen.insert(e.id) {
-                                            entries.push(e);
-                                        }
-                                    }
-                                }
-                            }
-                            if entries.len() >= limit {
-                                break 'outer;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        entries.truncate(limit);
         Ok(entries)
     }
 
-    async fn get_catalog_more(&self) -> ProviderResult<Vec<MediaEntry>> {
-        self.ensure_base_url().await;
-        self.ensure_browse_sections().await?;
+    async fn seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<u32>> {
+        let page = self.title_page(entry).await?;
+        let mut seasons: Vec<u32> = items(&page["props"]["title"]["seasons"])
+            .filter_map(|s| u32::try_from(s["number"].as_u64()?).ok())
+            .collect();
+        seasons.sort_unstable();
+        Ok(seasons)
+    }
+
+    async fn episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>> {
+        let page = self.title_page(entry).await?;
+        let version = page["version"].as_str().unwrap_or_default();
+        let path = format!("{}/season-{season}", Self::title_path(entry));
+        let json = self.inertia(version, &path, &[]).await?;
+        let mut episodes: Vec<Episode> = items(&json["props"]["loadedSeason"]["episodes"])
+            .filter_map(|ep| {
+                Some(Episode {
+                    id: ep["id"].as_u64()?,
+                    number: u32::try_from(ep["number"].as_u64()?).ok()?,
+                    name: ep["name"].as_str().unwrap_or_default().to_owned(),
+                    duration: ep["duration"].as_u64().and_then(|d| u32::try_from(d).ok()),
+                    image_url: self.image(ep),
+                })
+            })
+            .collect();
+        episodes.sort_by_key(|e| e.number);
+        Ok(episodes)
+    }
+
+    async fn stream(
+        &self,
+        entry: &MediaEntry,
+        _season: Option<u32>,
+        episode: Option<&Episode>,
+    ) -> ProviderResult<StreamUrl> {
+        let lang = Self::lang(entry);
+        let page = self.title_page(entry).await?;
+        let id = page["props"]["title"]["id"].as_u64().unwrap_or(entry.id);
+        let mut iframe = self.client.get(format!("{}/{lang}/iframe/{id}", self.base));
+        if let Some(ep) = episode {
+            iframe = iframe.query(&[
+                ("episode_id", ep.id.to_string()),
+                ("next_episode", "1".into()),
+            ]);
+        }
+        let src = iframe_src(&fetch_text(iframe).await?)
+            .ok_or_else(|| ProviderError::Parse("No iframe src found".into()))?;
+        let player = fetch_text(self.client.get(src)).await?;
+        let url = vixcloud_playlist(&scripts(&player))
+            .ok_or_else(|| ProviderError::StreamExtraction("No HLS params in script".into()))?;
+        Ok(StreamUrl {
+            url,
+            headers: vec![("User-Agent".into(), USER_AGENT.into())],
+        })
+    }
+
+    async fn catalog(&self) -> ProviderResult<Vec<MediaEntry>> {
+        let page = self.page(&self.base).await?;
+        let props = &page["props"];
+        let mut seen = HashSet::new();
+        let mut entries: Vec<MediaEntry> = self
+            .titles(
+                items(&props["sliders"]).flat_map(|s| items(&s["titles"])),
+                DEFAULT_LANG,
+            )
+            .filter(|e| seen.insert(e.id))
+            .collect();
+        if entries.is_empty() {
+            entries = self
+                .titles(items(&props["titles"]), DEFAULT_LANG)
+                .filter(|e| seen.insert(e.id))
+                .collect();
+        }
+        let genres = genres(&page);
+        let sliders = json!({
+            "sliders": genres.iter().map(|g| json!({ "name": "genre", "genre": g })).collect::<Vec<_>>()
+        });
+        for lang in LANGS {
+            if entries.len() >= CATALOG_SIZE || genres.is_empty() {
+                break;
+            }
+            let request = self
+                .client
+                .post(format!("{}/api/sliders/fetch", self.base))
+                .query(&[("lang", lang)])
+                .json(&sliders);
+            match fetch_json(request).await {
+                Ok(json) => entries.extend(
+                    self.titles(items(&json).flat_map(|s| items(&s["titles"])), lang)
+                        .filter(|e| seen.insert(e.id)),
+                ),
+                Err(e) => eprintln!("[StreamVault] StreamingCommunity {lang} sliders failed: {e}"),
+            }
+        }
+        entries.truncate(CATALOG_SIZE);
+        Ok(entries)
+    }
+
+    async fn catalog_more(&self) -> ProviderResult<Vec<MediaEntry>> {
+        if self.browse(|b| b.is_none()) {
+            let browse = Browse::new(genres(&self.page(&self.base).await?));
+            self.browse(|b| *b = Some(browse));
+        }
         loop {
-            let (section, page) = *self.browse_cursor.read().unwrap_or_else(|e| e.into_inner());
-            let Some((path, genre)) = self
-                .browse_sections
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(section)
-                .cloned()
+            let Some((path, genre, page)) = self.browse(|b| b.as_ref().and_then(Browse::current))
             else {
                 return Ok(Vec::new());
             };
-            let url = format!("{}/{}/browse/{path}", self.base_url(), Self::LANG);
-            let mut params = vec![("lang", Self::LANG.to_string()), ("page", page.to_string())];
-            if let Some(g) = genre {
-                params.push(("g", g));
+            let page = page.to_string();
+            let mut query = vec![("lang", DEFAULT_LANG), ("page", page.as_str())];
+            if let Some(genre) = &genre {
+                query.push(("g", genre.as_str()));
             }
-            let resp = self
-                .client
-                .get(&url)
-                .query(&params)
-                .header("accept", "application/json")
-                .header("x-requested-with", "XMLHttpRequest")
-                .send()
-                .await?;
-            let json: serde_json::Value = resp.json().await?;
-            let titles = json["titles"].as_array().cloned().unwrap_or_default();
-            *self
-                .browse_cursor
-                .write()
-                .unwrap_or_else(|e| e.into_inner()) =
-                if titles.len() >= Self::BROWSE_PAGE_SIZE && page < Self::BROWSE_MAX_PAGES {
-                    (section, page + 1)
-                } else {
-                    (section + 1, 1)
-                };
-            let entries: Vec<MediaEntry> = titles
-                .iter()
-                .filter_map(|t| {
-                    let mut e = self.parse_result(t)?;
-                    e.language = Self::LANG.to_string();
-                    Some(e)
-                })
-                .collect();
+            let json = fetch_json(
+                self.client
+                    .get(format!("{}/{DEFAULT_LANG}/browse/{path}", self.base))
+                    .query(&query)
+                    .header("accept", "application/json")
+                    .header("x-requested-with", "XMLHttpRequest"),
+            )
+            .await?;
+            let titles = &json["titles"];
+            let count = items(titles).count();
+            self.browse(|b| {
+                if let Some(b) = b {
+                    b.advance(count);
+                }
+            });
+            let entries: Vec<MediaEntry> = self.titles(items(titles), DEFAULT_LANG).collect();
             if !entries.is_empty() {
                 return Ok(entries);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider() -> StreamingCommunity {
+        StreamingCommunity {
+            client: Client::new(),
+            base: "https://streamingcommunity.test".into(),
+            cdn: "https://cdn.streamingcommunity.test".into(),
+            browse: Mutex::new(None),
+        }
+    }
+
+    #[test]
+    fn parse_title_maps_fields() {
+        let title = json!({
+            "id": 42, "name": "Dune", "slug": "dune", "type": "movie",
+            "original_name": "Dune: Part One", "score": "8.1",
+            "translations": [
+                { "key": "release_date", "value": null },
+                { "key": "release_date", "value": "2021-09-15" },
+                { "key": "plot", "value": "  Spice.  " }
+            ],
+            "images": [
+                { "type": "background", "filename": "bg.webp" },
+                { "type": "poster" },
+                { "type": "poster", "filename": "poster.webp" }
+            ]
+        });
+        let entry = provider().parse_title(&title, "en").unwrap();
+        assert_eq!(entry.id, 42);
+        assert_eq!(entry.name, "Dune");
+        assert_eq!(entry.slug, "dune");
+        assert_eq!(entry.language, "en");
+        assert_eq!(entry.media_type, MediaType::Movie);
+        assert_eq!(entry.alternative_names, ["Dune: Part One"]);
+        assert_eq!(entry.year.as_deref(), Some("2021"));
+        assert_eq!(entry.score.as_deref(), Some("8.1"));
+        assert_eq!(entry.description.as_deref(), Some("Spice."));
+        assert_eq!(
+            entry.image_url.as_deref(),
+            Some("https://cdn.streamingcommunity.test/images/poster.webp")
+        );
+    }
+
+    #[test]
+    fn parse_title_falls_back_to_top_level_fields() {
+        let title = json!({
+            "id": 1, "name": "Show", "type": "tv", "original_name": "Show",
+            "last_air_date": "2019-01-01", "plot": " ", "overview": "Story",
+            "images": [{ "type": "logo", "filename": "logo.png" }]
+        });
+        let entry = provider().parse_title(&title, "it").unwrap();
+        assert_eq!(entry.media_type, MediaType::Series);
+        assert_eq!(entry.alternative_names, Vec::<String>::new());
+        assert_eq!(entry.year.as_deref(), Some("2019"));
+        assert_eq!(entry.description.as_deref(), Some("Story"));
+        assert_eq!(
+            entry.image_url.as_deref(),
+            Some("https://cdn.streamingcommunity.test/images/logo.png")
+        );
+    }
+
+    #[test]
+    fn parse_title_requires_id_and_name() {
+        assert!(
+            provider()
+                .parse_title(&json!({ "name": "x" }), "it")
+                .is_none()
+        );
+        assert!(provider().parse_title(&json!({ "id": 1 }), "it").is_none());
+    }
+
+    #[test]
+    fn title_path_defaults_language() {
+        let entry = MediaEntry {
+            id: 5,
+            slug: "x".into(),
+            ..Default::default()
+        };
+        assert_eq!(StreamingCommunity::title_path(&entry), "/it/titles/5-x");
+    }
+
+    #[test]
+    fn data_page_reads_app_attribute() {
+        let html = r#"<div id="app" data-page="{&quot;version&quot;:&quot;v1&quot;}"></div>"#;
+        assert_eq!(data_page(html).unwrap()["version"], "v1");
+        assert!(data_page("<div id=\"app\"></div>").is_err());
+    }
+
+    #[test]
+    fn iframe_src_prefers_src_then_data_src() {
+        assert_eq!(
+            iframe_src(r#"<iframe src="https://a"></iframe>"#).as_deref(),
+            Some("https://a")
+        );
+        assert_eq!(
+            iframe_src(r#"<iframe data-src="https://b"></iframe>"#).as_deref(),
+            Some("https://b")
+        );
+        assert_eq!(
+            iframe_src(r#"<script>w('<iframe width="1" src="https://c">')</script>"#).as_deref(),
+            Some("https://c")
+        );
+        assert!(iframe_src("<p></p>").is_none());
+    }
+
+    #[test]
+    fn browse_pages_through_sections() {
+        let mut browse = Browse::new(vec!["Drama".into()]);
+        assert_eq!(browse.current(), Some(("trending", None, 1)));
+        browse.advance(BROWSE_PAGE_SIZE);
+        assert_eq!(browse.current(), Some(("trending", None, 2)));
+        browse.advance(BROWSE_PAGE_SIZE - 1);
+        assert_eq!(browse.current(), Some(("latest", None, 1)));
+        browse.advance(0);
+        assert_eq!(browse.current(), Some(("genre", Some("Drama".into()), 1)));
+        browse.advance(0);
+        assert_eq!(browse.current(), None);
+    }
+
+    #[test]
+    fn browse_stops_at_page_limit() {
+        let mut browse = Browse::new(Vec::new());
+        for _ in 1..BROWSE_MAX_PAGES {
+            browse.advance(BROWSE_PAGE_SIZE);
+        }
+        assert_eq!(browse.current(), Some(("trending", None, BROWSE_MAX_PAGES)));
+        browse.advance(BROWSE_PAGE_SIZE);
+        assert_eq!(browse.current(), Some(("latest", None, 1)));
     }
 }

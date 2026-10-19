@@ -1,437 +1,327 @@
 use super::{
-    provider_hash, Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, Season,
-    StreamUrl, USER_AGENT,
+    Episode, MediaEntry, Provider, ProviderError, ProviderResult, StreamUrl, fetch_json, items,
+    stable_hash,
 };
 use async_trait::async_trait;
 use reqwest::Client;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use tokio::sync::Mutex;
+use serde_json::{Value, json};
+use std::collections::{BTreeSet, HashSet};
 
-const AURORA_BASE: &str = "https://public.aurora.enhanced.live";
-const PLAYBACK_URL: &str = "https://public.aurora.enhanced.live/playback/v3/videoPlaybackInfo";
-const DPLAY_PLAYBACK_URL: &str = "https://eu1-prod.disco-api.com/playback/v3/videoPlaybackInfo";
+const BASE: &str = "https://public.aurora.enhanced.live";
+const SHOW_BLOCKS: [&str; 2] = ["sonicShowBlock", "sonicPlaylistBlock"];
 
-pub struct AuroraProvider {
+pub struct Aurora {
     client: Client,
     env: &'static str,
-    provider_name: &'static str,
-    show_data: Mutex<HashMap<u64, Vec<serde_json::Value>>>,
-    episode_data: Mutex<HashMap<u64, (String, String)>>,
+    name: &'static str,
 }
 
-impl AuroraProvider {
-    fn new(timeout: u64, env: &'static str, provider_name: &'static str) -> Self {
-        let client = Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(std::time::Duration::from_secs(timeout))
-            .build()
-            .expect("reqwest client");
-        Self {
-            client,
-            env,
-            provider_name,
-            show_data: Mutex::new(HashMap::new()),
-            episode_data: Mutex::new(HashMap::new()),
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Realm {
+    It,
+    Dplay,
+}
+
+impl Realm {
+    fn key(self) -> &'static str {
+        match self {
+            Self::It => "X-REALM-IT",
+            Self::Dplay => "X-REALM-DPLAY",
         }
     }
 
-    pub fn nove(timeout: u64) -> Self {
-        Self::new(timeout, "nove", "Nove")
-    }
-
-    pub fn realtime(timeout: u64) -> Self {
-        Self::new(timeout, "realtime", "RealTime")
-    }
-
-    pub fn dmax(timeout: u64) -> Self {
-        Self::new(timeout, "dmaxit", "DMAX")
-    }
-
-    pub fn food_network(timeout: u64) -> Self {
-        Self::new(timeout, "foodnetwork", "FoodNetwork")
-    }
-
-    pub fn discovery(timeout: u64) -> Self {
-        Self::new(timeout, "discoverychannelit", "Discovery")
-    }
-
-    fn build_show_url(&self, slug: &str, parent_slug: &str) -> String {
-        let normalized = slug.to_lowercase().replace(' ', "-");
-        format!(
-            "{AURORA_BASE}/site/page/{normalized}/?include=default&filter[environment]={}&v=2&parent_slug={parent_slug}",
-            self.env
-        )
-    }
-
-    async fn get_bearer_tokens(&self) -> ProviderResult<HashMap<String, (String, String)>> {
-        let url = format!(
-            "{AURORA_BASE}/site/page/homepage/?include=default&filter[environment]=realtime&v=2"
-        );
-        let resp = self.client.get(&url).send().await?;
-        let json: serde_json::Value = resp.json().await?;
-        let realm = &json["userMeta"]["realm"];
-        let mut tokens = HashMap::new();
-        if let Some(key) = realm["X-REALM-IT"].as_str() {
-            tokens.insert(
-                "X-REALM-IT".to_string(),
-                (PLAYBACK_URL.to_string(), key.to_string()),
-            );
+    fn playback(self) -> &'static str {
+        match self {
+            Self::It => "https://public.aurora.enhanced.live/playback/v3/videoPlaybackInfo",
+            Self::Dplay => "https://eu1-prod.disco-api.com/playback/v3/videoPlaybackInfo",
         }
-        if let Some(key) = realm["X-REALM-DPLAY"].as_str() {
-            tokens.insert(
-                "X-REALM-DPLAY".to_string(),
-                (DPLAY_PLAYBACK_URL.to_string(), key.to_string()),
-            );
-        }
-        if tokens.is_empty() {
-            return Err(ProviderError::StreamExtraction(
-                "No bearer tokens found".into(),
-            ));
-        }
-        Ok(tokens)
     }
 }
 
-#[async_trait]
-impl Provider for AuroraProvider {
-    fn name(&self) -> &'static str {
-        self.provider_name
+#[derive(Debug)]
+struct Video {
+    season: u32,
+    episode: Episode,
+    id: String,
+    realm: Realm,
+}
+
+impl Aurora {
+    pub fn new(client: Client, env: &'static str, name: &'static str) -> Self {
+        Self { client, env, name }
     }
 
-    async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>> {
-        let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+    fn show(&self, title: &str, slug: &str, parent: &str) -> MediaEntry {
         let url = format!(
-            "{AURORA_BASE}/site/search/page/?include=default&filter[environment]={}&v=2&q={encoded}&page[number]=1&page[size]=20",
+            "{BASE}/site/page/{}/?include=default&filter[environment]={}&v=2&parent_slug={parent}",
+            slug.to_lowercase().replace(' ', "-"),
             self.env
         );
-        let resp = self.client.get(&url).send().await?;
-        let json: serde_json::Value = resp.json().await?;
+        MediaEntry {
+            id: stable_hash(&url),
+            name: title.to_owned(),
+            slug: url,
+            language: "it".into(),
+            ..Default::default()
+        }
+    }
+
+    fn parse_search(&self, json: &Value) -> ProviderResult<Vec<MediaEntry>> {
         let data = json["data"]
             .as_array()
             .ok_or_else(|| ProviderError::Parse("No data array in search response".into()))?;
-
-        let mut entries = Vec::new();
-        for item in data {
-            if item["type"].as_str() != Some("showpage") {
-                continue;
-            }
-            let title = match item["title"].as_str() {
-                Some(t) if !t.is_empty() => t.to_string(),
-                _ => continue,
-            };
-            let slug = item["slug"].as_str().unwrap_or("");
-            let parent_slug = item["parentSlug"].as_str().unwrap_or("");
-            let show_url = self.build_show_url(slug, parent_slug);
-            let year = item["dateLastModified"]
-                .as_str()
-                .and_then(|d| d.split('-').next())
-                .map(String::from);
-            let image_url = item["image"]["url"].as_str().map(String::from);
-
-            entries.push(MediaEntry {
-                id: provider_hash(&show_url),
-                name: title,
-                alternative_names: Vec::new(),
-                slug: show_url,
-                media_type: MediaType::Series,
-                year,
-                image_url,
-                description: None,
-                score: None,
-                provider: 0,
-                provider_name: String::new(),
-                language: "it".to_string(),
-            });
-        }
-        Ok(entries)
-    }
-
-    async fn get_seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<Season>> {
-        let resp = self.client.get(&entry.slug).send().await?;
-        let json: serde_json::Value = resp.json().await?;
-        let blocks = json["blocks"]
-            .as_array()
-            .ok_or_else(|| ProviderError::Parse("No blocks in response".into()))?;
-
-        let show_id = show_id_from_blocks(blocks);
-        let mut all_items = Vec::new();
-        let mut season_nums = BTreeSet::new();
-        let mut seen_ids = HashSet::new();
-        for block in blocks {
-            let bt = block["type"].as_str().unwrap_or("");
-            if bt != "sonicShowBlock" && bt != "sonicPlaylistBlock" {
-                continue;
-            }
-            if let Some(items) = block["items"].as_array() {
-                for item in items {
-                    if let Some(ref sid) = show_id {
-                        if item["show"]["id"].as_str() != Some(sid) {
-                            continue;
-                        }
-                    }
-                    let vid = match video_id_from_json(item) {
-                        Some(v) => v,
-                        None => continue,
-                    };
-                    if let Some(n) = item["seasonNumber"].as_u64() {
-                        if episode_number(item).is_some() && seen_ids.insert(vid) {
-                            season_nums.insert(n as u32);
-                            all_items.push(item.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        self.show_data.lock().await.insert(entry.id, all_items);
-
-        Ok(season_nums
-            .into_iter()
-            .map(|num| Season {
-                id: num as u64,
-                number: num,
-                name: Some(format!("Season {num}")),
+        Ok(data
+            .iter()
+            .filter(|item| item["type"] == "showpage")
+            .filter_map(|item| {
+                let title = item["title"].as_str().filter(|t| !t.is_empty())?;
+                Some(MediaEntry {
+                    year: item["dateLastModified"]
+                        .as_str()
+                        .and_then(|d| d.split('-').next())
+                        .map(String::from),
+                    image_url: item["image"]["url"].as_str().map(String::from),
+                    ..self.show(
+                        title,
+                        item["slug"].as_str().unwrap_or_default(),
+                        item["parentSlug"].as_str().unwrap_or_default(),
+                    )
+                })
             })
             .collect())
     }
 
-    async fn get_episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>> {
-        let lock = self.show_data.lock().await;
-        let all_episodes = lock
-            .get(&entry.id)
-            .ok_or_else(|| ProviderError::Parse("Show data not cached".into()))?;
-
-        let mut episodes = Vec::new();
-        let mut ep_map = HashMap::new();
-
-        for ep in all_episodes {
-            let ep_season = ep["seasonNumber"].as_u64().unwrap_or(0) as u32;
-            if ep_season != season {
-                continue;
-            }
-            let video_id = match video_id_from_json(ep) {
-                Some(id) => id,
-                None => continue,
-            };
-            let channel = channel_from_json(ep);
-            let ep_num = match episode_number(ep) {
-                Some(n) => n,
-                None => continue,
-            };
-            let name = ep["title"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .unwrap_or_else(|| format!("Episode {ep_num}"));
-            let duration = ep["videoDuration"]
-                .as_u64()
-                .filter(|&ms| ms > 0)
-                .map(|ms| (ms / 1000 / 60) as u32);
-
-            let ep_id = provider_hash(&format!("{}-{}-{}", entry.id, season, video_id));
-            ep_map.insert(ep_id, (video_id, channel));
-
-            let image_url = ep["poster"]["src"]
-                .as_str()
-                .or_else(|| ep["image"]["src"].as_str())
-                .or_else(|| ep["image"]["url"].as_str())
-                .map(String::from);
-            episodes.push(Episode {
-                id: ep_id,
-                number: ep_num,
-                name,
-                duration,
-                image_url,
-            });
-        }
-        drop(lock);
-
-        self.episode_data.lock().await.extend(ep_map);
-        episodes.sort_unstable_by_key(|e| e.number);
-        Ok(episodes)
+    async fn videos(&self, entry: &MediaEntry) -> ProviderResult<Vec<Video>> {
+        parse_videos(entry, &fetch_json(self.client.get(&entry.slug)).await?)
     }
+}
 
-    async fn get_stream_url(
-        &self,
-        entry: &MediaEntry,
-        episode: Option<&Episode>,
-        season: Option<u32>,
-    ) -> ProviderResult<StreamUrl> {
-        let ep =
-            episode.ok_or_else(|| ProviderError::StreamExtraction("Episode required".into()))?;
-        let cached = self.episode_data.lock().await.get(&ep.id).cloned();
-        let (video_id, channel) = match cached {
-            Some(data) => data,
-            None => {
-                let s = season.ok_or_else(|| {
-                    ProviderError::StreamExtraction("Season required to fetch episode data".into())
-                })?;
-                self.get_seasons(entry).await?;
-                self.get_episodes(entry, s).await?;
-                self.episode_data
-                    .lock()
-                    .await
-                    .get(&ep.id)
-                    .cloned()
-                    .ok_or_else(|| {
-                        ProviderError::StreamExtraction("Episode data not found after fetch".into())
-                    })?
-            }
-        };
-
-        let tokens = self.get_bearer_tokens().await?;
-        let (endpoint, key) = tokens.get(&channel).ok_or_else(|| {
-            ProviderError::StreamExtraction(format!("No token for channel {channel}"))
-        })?;
-
-        let body = serde_json::json!({
-            "deviceInfo": {
-                "adBlocker": false,
-                "drmSupported": true
-            },
-            "videoId": video_id
-        });
-
-        let resp = self
-            .client
-            .post(endpoint)
-            .header("authorization", format!("Bearer {key}"))
-            .json(&body)
-            .send()
-            .await?;
-
-        let json: serde_json::Value = resp.json().await?;
-        let stream = json["data"]["attributes"]["streaming"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|v| v["url"].as_str())
-            .ok_or_else(|| {
-                ProviderError::StreamExtraction("No streaming URL in response".into())
-            })?;
-
-        Ok(StreamUrl {
-            url: stream.to_string(),
-            headers: Vec::new(),
-        })
-    }
-
-    fn catalog_limit(&self) -> usize {
-        0
-    }
-
-    async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let url = format!(
-            "{AURORA_BASE}/site/page/homepage/?include=default&filter[environment]={}&v=2",
-            self.env
-        );
-        let resp = self.client.get(&url).send().await?;
-        let json: serde_json::Value = resp.json().await?;
-        let blocks = json["blocks"].as_array().cloned().unwrap_or_default();
-
-        let mut entries = Vec::new();
-        let mut seen = HashSet::new();
-
-        for block in &blocks {
-            if block["type"].as_str() != Some("collectionBlock") {
-                continue;
-            }
-            if block["itemsType"].as_str() != Some("showpage") {
-                continue;
-            }
-            let items = match block["items"].as_array() {
-                Some(items) => items,
-                None => continue,
-            };
-            for item in items {
-                if item["pageType"].as_str() != Some("showpage") {
-                    continue;
-                }
-                let title = match item["title"].as_str().filter(|t| !t.is_empty()) {
-                    Some(t) => t.to_string(),
-                    None => continue,
-                };
-                let slug = match item["url"].as_str().filter(|s| !s.is_empty()) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                let parent_slug = item["parentUrl"].as_str().unwrap_or("");
-                let show_url = self.build_show_url(slug, parent_slug);
-                let id = provider_hash(&show_url);
-                if !seen.insert(id) {
-                    continue;
-                }
-                let image_url = item["image"]["url"].as_str().map(String::from);
-
-                entries.push(MediaEntry {
-                    id,
-                    name: title,
-                    alternative_names: Vec::new(),
-                    slug: show_url,
-                    media_type: MediaType::Series,
-                    year: None,
-                    image_url,
-                    description: item["description"]
+fn parse_videos(entry: &MediaEntry, json: &Value) -> ProviderResult<Vec<Video>> {
+    let blocks = json["blocks"]
+        .as_array()
+        .ok_or_else(|| ProviderError::Parse("No blocks in response".into()))?;
+    let show_id = SHOW_BLOCKS.iter().find_map(|kind| {
+        blocks
+            .iter()
+            .filter(|b| b["type"] == *kind)
+            .find_map(|b| b["items"][0]["show"]["id"].as_str())
+    });
+    let mut seen = HashSet::new();
+    Ok(blocks
+        .iter()
+        .filter(|b| b["type"].as_str().is_some_and(|t| SHOW_BLOCKS.contains(&t)))
+        .flat_map(|b| items(&b["items"]))
+        .filter(|item| show_id.is_none_or(|id| item["show"]["id"] == id))
+        .filter_map(|item| {
+            let id = video_id(item)?;
+            let season = u32::try_from(item["seasonNumber"].as_u64()?).ok()?;
+            let number = episode_number(item)?;
+            seen.insert(id.clone()).then(|| Video {
+                season,
+                episode: Episode {
+                    id: stable_hash(&format!("{}-{season}-{id}", entry.id)),
+                    number,
+                    name: item["title"]
                         .as_str()
-                        .filter(|s| !s.is_empty())
+                        .filter(|t| !t.is_empty())
+                        .map_or_else(|| format!("Episode {number}"), String::from),
+                    duration: item["videoDuration"]
+                        .as_u64()
+                        .filter(|ms| *ms > 0)
+                        .and_then(|ms| u32::try_from(ms / 60_000).ok()),
+                    image_url: ["poster", "image"]
+                        .iter()
+                        .find_map(|k| item[k]["src"].as_str())
+                        .or_else(|| item["image"]["url"].as_str())
                         .map(String::from),
-                    score: None,
-                    provider: 0,
-                    provider_name: String::new(),
-                    language: "it".to_string(),
-                });
-                if entries.len() >= limit {
-                    return Ok(entries);
-                }
-            }
-        }
-        Ok(entries)
+                },
+                realm: if item["channel"].is_null() {
+                    Realm::It
+                } else {
+                    Realm::Dplay
+                },
+                id,
+            })
+        })
+        .collect())
+}
+
+fn video_id(item: &Value) -> Option<String> {
+    match &item["id"] {
+        Value::String(id) => Some(id.clone()),
+        Value::Number(id) => Some(id.to_string()),
+        _ => None,
     }
 }
 
-fn show_id_from_blocks(blocks: &[serde_json::Value]) -> Option<String> {
-    for bt in &["sonicShowBlock", "sonicPlaylistBlock"] {
-        for block in blocks {
-            if block["type"].as_str() == Some(bt) {
-                if let Some(id) = block["items"]
-                    .as_array()
-                    .and_then(|items| items.first())
-                    .and_then(|item| item["show"]["id"].as_str())
-                {
-                    return Some(id.to_string());
-                }
-            }
-        }
+fn episode_number(item: &Value) -> Option<u32> {
+    if let Some(n) = item["episodeNumber"].as_u64() {
+        return u32::try_from(n).ok();
     }
-    None
-}
-
-fn video_id_from_json(ep: &serde_json::Value) -> Option<String> {
-    ep["id"]
-        .as_str()
-        .map(String::from)
-        .or_else(|| ep["id"].as_u64().map(|n| n.to_string()))
-        .or_else(|| ep["id"].as_i64().map(|n| n.to_string()))
-}
-
-fn episode_number(ep: &serde_json::Value) -> Option<u32> {
-    if let Some(n) = ep["episodeNumber"].as_u64() {
-        return Some(n as u32);
-    }
-    let title = ep["title"].as_str()?;
-    let rest = title.strip_prefix("Episodio ")?;
-    rest.split(|c: char| !c.is_ascii_digit())
+    item["title"]
+        .as_str()?
+        .strip_prefix("Episodio ")?
+        .split(|c: char| !c.is_ascii_digit())
         .next()?
         .parse()
         .ok()
 }
 
-fn channel_from_json(ep: &serde_json::Value) -> String {
-    if ep["channel"].is_null() {
-        "X-REALM-IT".to_string()
-    } else {
-        "X-REALM-DPLAY".to_string()
+#[async_trait]
+impl Provider for Aurora {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>> {
+        let url = format!(
+            "{BASE}/site/search/page/?include=default&filter[environment]={}&v=2&page[number]=1&page[size]=20",
+            self.env
+        );
+        self.parse_search(&fetch_json(self.client.get(url).query(&[("q", query)])).await?)
+    }
+
+    async fn seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<u32>> {
+        let seasons: BTreeSet<u32> = self.videos(entry).await?.iter().map(|v| v.season).collect();
+        Ok(seasons.into_iter().collect())
+    }
+
+    async fn episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>> {
+        let mut episodes: Vec<Episode> = self
+            .videos(entry)
+            .await?
+            .into_iter()
+            .filter(|v| v.season == season)
+            .map(|v| v.episode)
+            .collect();
+        episodes.sort_by_key(|e| e.number);
+        Ok(episodes)
+    }
+
+    async fn stream(
+        &self,
+        entry: &MediaEntry,
+        _season: Option<u32>,
+        episode: Option<&Episode>,
+    ) -> ProviderResult<StreamUrl> {
+        let wanted =
+            episode.ok_or_else(|| ProviderError::StreamExtraction("Episode required".into()))?;
+        let home = self.client.get(format!(
+            "{BASE}/site/page/homepage/?include=default&filter[environment]=realtime&v=2"
+        ));
+        let (videos, home) = tokio::try_join!(self.videos(entry), fetch_json(home))?;
+        let video = videos
+            .into_iter()
+            .find(|v| v.episode.id == wanted.id)
+            .ok_or_else(|| ProviderError::StreamExtraction("Episode data not found".into()))?;
+        let token = home["userMeta"]["realm"][video.realm.key()]
+            .as_str()
+            .ok_or_else(|| {
+                ProviderError::StreamExtraction(format!(
+                    "No token for channel {}",
+                    video.realm.key()
+                ))
+            })?;
+        let playback = fetch_json(
+            self.client
+                .post(video.realm.playback())
+                .bearer_auth(token)
+                .json(&json!({
+                    "deviceInfo": { "adBlocker": false, "drmSupported": true },
+                    "videoId": video.id
+                })),
+        )
+        .await?;
+        let url = playback["data"]["attributes"]["streaming"][0]["url"]
+            .as_str()
+            .ok_or_else(|| {
+                ProviderError::StreamExtraction("No streaming URL in response".into())
+            })?;
+        Ok(StreamUrl {
+            url: url.to_owned(),
+            headers: Vec::new(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::MediaType;
+
+    fn aurora() -> Aurora {
+        Aurora::new(Client::new(), "nove", "Nove")
+    }
+
+    #[test]
+    fn show_url_and_id_are_stable() {
+        let entry = aurora().show("Cash or Trash", "Cash Or Trash", "programmi");
+        assert_eq!(
+            entry.slug,
+            "https://public.aurora.enhanced.live/site/page/cash-or-trash/?include=default&filter[environment]=nove&v=2&parent_slug=programmi"
+        );
+        assert_eq!(entry.id, stable_hash(&entry.slug));
+        assert_eq!(entry.media_type, MediaType::Series);
+    }
+
+    #[test]
+    fn parse_search_keeps_titled_show_pages() {
+        let json = json!({ "data": [
+            { "type": "showpage", "title": "Show", "slug": "show", "parentSlug": "p",
+              "dateLastModified": "2024-05-01T00:00:00Z", "image": { "url": "https://img" } },
+            { "type": "showpage", "title": "" },
+            { "type": "video", "title": "Clip" }
+        ]});
+        let entries = aurora().parse_search(&json).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "Show");
+        assert_eq!(entries[0].year.as_deref(), Some("2024"));
+        assert_eq!(entries[0].image_url.as_deref(), Some("https://img"));
+        assert!(aurora().parse_search(&json!({})).is_err());
+    }
+
+    #[test]
+    fn parse_videos_filters_to_show_and_dedupes() {
+        let entry = MediaEntry {
+            id: 7,
+            ..Default::default()
+        };
+        let json = json!({ "blocks": [
+            { "type": "otherBlock", "items": [{ "id": "x", "seasonNumber": 1, "episodeNumber": 1 }] },
+            { "type": "sonicPlaylistBlock", "items": [
+                { "id": "b", "show": { "id": "s" }, "seasonNumber": 2, "title": "Episodio 3 - Finale",
+                  "channel": { "id": 1 }, "poster": { "src": "https://poster" } }
+            ]},
+            { "type": "sonicShowBlock", "items": [
+                { "id": 11, "show": { "id": "s" }, "seasonNumber": 1, "episodeNumber": 1,
+                  "videoDuration": 1_800_000, "image": { "url": "https://image" } },
+                { "id": 11, "show": { "id": "s" }, "seasonNumber": 1, "episodeNumber": 1 },
+                { "id": "c", "show": { "id": "other" }, "seasonNumber": 1, "episodeNumber": 2 },
+                { "id": "d", "show": { "id": "s" }, "seasonNumber": 1 }
+            ]}
+        ]});
+        let videos = parse_videos(&entry, &json).unwrap();
+        assert_eq!(videos.len(), 2);
+        assert_eq!((videos[0].season, videos[0].episode.number), (2, 3));
+        assert_eq!(videos[0].realm, Realm::Dplay);
+        assert_eq!(videos[0].episode.name, "Episodio 3 - Finale");
+        assert_eq!(
+            videos[0].episode.image_url.as_deref(),
+            Some("https://poster")
+        );
+        assert_eq!(videos[1].id, "11");
+        assert_eq!(videos[1].realm, Realm::It);
+        assert_eq!(videos[1].episode.id, stable_hash("7-1-11"));
+        assert_eq!(videos[1].episode.name, "Episode 1");
+        assert_eq!(videos[1].episode.duration, Some(30));
+        assert_eq!(
+            videos[1].episode.image_url.as_deref(),
+            Some("https://image")
+        );
+    }
+
+    #[test]
+    fn parse_videos_requires_blocks() {
+        assert!(parse_videos(&MediaEntry::default(), &json!({})).is_err());
     }
 }

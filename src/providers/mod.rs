@@ -4,19 +4,27 @@ mod models;
 mod raiplay;
 mod streaming_community;
 
-pub use animeunity::AnimeUnityProvider;
-pub use aurora::AuroraProvider;
 pub use models::*;
-pub use raiplay::RaiPlayProvider;
-pub use streaming_community::StreamingCommunityProvider;
 
-pub(crate) const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+use animeunity::AnimeUnity;
+use async_trait::async_trait;
+use aurora::Aurora;
+use raiplay::RaiPlay;
+use regex::Regex;
+use reqwest::{Client, ClientBuilder, RequestBuilder, Url};
+use serde::Deserialize;
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
+use streaming_community::StreamingCommunity;
+use tokio::task::JoinSet;
+
+pub const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
 
-pub(crate) const DOMAINS_URL: &str = "";
-pub(crate) const DOMAINS_JSON: &str = include_str!("../../assets/domains.json");
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ProviderError {
     Network(String),
     Parse(String),
@@ -49,232 +57,399 @@ impl From<serde_json::Error> for ProviderError {
 
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
-#[async_trait::async_trait]
+#[async_trait]
 pub trait Provider: Send + Sync {
     fn name(&self) -> &'static str;
-    async fn init(&self) {}
     async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>>;
-    async fn get_seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<Season>>;
-    async fn get_episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>>;
-    async fn get_stream_url(
+    async fn seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<u32>>;
+    async fn episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>>;
+    async fn stream(
         &self,
         entry: &MediaEntry,
-        episode: Option<&Episode>,
         season: Option<u32>,
+        episode: Option<&Episode>,
     ) -> ProviderResult<StreamUrl>;
-    async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>>;
-    async fn get_catalog_more(&self) -> ProviderResult<Vec<MediaEntry>> {
+    async fn catalog(&self) -> ProviderResult<Vec<MediaEntry>> {
         Ok(Vec::new())
     }
-    fn catalog_limit(&self) -> usize {
-        0
+    async fn catalog_more(&self) -> ProviderResult<Vec<MediaEntry>> {
+        Ok(Vec::new())
     }
 }
 
-pub fn provider_hash(s: &str) -> u64 {
-    s.bytes()
-        .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64))
-}
+#[derive(Clone)]
+pub struct Providers(Arc<[Arc<dyn Provider>]>);
 
-pub(crate) async fn resolve_domain_url(
-    client: &reqwest::Client,
-    key: &str,
-    base_url: &std::sync::RwLock<String>,
-) {
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(DOMAINS_JSON) {
-        if let Some(url) = json[key]["full_url"].as_str() {
-            let url = url.trim_end_matches('/').to_string();
-            if url.starts_with("http") {
-                eprintln!("[StreamVault] Using {key} domain from domains.json: {url}");
-                *base_url.write().unwrap_or_else(|e| e.into_inner()) = url;
-                return;
+impl Providers {
+    pub fn new(timeout: Duration) -> Self {
+        let shared = build(client(timeout));
+        let list: Vec<Arc<dyn Provider>> = vec![
+            Arc::new(StreamingCommunity::new(build(
+                client(timeout).cookie_store(true),
+            ))),
+            Arc::new(RaiPlay::new(shared.clone())),
+            Arc::new(Aurora::new(shared.clone(), "nove", "Nove")),
+            Arc::new(Aurora::new(shared.clone(), "realtime", "RealTime")),
+            Arc::new(Aurora::new(shared.clone(), "dmaxit", "DMAX")),
+            Arc::new(Aurora::new(shared.clone(), "foodnetwork", "FoodNetwork")),
+            Arc::new(Aurora::new(
+                shared.clone(),
+                "discoverychannelit",
+                "Discovery",
+            )),
+            Arc::new(AnimeUnity::new(shared)),
+        ];
+        Self(list.into())
+    }
+
+    pub fn get(&self, index: usize) -> ProviderResult<Arc<dyn Provider>> {
+        self.0
+            .get(index)
+            .cloned()
+            .ok_or_else(|| ProviderError::Parse(format!("Unknown provider {index}")))
+    }
+
+    pub async fn search(&self, query: &str) -> Vec<MediaEntry> {
+        self.gather("search", |p| {
+            let query = query.to_owned();
+            async move { p.search(&query).await }
+        })
+        .await
+    }
+
+    pub async fn catalog(&self) -> Vec<MediaEntry> {
+        self.gather("catalog", |p| async move { p.catalog().await })
+            .await
+    }
+
+    pub async fn catalog_more(
+        &self,
+        seen: &mut HashSet<(usize, u64)>,
+    ) -> ProviderResult<Option<Vec<MediaEntry>>> {
+        loop {
+            let mut fresh = Vec::new();
+            let mut exhausted = true;
+            let mut failure = None;
+            for (index, provider) in self.0.iter().enumerate() {
+                match provider.catalog_more().await {
+                    Ok(batch) => {
+                        exhausted &= batch.is_empty();
+                        fresh.extend(
+                            tag(index, provider.name(), batch).filter(|e| seen.insert(e.key())),
+                        );
+                    }
+                    Err(e) => failure = Some(e),
+                }
+            }
+            if !fresh.is_empty() {
+                return Ok(Some(fresh));
+            }
+            if let Some(e) = failure {
+                return Err(e);
+            }
+            if exhausted {
+                return Ok(None);
             }
         }
     }
 
-    if DOMAINS_URL.is_empty() {
-        eprintln!("[StreamVault] No domains.json entry for {key}; remote lookup disabled");
-        return;
-    }
-
-    for attempt in 0u64..3 {
-        match client.get(DOMAINS_URL).send().await {
-            Ok(resp) => match resp.json::<serde_json::Value>().await {
-                Ok(json) => {
-                    if let Some(url) = json[key]["full_url"].as_str() {
-                        let url = url.trim_end_matches('/').to_string();
-                        if url.starts_with("http") {
-                            eprintln!("[StreamVault] Resolved {key} domain: {url}");
-                            *base_url.write().unwrap_or_else(|e| e.into_inner()) = url;
-                            return;
-                        }
+    async fn gather<F, Fut>(&self, action: &'static str, call: F) -> Vec<MediaEntry>
+    where
+        F: Fn(Arc<dyn Provider>) -> Fut,
+        Fut: Future<Output = ProviderResult<Vec<MediaEntry>>> + Send + 'static,
+    {
+        let mut tasks = JoinSet::new();
+        for (index, provider) in self.0.iter().enumerate() {
+            let name = provider.name();
+            let request = call(provider.clone());
+            tasks.spawn(async move {
+                match request.await {
+                    Ok(entries) => tag(index, name, entries).collect(),
+                    Err(e) => {
+                        eprintln!("[StreamVault] {name} {action} failed: {e}");
+                        Vec::new()
                     }
                 }
-                Err(e) => eprintln!("[StreamVault] {key} domain parse error: {e}"),
-            },
-            Err(e) => eprintln!("[StreamVault] {key} domain fetch error: {e}"),
+            });
         }
-        if attempt < 2 {
-            tokio::time::sleep(std::time::Duration::from_millis(500 * (attempt + 1))).await;
+        let mut entries = Vec::new();
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(batch) => entries.extend(batch),
+                Err(e) => eprintln!("[StreamVault] {action} task failed: {e}"),
+            }
         }
+        entries
     }
-    eprintln!("[StreamVault] Failed to resolve {key} domain after 3 attempts");
 }
 
-pub(crate) fn parse_vixcloud_hls(script: &str) -> Option<String> {
-    use regex::Regex;
-    use std::sync::LazyLock;
+fn tag(index: usize, name: &str, entries: Vec<MediaEntry>) -> impl Iterator<Item = MediaEntry> {
+    entries.into_iter().map(move |entry| MediaEntry {
+        provider: index,
+        provider_name: name.to_owned(),
+        ..entry
+    })
+}
 
-    static TOKEN_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"(?:['"]token['"]|token)\s*:\s*['"]([^'"]+)['"]"#).unwrap());
-    static EXPIRES_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?:['"]expires['"]|expires)\s*:\s*['"]([^'"]+)['"]"#).unwrap()
+fn client(timeout: Duration) -> ClientBuilder {
+    Client::builder().user_agent(USER_AGENT).timeout(timeout)
+}
+
+fn build(builder: ClientBuilder) -> Client {
+    builder.build().expect("HTTP client must initialize")
+}
+
+async fn fetch_json(request: RequestBuilder) -> ProviderResult<Value> {
+    Ok(request.send().await?.error_for_status()?.json().await?)
+}
+
+async fn fetch_text(request: RequestBuilder) -> ProviderResult<String> {
+    Ok(request.send().await?.error_for_status()?.text().await?)
+}
+
+fn domain(key: &str) -> String {
+    #[derive(Deserialize)]
+    struct Domain {
+        full_url: String,
+    }
+    static DOMAINS: LazyLock<HashMap<String, Domain>> = LazyLock::new(|| {
+        serde_json::from_str(include_str!("../../assets/domains.json"))
+            .expect("assets/domains.json must be valid")
     });
-    static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?:['"]url['"]|url)\s*:\s*['"](?P<url>https?://[^'"]+)['"]"#).unwrap()
-    });
-    static FHD_RE: LazyLock<Regex> =
+    DOMAINS
+        .get(key)
+        .map(|d| d.full_url.trim_end_matches('/').to_owned())
+        .unwrap_or_default()
+}
+
+fn items(value: &Value) -> impl Iterator<Item = &Value> {
+    value.as_array().into_iter().flatten()
+}
+
+fn non_blank(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+pub fn stable_hash(text: &str) -> u64 {
+    text.bytes()
+        .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)))
+}
+
+fn vixcloud_playlist(script: &str) -> Option<String> {
+    static TOKEN: LazyLock<Regex> = LazyLock::new(|| field("token", "[^'\"]+"));
+    static EXPIRES: LazyLock<Regex> = LazyLock::new(|| field("expires", "[^'\"]+"));
+    static URL: LazyLock<Regex> = LazyLock::new(|| field("url", "https?://[^'\"]+"));
+    static FHD: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"window\.canPlayFHD\s*=\s*(true|false)").unwrap());
 
-    let token = TOKEN_RE.captures(script)?.get(1)?.as_str();
-    let expires = EXPIRES_RE.captures(script)?.get(1)?.as_str();
-    let base_url = URL_RE.captures(script)?.get(1)?.as_str();
-    let can_fhd = FHD_RE
-        .captures(script)
-        .and_then(|c| c.get(1))
-        .is_some_and(|m| m.as_str() == "true");
-
-    let mut parsed = url::Url::parse(base_url).ok()?;
-    let has_b = parsed.query_pairs().any(|(k, v)| k == "b" && v == "1");
+    let capture = |re: &Regex| re.captures(script).map(|c| c[1].to_owned());
+    let token = capture(&TOKEN)?;
+    let expires = capture(&EXPIRES)?;
+    let mut url = Url::parse(&capture(&URL)?).ok()?;
+    let fhd = capture(&FHD).is_some_and(|v| v == "true");
+    let bandwidth = url.query_pairs().any(|(k, v)| k == "b" && v == "1");
     {
-        let mut q = parsed.query_pairs_mut();
-        q.clear();
-        if can_fhd {
-            q.append_pair("h", "1");
+        let mut query = url.query_pairs_mut();
+        query.clear();
+        if fhd {
+            query.append_pair("h", "1");
         }
-        if has_b {
-            q.append_pair("b", "1");
+        if bandwidth {
+            query.append_pair("b", "1");
         }
-        q.append_pair("token", token);
-        q.append_pair("expires", expires);
+        query
+            .append_pair("token", &token)
+            .append_pair("expires", &expires);
     }
-    Some(parsed.to_string())
+    Some(url.into())
+}
+
+fn field(name: &str, value: &str) -> Regex {
+    Regex::new(&format!(
+        r#"(?:['"]{name}['"]|{name})\s*:\s*['"]({value})['"]"#
+    ))
+    .unwrap()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn movie() -> MediaEntry {
-        MediaEntry {
-            id: 1,
-            name: "Inception".into(),
-            alternative_names: Vec::new(),
-            slug: "inception".into(),
-            media_type: MediaType::Movie,
-            year: Some("2010".into()),
-            image_url: None,
-            description: None,
-            score: None,
-            provider: 0,
-            provider_name: String::new(),
-            language: String::new(),
+    struct Fake {
+        name: &'static str,
+        pages: std::sync::Mutex<Vec<ProviderResult<Vec<MediaEntry>>>>,
+    }
+
+    fn fake(name: &'static str, pages: Vec<ProviderResult<Vec<MediaEntry>>>) -> Arc<dyn Provider> {
+        Arc::new(Fake {
+            name,
+            pages: std::sync::Mutex::new(pages),
+        })
+    }
+
+    impl Fake {
+        fn next(&self) -> ProviderResult<Vec<MediaEntry>> {
+            let mut pages = self.pages.lock().unwrap();
+            if pages.is_empty() {
+                Ok(Vec::new())
+            } else {
+                pages.remove(0)
+            }
         }
     }
 
-    fn series() -> MediaEntry {
-        MediaEntry {
-            id: 2,
-            name: "Lost".into(),
-            alternative_names: Vec::new(),
-            slug: "lost".into(),
-            media_type: MediaType::Series,
-            year: None,
-            image_url: None,
-            description: None,
-            score: None,
-            provider: 0,
-            provider_name: String::new(),
-            language: String::new(),
+    #[async_trait]
+    impl Provider for Fake {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        async fn search(&self, _: &str) -> ProviderResult<Vec<MediaEntry>> {
+            self.next()
+        }
+        async fn seasons(&self, _: &MediaEntry) -> ProviderResult<Vec<u32>> {
+            Ok(Vec::new())
+        }
+        async fn episodes(&self, _: &MediaEntry, _: u32) -> ProviderResult<Vec<Episode>> {
+            Ok(Vec::new())
+        }
+        async fn stream(
+            &self,
+            _: &MediaEntry,
+            _: Option<u32>,
+            _: Option<&Episode>,
+        ) -> ProviderResult<StreamUrl> {
+            Err(ProviderError::StreamExtraction("fake".into()))
+        }
+        async fn catalog_more(&self) -> ProviderResult<Vec<MediaEntry>> {
+            self.next()
         }
     }
 
-    #[test]
-    fn is_movie_true() {
-        assert!(movie().is_movie());
+    fn entry(id: u64) -> MediaEntry {
+        MediaEntry {
+            id,
+            ..Default::default()
+        }
     }
-    #[test]
-    fn is_movie_false() {
-        assert!(!series().is_movie());
-    }
-    #[test]
-    fn display_title_with_year() {
-        assert_eq!(movie().display_title(), "Inception (2010)");
-    }
-    #[test]
-    fn display_title_without_year() {
-        assert_eq!(series().display_title(), "Lost");
-    }
-    #[test]
-    fn year_display_with() {
-        assert_eq!(movie().year_display(), "2010");
-    }
-    #[test]
-    fn year_display_without() {
-        assert_eq!(series().year_display(), "");
+
+    fn failure() -> ProviderResult<Vec<MediaEntry>> {
+        Err(ProviderError::Network("down".into()))
     }
 
     #[test]
-    fn provider_error_display() {
+    fn provider_order_is_stable_because_indices_are_persisted() {
+        let names: Vec<_> = Providers::new(Duration::from_secs(1))
+            .0
+            .iter()
+            .map(|p| p.name())
+            .collect();
         assert_eq!(
-            ProviderError::Network("timeout".into()).to_string(),
-            "Network error: timeout"
-        );
-        assert_eq!(
-            ProviderError::Parse("bad json".into()).to_string(),
-            "Parse error: bad json"
-        );
-        assert_eq!(
-            ProviderError::StreamExtraction("no token".into()).to_string(),
-            "Stream extraction error: no token"
+            names,
+            [
+                "StreamingCommunity",
+                "RaiPlay",
+                "Nove",
+                "RealTime",
+                "DMAX",
+                "FoodNetwork",
+                "Discovery",
+                "AnimeUnity"
+            ]
         );
     }
 
     #[test]
-    fn media_entry_serde_roundtrip() {
-        let m = movie();
-        let json = serde_json::to_string(&m).unwrap();
-        let loaded: MediaEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(loaded.id, 1);
-        assert_eq!(loaded.name, "Inception");
-        assert!(loaded.is_movie());
+    fn get_rejects_unknown_index() {
+        let providers = Providers(vec![fake("A", vec![])].into());
+        assert_eq!(providers.get(0).unwrap().name(), "A");
+        assert!(providers.get(1).is_err());
+    }
+
+    #[tokio::test]
+    async fn search_tags_entries_and_skips_failed_providers() {
+        let providers = Providers(
+            vec![
+                fake("A", vec![failure()]),
+                fake("B", vec![Ok(vec![entry(7)])]),
+            ]
+            .into(),
+        );
+        let found = providers.search("q").await;
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].key(), (1, 7));
+        assert_eq!(found[0].provider_name, "B");
+    }
+
+    #[tokio::test]
+    async fn catalog_more_skips_duplicate_pages() {
+        let providers = Providers(
+            vec![fake(
+                "A",
+                vec![Ok(vec![entry(1)]), Ok(vec![entry(1), entry(2)])],
+            )]
+            .into(),
+        );
+        let mut seen = HashSet::from([(0, 1)]);
+        let fresh = providers.catalog_more(&mut seen).await.unwrap().unwrap();
+        assert_eq!(fresh.iter().map(|e| e.id).collect::<Vec<_>>(), [2]);
+    }
+
+    #[tokio::test]
+    async fn catalog_more_reports_exhaustion_and_failure() {
+        let done = Providers(vec![fake("A", vec![])].into());
+        assert!(
+            done.catalog_more(&mut HashSet::new())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let broken = Providers(vec![fake("A", vec![failure()])].into());
+        assert!(broken.catalog_more(&mut HashSet::new()).await.is_err());
     }
 
     #[test]
-    fn season_serde_roundtrip() {
-        let s = Season {
-            id: 10,
-            number: 3,
-            name: Some("Season 3".into()),
-        };
-        let json = serde_json::to_string(&s).unwrap();
-        let loaded: Season = serde_json::from_str(&json).unwrap();
-        assert_eq!(loaded.number, 3);
-        assert_eq!(loaded.name.as_deref(), Some("Season 3"));
+    fn embedded_domains_resolve_to_https_without_trailing_slash() {
+        for key in ["streamingcommunity", "animeunity"] {
+            let url = domain(key);
+            assert!(url.starts_with("https://"), "{key}: {url}");
+            assert!(!url.ends_with('/'), "{key}: {url}");
+        }
+        assert_eq!(domain("missing"), "");
     }
 
     #[test]
-    fn episode_serde_roundtrip() {
-        let ep = Episode {
-            id: 100,
-            number: 5,
-            name: "Pilot".into(),
-            duration: Some(42),
-            image_url: None,
-        };
-        let json = serde_json::to_string(&ep).unwrap();
-        let loaded: Episode = serde_json::from_str(&json).unwrap();
-        assert_eq!(loaded.number, 5);
-        assert_eq!(loaded.duration, Some(42));
+    fn stable_hash_is_pinned_because_ids_are_persisted() {
+        assert_eq!(stable_hash("abc"), 96354);
+        assert_eq!(stable_hash(""), 0);
+    }
+
+    #[test]
+    fn non_blank_trims_and_rejects_empty() {
+        assert_eq!(non_blank("  x  ").as_deref(), Some("x"));
+        assert_eq!(non_blank("   "), None);
+    }
+
+    #[test]
+    fn vixcloud_playlist_builds_signed_url() {
+        let script = "window.masterPlaylist = { params: { 'token': 'abc', 'expires': '123', }, url: 'https://vixcloud.co/playlist/9?b=1&x=2', }; window.canPlayFHD = true";
+        assert_eq!(
+            vixcloud_playlist(script).as_deref(),
+            Some("https://vixcloud.co/playlist/9?h=1&b=1&token=abc&expires=123")
+        );
+    }
+
+    #[test]
+    fn vixcloud_playlist_omits_optional_flags() {
+        let script = r#"token: "t", expires: "e", url: "https://v.co/p/1""#;
+        assert_eq!(
+            vixcloud_playlist(script).as_deref(),
+            Some("https://v.co/p/1?token=t&expires=e")
+        );
+    }
+
+    #[test]
+    fn vixcloud_playlist_requires_token() {
+        assert!(vixcloud_playlist(r#"expires: "e", url: "https://v.co/p/1""#).is_none());
     }
 }

@@ -1,33 +1,23 @@
-use crate::config::WatchItem;
-use crate::providers::MediaEntry;
-use crate::style::LOGO_SVG;
+use super::LOGO;
+use super::poster::{PosterCard, card_background};
+use crate::app::AppState;
+use crate::state::WatchItem;
 use dioxus::prelude::*;
 
-use super::helpers::{poster_color, PosterCard};
-
 #[component]
-pub fn HomeView(
-    catalog: ReadSignal<Vec<MediaEntry>>,
-    is_loading: ReadSignal<bool>,
-    is_loading_more: ReadSignal<bool>,
-    continue_watching: ReadSignal<Vec<WatchItem>>,
-    on_select: EventHandler<MediaEntry>,
-    on_resume: EventHandler<WatchItem>,
-    on_remove_watch: EventHandler<(usize, u64)>,
-) -> Element {
-    let items = catalog();
-    let loading = is_loading();
-    let watching = continue_watching();
+pub fn HomeView() -> Element {
+    let app = use_context::<AppState>();
+    let catalog = app.catalog.items.read();
+    let watching = app.watch.read();
 
-    if items.is_empty() && loading {
+    if catalog.is_empty() && *app.catalog.loading.read() {
         return rsx! {
             div { class: "splash-screen",
-                div { class: "splash-logo", dangerous_inner_html: LOGO_SVG }
+                div { class: "splash-logo", dangerous_inner_html: LOGO }
             }
         };
     }
-
-    if items.is_empty() {
+    if catalog.is_empty() && watching.is_empty() {
         return rsx! {
             div { class: "center-msg", span { class: "empty-msg", "No media available" } }
         };
@@ -36,28 +26,29 @@ pub fn HomeView(
     rsx! {
         div { class: "catalog-view",
             if !watching.is_empty() {
-                div { class: "continue-section",
+                section { class: "continue-section",
                     div { class: "section-header",
-                        span { class: "section-title", "Continue Watching" }
+                        h2 { class: "section-title", "Continue Watching" }
                     }
                     div { class: "continue-row",
                         for item in watching.iter() {
                             ContinueCard {
                                 key: "{item.entry.provider}-{item.entry.id}",
                                 item: item.clone(),
-                                on_resume,
-                                on_remove: on_remove_watch,
                             }
                         }
                     }
                 }
             }
+            if catalog.is_empty() {
+                p { class: "empty-msg catalog-empty", "No media available" }
+            }
             div { class: "media-grid",
-                for entry in items.iter() {
-                    PosterCard { key: "{entry.provider}-{entry.id}", entry: entry.clone(), on_select }
+                for entry in catalog.iter() {
+                    PosterCard { key: "{entry.provider}-{entry.id}", entry: entry.clone() }
                 }
             }
-            if is_loading_more() {
+            if *app.catalog.loading_more.read() {
                 div { class: "loading-msg", "Loading more..." }
             }
         }
@@ -65,57 +56,41 @@ pub fn HomeView(
 }
 
 #[component]
-fn ContinueCard(
-    item: WatchItem,
-    on_resume: EventHandler<WatchItem>,
-    on_remove: EventHandler<(usize, u64)>,
-) -> Element {
-    let bg = poster_color(&item.entry.name);
-    let img = item
+fn ContinueCard(item: WatchItem) -> Element {
+    let app = use_context::<AppState>();
+    let image = item
         .episode
         .as_ref()
-        .and_then(|ep| ep.image_url.as_ref())
-        .or(item.entry.image_url.as_ref());
-    let style = match img {
-        Some(url) => format!("background-color: {bg}; background-image: url('{url}');"),
-        None => format!("background-color: {bg};"),
+        .and_then(|ep| ep.image_url.as_deref())
+        .or(item.entry.image_url.as_deref());
+    let background = card_background(&item.entry.name, image);
+    let subtitle = match (item.season, &item.episode) {
+        (Some(season), Some(ep)) => Some(format!("S{season:02}E{:02} - {}", ep.number, ep.name)),
+        _ => None,
     };
-    let pct = format!("{:.1}%", item.progress_pct());
+    let progress = format!("{:.1}%", item.progress_pct());
     let name = item.entry.name.clone();
-    let subtitle = match (&item.season, &item.episode) {
-        (Some(s), Some(ep)) => format!("S{s:02}E{:02} - {}", ep.number, ep.name),
-        _ => String::new(),
-    };
-    let provider = item.entry.provider;
-    let id = item.entry.id;
-
+    let key = item.entry.key();
     rsx! {
-        button {
-            class: "continue-card",
-            style: "{style}",
-            onclick: {
-                let item = item.clone();
-                move |_| on_resume.call(item.clone())
-            },
+        div { class: "continue-card", style: "{background}",
             button {
-                class: "continue-remove",
-                onclick: move |e: Event<MouseData>| {
-                    e.stop_propagation();
-                    on_remove.call((provider, id));
-                },
-            span {
-                class: "continue-remove-icon",
-                    "✕"
+                class: "continue-open",
+                onclick: move |_| app.resume(item.clone()),
+                div { class: "continue-overlay",
+                    div { class: "continue-name", "{name}" }
+                    if let Some(subtitle) = subtitle {
+                        div { class: "continue-episode", "{subtitle}" }
+                    }
+                    div { class: "continue-progress",
+                        div { class: "continue-progress-bar", style: "width: {progress};" }
+                    }
                 }
             }
-            div { class: "continue-overlay",
-                div { class: "continue-name", "{name}" }
-                if !subtitle.is_empty() {
-                    div { class: "continue-episode", "{subtitle}" }
-                }
-                div { class: "continue-progress",
-                    div { class: "continue-progress-bar", style: "width: {pct};" }
-                }
+            button {
+                class: "continue-remove",
+                aria_label: "Remove {name} from Continue Watching",
+                onclick: move |_| app.remove_watch(key),
+                span { class: "continue-remove-icon", "✕" }
             }
         }
     }

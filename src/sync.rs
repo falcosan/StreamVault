@@ -1,44 +1,44 @@
-use crate::config::{
-    player_prefs_path, read_json, snapshot_path, watch_items_path, write_json_unlocked, AppConfig,
-    PlayerPrefs, WatchItem, FS_LOCK,
-};
+use crate::config::{SNAPSHOT_FILE, config_dir, read_json, state_dir, write_json};
+use crate::state::{PlayerPrefs, WatchItem, parse_items, prefs_path, watch_path};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const TICK_SECS: u64 = 10;
+const TICK: Duration = Duration::from_secs(10);
 const PULL_INTERVAL_MS: u64 = 60_000;
 const MAX_ITEMS: usize = 100;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct SyncConfig {
-    pub enabled: bool,
-    pub endpoint: String,
-    pub token: String,
+    enabled: bool,
+    endpoint: String,
+    token: String,
+}
+
+impl SyncConfig {
+    pub fn load() -> Option<Self> {
+        let config: Self = read_json(&config_dir().join("sync.json")).ok()?;
+        (config.enabled && !config.endpoint.trim().is_empty() && !config.token.trim().is_empty())
+            .then_some(config)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct SyncDoc {
-    pub rev: u64,
-    pub prefs_updated_at: u64,
+struct SyncDoc {
+    rev: u64,
+    prefs_updated_at: u64,
     #[serde(deserialize_with = "lenient_items")]
-    pub watch: Vec<WatchItem>,
-    pub stamps: HashMap<String, u64>,
-    pub prefs: Option<PlayerPrefs>,
+    watch: Vec<WatchItem>,
+    stamps: HashMap<String, u64>,
+    prefs: Option<PlayerPrefs>,
 }
 
 fn lenient_items<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<WatchItem>, D::Error> {
-    let raw: Vec<serde_json::Value> = Vec::deserialize(d)?;
-    Ok(raw
-        .into_iter()
-        .filter_map(|v| serde_json::from_value(v).ok())
-        .collect())
+    Vec::deserialize(d).map(parse_items)
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -52,12 +52,6 @@ struct Snapshot {
 struct LedgerEntry {
     stamp: u64,
     item: WatchItem,
-}
-
-#[derive(Debug)]
-pub struct MergedState {
-    pub watch: Vec<WatchItem>,
-    pub prefs: PlayerPrefs,
 }
 
 #[derive(Deserialize)]
@@ -86,12 +80,6 @@ enum PushOutcome {
     Failed,
 }
 
-enum FileState<T> {
-    Data(T),
-    Missing,
-    Unreadable,
-}
-
 struct LocalState {
     watch: Vec<WatchItem>,
     prefs: PlayerPrefs,
@@ -100,84 +88,23 @@ struct LocalState {
     missing: bool,
 }
 
-static STARTED: AtomicBool = AtomicBool::new(false);
-
-pub fn start() -> Option<UnboundedReceiver<MergedState>> {
-    let cfg: SyncConfig = read_json(&AppConfig::config_dir().join("sync.json"))?;
-    if !cfg.enabled || cfg.endpoint.trim().is_empty() || cfg.token.trim().is_empty() {
-        return None;
-    }
-    if STARTED.swap(true, Ordering::SeqCst) {
-        return None;
-    }
-    let (tx, rx) = unbounded_channel();
-    std::thread::Builder::new()
-        .name("streamvault-sync".into())
-        .spawn(move || {
-            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                rt.block_on(run(cfg, tx));
-            }
-        })
-        .ok()?;
-    Some(rx)
+struct Remote<'a> {
+    config: &'a SyncConfig,
+    client: reqwest::Client,
 }
 
-fn load_state<T: serde::de::DeserializeOwned>(path: &Path) -> FileState<T> {
-    match fs::read_to_string(path) {
-        Ok(s) => serde_json::from_str(&s).map_or(FileState::Unreadable, FileState::Data),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => FileState::Missing,
-        Err(_) => FileState::Unreadable,
-    }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn mtime_ms(path: &Path) -> u64 {
-    fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| (d.as_millis() as u64).min(now_ms()))
-        .unwrap_or_else(now_ms)
-}
-
-fn read_local(base: &SyncDoc) -> Option<LocalState> {
-    let (watch, watch_missing) = match load_state::<Vec<WatchItem>>(&watch_items_path()) {
-        FileState::Data(w) => (w, false),
-        FileState::Missing if base.watch.is_empty() => (Vec::new(), true),
-        _ => return None,
+pub async fn run(config: SyncConfig, mut on_merge: impl FnMut(Vec<WatchItem>, PlayerPrefs)) {
+    let remote = Remote {
+        config: &config,
+        client: reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_default(),
     };
-    let (prefs, prefs_missing) = match load_state::<PlayerPrefs>(&player_prefs_path()) {
-        FileState::Data(p) => (p, false),
-        FileState::Missing => (base.prefs.clone().unwrap_or_default(), true),
-        FileState::Unreadable => return None,
-    };
-    Some(LocalState {
-        watch,
-        prefs,
-        watch_mtime: mtime_ms(&watch_items_path()),
-        prefs_mtime: mtime_ms(&player_prefs_path()),
-        missing: watch_missing || prefs_missing,
-    })
-}
-
-async fn run(cfg: SyncConfig, tx: UnboundedSender<MergedState>) {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
     let mut snap: Snapshot = read_json(&snapshot_path()).unwrap_or_default();
-    let mut last_pull = 0u64;
-    let mut cooldown_until = 0u64;
-    let mut ticker = tokio::time::interval(Duration::from_secs(TICK_SECS));
+    let mut last_pull = 0;
+    let mut cooldown_until = 0;
+    let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
@@ -197,7 +124,7 @@ async fn run(cfg: SyncConfig, tx: UnboundedSender<MergedState>) {
             }
             last_pull = now;
         }
-        let (next, ok) = sync_once(&cfg, &client, snap, local, local_changed, &tx).await;
+        let (next, ok) = sync_once(&remote, snap, local, local_changed, &mut on_merge).await;
         snap = next;
         if !ok {
             cooldown_until = now_ms() + PULL_INTERVAL_MS;
@@ -205,62 +132,104 @@ async fn run(cfg: SyncConfig, tx: UnboundedSender<MergedState>) {
     }
 }
 
+fn snapshot_path() -> PathBuf {
+    state_dir().join(SNAPSHOT_FILE)
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| millis(d.as_millis()))
+}
+
+fn millis(value: u128) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+fn mtime_ms(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or_else(now_ms, |d| millis(d.as_millis()).min(now_ms()))
+}
+
+fn read_local(base: &SyncDoc) -> Option<LocalState> {
+    let (watch, watch_missing) = match read_json::<Vec<WatchItem>>(&watch_path()) {
+        Ok(watch) => (watch, false),
+        Err(e) if e.kind() == io::ErrorKind::NotFound && base.watch.is_empty() => {
+            (Vec::new(), true)
+        }
+        Err(_) => return None,
+    };
+    let (prefs, prefs_missing) = match read_json::<PlayerPrefs>(&prefs_path()) {
+        Ok(prefs) => (prefs, false),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            (base.prefs.clone().unwrap_or_default(), true)
+        }
+        Err(_) => return None,
+    };
+    Some(LocalState {
+        watch,
+        prefs,
+        watch_mtime: mtime_ms(&watch_path()),
+        prefs_mtime: mtime_ms(&prefs_path()),
+        missing: watch_missing || prefs_missing,
+    })
+}
+
 async fn sync_once(
-    cfg: &SyncConfig,
-    client: &reqwest::Client,
+    remote: &Remote<'_>,
     mut snap: Snapshot,
     local: LocalState,
     local_changed: bool,
-    tx: &UnboundedSender<MergedState>,
+    on_merge: &mut impl FnMut(Vec<WatchItem>, PlayerPrefs),
 ) -> (Snapshot, bool) {
-    let mut remote = if local_changed && snap.doc.rev > 0 {
+    let mut doc = if local_changed && snap.doc.rev > 0 {
         snap.doc.clone()
     } else {
-        match fetch_remote(cfg, client).await {
-            Some(r) => r,
+        match remote.fetch().await {
+            Some(doc) => doc,
             None => return (snap, false),
         }
     };
     let fresh_base = SyncDoc::default();
     let mut ledger_dirty = false;
     for _ in 0..2 {
-        let eff_base = if remote.rev < snap.doc.rev {
+        let base = if doc.rev < snap.doc.rev {
             &fresh_base
         } else {
             &snap.doc
         };
-        let (local_stamps, dirty) = stamp_local(eff_base, &local, &mut snap.ledger);
+        let (local_stamps, dirty) = stamp_local(base, &local, &mut snap.ledger);
         ledger_dirty |= dirty;
-        let prefs_stamp = local_prefs_stamp(eff_base, &local);
-        let (watch, stamps) = merge_watch(eff_base, &local.watch, &local_stamps, &remote);
-        let (prefs, prefs_updated_at) = merge_prefs(eff_base, &local.prefs, prefs_stamp, &remote);
-        let remote_dirty = watch != remote.watch
-            || stamps != remote.stamps
-            || remote.prefs.as_ref() != Some(&prefs);
-        let new_doc = if remote_dirty {
-            match push_remote(
-                cfg,
-                client,
-                remote.rev,
-                &watch,
-                &stamps,
-                &prefs,
+        let prefs_stamp = local_prefs_stamp(base, &local);
+        let (watch, stamps) = merge_watch(base, &local.watch, &local_stamps, &doc);
+        let (prefs, prefs_updated_at) = merge_prefs(base, &local.prefs, prefs_stamp, &doc);
+        let remote_dirty =
+            watch != doc.watch || stamps != doc.stamps || doc.prefs.as_ref() != Some(&prefs);
+        let merged = if remote_dirty {
+            let body = PushBody {
+                token: &remote.config.token,
+                base_rev: doc.rev,
+                watch: &watch,
+                stamps: &stamps,
+                prefs: &prefs,
                 prefs_updated_at,
-            )
-            .await
-            {
-                PushOutcome::Accepted(doc) => doc,
-                PushOutcome::Conflict(doc) => {
-                    remote = doc;
+            };
+            match remote.push(&body).await {
+                PushOutcome::Accepted(accepted) => accepted,
+                PushOutcome::Conflict(current) => {
+                    doc = current;
                     continue;
                 }
                 PushOutcome::Failed => return (persist_ledger(snap, ledger_dirty), false),
             }
         } else {
-            remote
+            doc
         };
         return (
-            apply_local(snap, new_doc, &local, watch, prefs, ledger_dirty, tx),
+            apply_local(snap, merged, &local, watch, prefs, ledger_dirty, on_merge),
             true,
         );
     }
@@ -269,22 +238,26 @@ async fn sync_once(
 
 fn persist_ledger(snap: Snapshot, dirty: bool) -> Snapshot {
     if dirty {
-        let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        write_json_unlocked(&snapshot_path(), &snap, "sync snapshot");
+        write_logged(&snapshot_path(), &snap);
     }
     snap
 }
 
+fn write_logged(path: &Path, value: &(impl Serialize + ?Sized)) -> bool {
+    write_json(path, value)
+        .inspect_err(|e| eprintln!("[StreamVault] sync write error {}: {e}", path.display()))
+        .is_ok()
+}
+
 fn apply_local(
     mut snap: Snapshot,
-    new_doc: SyncDoc,
+    merged: SyncDoc,
     local: &LocalState,
     watch: Vec<WatchItem>,
     prefs: PlayerPrefs,
     ledger_dirty: bool,
-    tx: &UnboundedSender<MergedState>,
+    on_merge: &mut impl FnMut(Vec<WatchItem>, PlayerPrefs),
 ) -> Snapshot {
-    let _guard = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(current) = read_local(&snap.doc) else {
         return snap;
     };
@@ -293,77 +266,60 @@ fn apply_local(
     }
     let changed = watch != local.watch || prefs != local.prefs;
     if changed || local.missing {
-        if !(write_json_unlocked(&watch_items_path(), &watch, "sync watch")
-            && write_json_unlocked(&player_prefs_path(), &prefs, "sync prefs"))
-        {
+        if !(write_logged(&watch_path(), &watch) && write_logged(&prefs_path(), &prefs)) {
             return snap;
         }
         if changed {
-            let _ = tx.send(MergedState { watch, prefs });
+            on_merge(watch, prefs);
         }
     }
-    if new_doc.rev != snap.doc.rev || ledger_dirty {
-        let old_doc = std::mem::replace(&mut snap.doc, new_doc);
-        if !write_json_unlocked(&snapshot_path(), &snap, "sync snapshot") {
-            snap.doc = old_doc;
+    if merged.rev != snap.doc.rev || ledger_dirty {
+        let previous = std::mem::replace(&mut snap.doc, merged);
+        if !write_logged(&snapshot_path(), &snap) {
+            snap.doc = previous;
         }
     } else {
-        snap.doc = new_doc;
+        snap.doc = merged;
     }
     snap
 }
 
-async fn api_json(req: reqwest::RequestBuilder) -> Option<ApiResponse> {
-    req.send().await.ok()?.json().await.ok()
-}
-
-async fn fetch_remote(cfg: &SyncConfig, client: &reqwest::Client) -> Option<SyncDoc> {
-    let api = api_json(
-        client
-            .get(&cfg.endpoint)
-            .query(&[("token", cfg.token.as_str())]),
-    )
-    .await?;
-    if api.ok {
-        api.doc
-    } else {
-        None
+impl Remote<'_> {
+    async fn call(request: reqwest::RequestBuilder) -> Option<ApiResponse> {
+        request.send().await.ok()?.json().await.ok()
     }
-}
 
-async fn push_remote(
-    cfg: &SyncConfig,
-    client: &reqwest::Client,
-    base_rev: u64,
-    watch: &[WatchItem],
-    stamps: &HashMap<String, u64>,
-    prefs: &PlayerPrefs,
-    prefs_updated_at: u64,
-) -> PushOutcome {
-    let Ok(body) = serde_json::to_string(&PushBody {
-        token: &cfg.token,
-        base_rev,
-        watch,
-        stamps,
-        prefs,
-        prefs_updated_at,
-    }) else {
-        return PushOutcome::Failed;
-    };
-    let Some(api) = api_json(
-        client
-            .post(&cfg.endpoint)
+    async fn fetch(&self) -> Option<SyncDoc> {
+        let request = self
+            .client
+            .get(&self.config.endpoint)
+            .query(&[("token", self.config.token.as_str())]);
+        let response = Self::call(request).await?;
+        response.ok.then_some(response.doc).flatten()
+    }
+
+    async fn push(&self, body: &PushBody<'_>) -> PushOutcome {
+        let Ok(body) = serde_json::to_string(body) else {
+            return PushOutcome::Failed;
+        };
+        let request = self
+            .client
+            .post(&self.config.endpoint)
             .header("content-type", "text/plain;charset=utf-8")
-            .body(body),
-    )
-    .await
-    else {
-        return PushOutcome::Failed;
-    };
-    match (api.ok, api.conflict, api.doc) {
-        (true, _, Some(doc)) => PushOutcome::Accepted(doc),
-        (false, true, Some(doc)) => PushOutcome::Conflict(doc),
-        _ => PushOutcome::Failed,
+            .body(body);
+        match Self::call(request).await {
+            Some(ApiResponse {
+                ok: true,
+                doc: Some(doc),
+                ..
+            }) => PushOutcome::Accepted(doc),
+            Some(ApiResponse {
+                ok: false,
+                conflict: true,
+                doc: Some(doc),
+            }) => PushOutcome::Conflict(doc),
+            _ => PushOutcome::Failed,
+        }
     }
 }
 
@@ -727,8 +683,8 @@ mod tests {
         let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
         let remote = make_doc(2, vec![(make_item(1, 10.0), 5)]);
         let (m, s) = merge_watch(&base, &[], &HashMap::new(), &remote);
-        assert!(m.is_empty());
-        assert!(s.is_empty());
+        assert_eq!(m, []);
+        assert_eq!(s, HashMap::new());
     }
 
     #[test]
@@ -738,7 +694,7 @@ mod tests {
         let local = vec![make_item(1, 10.0)];
         let stamps = stamps_of(&base, &local_state(local.clone(), 900), &mut HashMap::new());
         let (m, _) = merge_watch(&base, &local, &stamps, &remote);
-        assert!(m.is_empty());
+        assert_eq!(m, []);
     }
 
     #[test]

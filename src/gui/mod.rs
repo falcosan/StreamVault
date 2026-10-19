@@ -1,9 +1,9 @@
 mod details;
 mod downloads;
-mod helpers;
 mod home;
 mod navbar;
 mod player;
+mod poster;
 mod search_view;
 
 pub use details::DetailsView;
@@ -13,11 +13,4 @@ pub use navbar::Navbar;
 pub use player::PlayerView;
 pub use search_view::SearchView;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Screen {
-    Home,
-    Search,
-    Player,
-    Details,
-    Downloads,
-}
+const LOGO: &str = include_str!("../../assets/icons/logo.svg");

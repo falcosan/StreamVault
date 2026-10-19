@@ -1,452 +1,377 @@
 use super::{
-    Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, Season, StreamUrl,
-    USER_AGENT,
+    Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl, fetch_json,
+    items, non_blank, stable_hash,
 };
 use async_trait::async_trait;
-use regex::Regex;
 use reqwest::Client;
-use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
+use serde_json::{Value, json};
+use std::collections::HashSet;
+use tokio::task::JoinSet;
 
-const RAIPLAY_BASE: &str = "https://www.raiplay.it";
-const RAIPLAY_SEARCH: &str =
-    "https://www.raiplay.it/atomatic/raiplay-search-service/api/v1/msearch";
-const RAIPLAY_RELINKER: &str = "https://mediapolisvod.rai.it/relinker/relinkerServlet.htm";
+const BASE: &str = "https://www.raiplay.it";
+const SEARCH: &str = "https://www.raiplay.it/atomatic/raiplay-search-service/api/v1/msearch";
+const RELINKER: &str = "https://mediapolisvod.rai.it/relinker/relinkerServlet.htm";
+const SEARCH_LIMIT: usize = 15;
+const IMAGE_KEYS: [&str; 4] = ["landscape", "portrait_logo", "portrait", "square"];
 
-use super::provider_hash;
-
-pub struct RaiPlayProvider {
+pub struct RaiPlay {
     client: Client,
-    season_data: tokio::sync::Mutex<HashMap<u64, Vec<(String, String)>>>,
-    episode_data: tokio::sync::Mutex<HashMap<u64, String>>,
 }
 
-impl RaiPlayProvider {
-    pub fn with_config(timeout: u64) -> Self {
-        let client = Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(std::time::Duration::from_secs(timeout))
-            .build()
-            .expect("reqwest client");
-        Self {
-            client,
-            season_data: tokio::sync::Mutex::new(HashMap::new()),
-            episode_data: tokio::sync::Mutex::new(HashMap::new()),
-        }
+impl RaiPlay {
+    pub fn new(client: Client) -> Self {
+        Self { client }
     }
 
-    fn parse_result(v: &serde_json::Value) -> Option<MediaEntry> {
-        let slug = v["path_id"].as_str()?.to_string();
-        let name = v["titolo"].as_str().unwrap_or("").to_string();
-        if name.is_empty() {
-            return None;
-        }
-        let image_url = v["immagine"].as_str().map(raiplay_abs_url);
-        let year = image_url.as_ref().and_then(|img| {
-            let parts: Vec<&str> = img.split('/').collect();
-            parts.iter().rev().nth(3).and_then(|y| {
-                if y.len() == 4 && y.chars().all(|c| c.is_ascii_digit()) {
-                    Some(y.to_string())
-                } else {
-                    None
-                }
-            })
-        });
-        Some(MediaEntry {
-            id: provider_hash(&slug),
-            name,
-            alternative_names: Vec::new(),
-            slug,
-            media_type: MediaType::Series,
-            year,
-            image_url,
-            description: None,
-            score: None,
-            provider: 0,
-            provider_name: String::new(),
-            language: "it".to_string(),
-        })
+    async fn sets(&self, entry: &MediaEntry) -> ProviderResult<Vec<(String, String)>> {
+        Ok(parse_sets(
+            &fetch_json(self.client.get(program_url(&entry.slug))).await?,
+        ))
     }
 
-    fn parse_catalog_result(v: &serde_json::Value) -> Option<MediaEntry> {
-        let slug = v["path_id"].as_str()?.to_string();
-        let name = v["name"].as_str().unwrap_or("").to_string();
-        if name.is_empty() {
-            return None;
-        }
-        let description = v["vanity"]
+    async fn cards(
+        &self,
+        entry: &MediaEntry,
+        season: u32,
+    ) -> ProviderResult<Vec<(Episode, String)>> {
+        let sets = self.sets(entry).await?;
+        let (block, set) = season
+            .checked_sub(1)
+            .and_then(|i| sets.get(i as usize))
+            .ok_or_else(|| ProviderError::Parse("Season mapping not found".into()))?;
+        let path = entry.slug.trim_start_matches('/').trim_end_matches(".json");
+        let url = format!("{BASE}/{path}/{block}/{set}/episodes.json");
+        Ok(parse_cards(
+            &entry.slug,
+            &fetch_json(self.client.get(url)).await?,
+        ))
+    }
+
+    async fn resolve(&self, page: &str) -> ProviderResult<StreamUrl> {
+        let json = fetch_json(self.client.get(json_url(page))).await?;
+        let video = match json["first_item_path"].as_str() {
+            Some(item) => fetch_json(self.client.get(with_json(&absolute(item)))).await?,
+            None => json,
+        };
+        let cont = video["video"]["content_url"]
             .as_str()
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.trim().to_string());
-        let image_url = v["images"]["portrait_logo"]
-            .as_str()
-            .or_else(|| v["images"]["landscape"].as_str())
-            .or_else(|| v["images"]["portrait"].as_str())
-            .or_else(|| v["images"]["square"].as_str())
-            .filter(|s| !s.is_empty())
-            .map(raiplay_abs_url);
-        let media_type = match v["layout"].as_str() {
-            Some("single") => MediaType::Movie,
-            _ => MediaType::Series,
-        };
-        Some(MediaEntry {
-            id: provider_hash(&slug),
-            name,
-            alternative_names: Vec::new(),
-            slug,
-            media_type,
-            year: None,
-            image_url,
-            description,
-            score: None,
-            provider: 0,
-            provider_name: String::new(),
-            language: "it".to_string(),
-        })
-    }
-
-    async fn enrich_entry(&self, entry: &mut MediaEntry) {
-        let path = entry.slug.trim_start_matches('/');
-        let url = format!("{RAIPLAY_BASE}/{path}");
-        let json: serde_json::Value = match self.client.get(&url).send().await {
-            Ok(r) => match r.json().await {
-                Ok(j) => j,
-                Err(_) => return,
-            },
-            Err(_) => return,
-        };
-        let info = &json["program_info"];
-        if entry.description.is_none() {
-            entry.description = info["description"]
-                .as_str()
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| s.trim().to_string());
-        }
-        if entry.year.is_none() {
-            entry.year = info["year"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .map(String::from);
-        }
-        match info["layout"].as_str() {
-            Some("single") => entry.media_type = MediaType::Movie,
-            Some("multi") => entry.media_type = MediaType::Series,
-            _ => {}
-        }
-    }
-
-    async fn resolve_stream(&self, page_url: &str) -> ProviderResult<StreamUrl> {
-        let json_url = if page_url.ends_with(".json") {
-            page_url.to_string()
-        } else if let Some(base) = page_url.strip_suffix(".html") {
-            format!("{base}.json")
-        } else {
-            format!("{page_url}.json")
-        };
-        let resp = self.client.get(&json_url).send().await?;
-        let json: serde_json::Value = resp.json().await?;
-
-        let video_json = if let Some(first_item) = json["first_item_path"].as_str() {
-            let abs = raiplay_abs_url(first_item);
-            let item_url = if abs.ends_with(".json") {
-                abs
-            } else {
-                format!("{abs}.json")
-            };
-            let resp = self.client.get(&item_url).send().await?;
-            resp.json().await?
-        } else {
-            json
-        };
-
-        let content_url = video_json["video"]["content_url"]
-            .as_str()
-            .ok_or_else(|| ProviderError::StreamExtraction("No content_url".into()))?;
-        let cont = content_url
+            .ok_or_else(|| ProviderError::StreamExtraction("No content_url".into()))?
             .split('=')
             .nth(1)
             .ok_or_else(|| ProviderError::StreamExtraction("No cont parameter".into()))?;
-
-        let relinker_url = format!("{RAIPLAY_RELINKER}?cont={cont}&output=62");
-        let resp = self.client.get(&relinker_url).send().await?;
-        let bytes = resp.bytes().await?;
-        let text = String::from_utf8_lossy(&bytes);
-        let relinker_json: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| ProviderError::Parse(format!("Relinker JSON: {e}")))?;
-
-        let stream = relinker_json["video"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|v| v.as_str())
+        let bytes = self
+            .client
+            .get(format!("{RELINKER}?cont={cont}&output=62"))
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?;
+        let relinker: Value = serde_json::from_str(&String::from_utf8_lossy(&bytes))?;
+        let url = relinker["video"][0]
+            .as_str()
             .ok_or_else(|| ProviderError::StreamExtraction("No video in relinker".into()))?;
-
         Ok(StreamUrl {
+            url: url.to_owned(),
             headers: Vec::new(),
-            url: stream.to_string(),
         })
     }
 }
 
+async fn enrich(client: Client, entry: MediaEntry) -> MediaEntry {
+    match fetch_json(client.get(program_url(&entry.slug))).await {
+        Ok(json) => enriched(entry, &json["program_info"]),
+        Err(_) => entry,
+    }
+}
+
+fn enriched(entry: MediaEntry, info: &Value) -> MediaEntry {
+    MediaEntry {
+        description: entry
+            .description
+            .or_else(|| info["description"].as_str().and_then(non_blank)),
+        year: entry.year.or_else(|| {
+            info["year"]
+                .as_str()
+                .filter(|y| !y.is_empty())
+                .map(String::from)
+        }),
+        media_type: match info["layout"].as_str() {
+            Some("single") => MediaType::Movie,
+            Some("multi") => MediaType::Series,
+            _ => entry.media_type,
+        },
+        ..entry
+    }
+}
+
+fn parse_card(v: &Value) -> Option<MediaEntry> {
+    let slug = v["path_id"].as_str()?.to_owned();
+    let name = v["titolo"].as_str().filter(|t| !t.is_empty())?.to_owned();
+    let image_url = v["immagine"].as_str().map(absolute);
+    Some(MediaEntry {
+        id: stable_hash(&slug),
+        year: image_url.as_deref().and_then(|img| {
+            img.rsplit('/')
+                .nth(3)
+                .filter(|y| y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()))
+                .map(String::from)
+        }),
+        image_url,
+        language: "it".into(),
+        name,
+        slug,
+        ..Default::default()
+    })
+}
+
+fn parse_sets(json: &Value) -> Vec<(String, String)> {
+    items(&json["blocks"])
+        .filter(|b| b["type"] == "RaiPlay Multimedia Block")
+        .filter(|b| {
+            !matches!(
+                b["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .as_str(),
+                "clip" | "extra"
+            )
+        })
+        .flat_map(|b| {
+            let block = b["id"].as_str().unwrap_or_default();
+            items(&b["sets"])
+                .filter(|s| s["episode_size"]["number"].as_u64().unwrap_or(0) > 0)
+                .map(move |s| {
+                    (
+                        block.to_owned(),
+                        s["id"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+        })
+        .collect()
+}
+
+fn parse_cards(slug: &str, json: &Value) -> Vec<(Episode, String)> {
+    let cards: Vec<&Value> = if json["seasons"].is_array() {
+        items(&json["seasons"])
+            .flat_map(|s| items(&s["episodes"]))
+            .flat_map(|e| items(&e["cards"]))
+            .collect()
+    } else {
+        items(&json["cards"]).collect()
+    };
+    cards
+        .into_iter()
+        .zip(1u32..)
+        .map(|(card, position)| {
+            let text = |keys: &[&str]| keys.iter().find_map(|k| card[k].as_str());
+            let link = text(&["weblink", "url"]).unwrap_or_default();
+            let episode = Episode {
+                id: stable_hash(&format!("{slug}{link}")),
+                number: text(&["episode"])
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(position),
+                name: text(&["episode_title", "name", "toptitle"])
+                    .unwrap_or_default()
+                    .to_owned(),
+                duration: ["duration_in_minutes", "duration"]
+                    .iter()
+                    .find_map(|k| card[k].as_str()?.parse().ok()),
+                image_url: IMAGE_KEYS
+                    .iter()
+                    .find_map(|k| card["images"][k].as_str())
+                    .or_else(|| text(&["immagine", "image"]))
+                    .filter(|i| !i.is_empty())
+                    .map(absolute),
+            };
+            (episode, link.to_owned())
+        })
+        .collect()
+}
+
+fn program_url(slug: &str) -> String {
+    format!("{BASE}/{}", slug.trim_start_matches('/'))
+}
+
+fn absolute(path: &str) -> String {
+    if path.starts_with("http") {
+        path.to_owned()
+    } else {
+        format!("{BASE}{path}")
+    }
+}
+
+fn with_json(url: &str) -> String {
+    format!("{}.json", url.strip_suffix(".json").unwrap_or(url))
+}
+
+fn json_url(page: &str) -> String {
+    with_json(page.strip_suffix(".html").unwrap_or(page))
+}
+
 #[async_trait]
-impl Provider for RaiPlayProvider {
+impl Provider for RaiPlay {
     fn name(&self) -> &'static str {
         "RaiPlay"
     }
 
     async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>> {
-        let body = serde_json::json!({
+        let body = json!({
             "templateIn": "6470a982e4e0301afe1f81f1",
             "templateOut": "6516ac5d40da6c377b151642",
-            "params": {
-                "param": query,
-                "from": null,
-                "sort": "relevance",
-                "onlyVideoQuery": false
-            }
+            "params": { "param": query, "from": null, "sort": "relevance", "onlyVideoQuery": false }
         });
-        let resp = self.client.post(RAIPLAY_SEARCH).json(&body).send().await?;
-        let json: serde_json::Value = resp.json().await?;
-        let cards = json["agg"]["titoli"]["cards"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let json = fetch_json(self.client.post(SEARCH).json(&body)).await?;
         let mut seen = HashSet::new();
-        let mut entries: Vec<MediaEntry> = cards
-            .iter()
-            .take(15)
-            .filter_map(Self::parse_result)
+        let mut tasks = JoinSet::new();
+        for entry in items(&json["agg"]["titoli"]["cards"])
+            .take(SEARCH_LIMIT)
+            .filter_map(parse_card)
             .filter(|e| seen.insert(e.id))
+        {
+            tasks.spawn(enrich(self.client.clone(), entry));
+        }
+        Ok(tasks.join_all().await)
+    }
+
+    async fn seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<u32>> {
+        let sets = self.sets(entry).await?;
+        Ok((1..).take(sets.len()).collect())
+    }
+
+    async fn episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>> {
+        let mut episodes: Vec<Episode> = self
+            .cards(entry, season)
+            .await?
+            .into_iter()
+            .map(|(episode, _)| episode)
             .collect();
-        for e in &mut entries {
-            self.enrich_entry(e).await;
-        }
-        Ok(entries)
-    }
-
-    async fn get_seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<Season>> {
-        let path = entry.slug.trim_start_matches('/');
-        let url = format!("{RAIPLAY_BASE}/{path}");
-        let resp = self.client.get(&url).send().await?;
-        let json: serde_json::Value = resp.json().await?;
-        let blocks = json["blocks"].as_array().cloned().unwrap_or_default();
-        let mut seasons = Vec::new();
-        let mut mappings = Vec::new();
-        let mut num = 1u32;
-        for block in &blocks {
-            if block["type"].as_str() != Some("RaiPlay Multimedia Block") {
-                continue;
-            }
-            let block_name = block["name"].as_str().unwrap_or("").to_lowercase();
-            if block_name == "clip" || block_name == "extra" {
-                continue;
-            }
-            let block_id = block["id"].as_str().unwrap_or("").to_string();
-            if let Some(sets) = block["sets"].as_array() {
-                for set in sets {
-                    let ep_count = set["episode_size"]["number"].as_u64().unwrap_or(0);
-                    if ep_count == 0 {
-                        continue;
-                    }
-                    let set_id = set["id"].as_str().unwrap_or("").to_string();
-                    let set_name = set["name"].as_str().map(String::from);
-                    seasons.push(Season {
-                        id: num as u64,
-                        number: num,
-                        name: set_name,
-                    });
-                    mappings.push((block_id.clone(), set_id));
-                    num += 1;
-                }
-            }
-        }
-        self.season_data.lock().await.insert(entry.id, mappings);
-        Ok(seasons)
-    }
-
-    async fn get_episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>> {
-        let idx = (season - 1) as usize;
-        let lock = self.season_data.lock().await;
-        let (block_id, set_id) = lock
-            .get(&entry.id)
-            .and_then(|m| m.get(idx))
-            .cloned()
-            .ok_or_else(|| ProviderError::Parse("Season mapping not found".into()))?;
-        drop(lock);
-
-        let base_path = entry.slug.trim_start_matches('/').trim_end_matches(".json");
-        let url = format!("{RAIPLAY_BASE}/{base_path}/{block_id}/{set_id}/episodes.json");
-        let resp = self.client.get(&url).send().await?;
-        let json: serde_json::Value = resp.json().await?;
-
-        let items: Vec<serde_json::Value> = if let Some(seasons_arr) = json["seasons"].as_array() {
-            seasons_arr
-                .iter()
-                .flat_map(|s| {
-                    s["episodes"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .flat_map(|ep| ep["cards"].as_array().into_iter().flatten().cloned())
-                })
-                .collect()
-        } else {
-            json["cards"].as_array().cloned().unwrap_or_default()
-        };
-
-        let mut episodes = Vec::new();
-        let mut ep_urls = HashMap::new();
-        for (i, card) in items.iter().enumerate() {
-            let ep_num = card["episode"]
-                .as_str()
-                .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or((i + 1) as u32);
-            let name = card["episode_title"]
-                .as_str()
-                .or_else(|| card["name"].as_str())
-                .or_else(|| card["toptitle"].as_str())
-                .unwrap_or("")
-                .to_string();
-            let duration = card["duration_in_minutes"]
-                .as_str()
-                .and_then(|s| s.parse::<u32>().ok())
-                .or_else(|| {
-                    card["duration"]
-                        .as_str()
-                        .and_then(|s| s.parse::<u32>().ok())
-                });
-            let weblink = card["weblink"]
-                .as_str()
-                .or_else(|| card["url"].as_str())
-                .unwrap_or("");
-            let ep_id = provider_hash(&format!("{}{}", entry.slug, weblink));
-            if !weblink.is_empty() {
-                ep_urls.insert(ep_id, raiplay_abs_url(weblink));
-            }
-            let image_url = card["images"]["landscape"]
-                .as_str()
-                .or_else(|| card["images"]["portrait_logo"].as_str())
-                .or_else(|| card["images"]["portrait"].as_str())
-                .or_else(|| card["images"]["square"].as_str())
-                .or_else(|| card["immagine"].as_str())
-                .or_else(|| card["image"].as_str())
-                .filter(|s| !s.is_empty())
-                .map(raiplay_abs_url);
-            episodes.push(Episode {
-                id: ep_id,
-                number: ep_num,
-                name,
-                duration,
-                image_url,
-            });
-        }
-        self.episode_data.lock().await.extend(ep_urls);
-        episodes.sort_unstable_by_key(|e| e.number);
+        episodes.sort_by_key(|e| e.number);
         Ok(episodes)
     }
 
-    async fn get_stream_url(
+    async fn stream(
         &self,
         entry: &MediaEntry,
-        episode: Option<&Episode>,
         season: Option<u32>,
+        episode: Option<&Episode>,
     ) -> ProviderResult<StreamUrl> {
-        let page_url = if let Some(ep) = episode {
-            let cached = self.episode_data.lock().await.get(&ep.id).cloned();
-            match cached {
-                Some(url) => url,
-                None => {
-                    let s = season.ok_or_else(|| {
-                        ProviderError::StreamExtraction(
-                            "Season required to fetch episode data".into(),
-                        )
-                    })?;
-                    self.get_seasons(entry).await?;
-                    self.get_episodes(entry, s).await?;
-                    self.episode_data
-                        .lock()
-                        .await
-                        .get(&ep.id)
-                        .cloned()
-                        .ok_or_else(|| {
-                            ProviderError::StreamExtraction(
-                                "Episode URL not found after fetch".into(),
-                            )
-                        })?
-                }
+        let page = match episode {
+            None => program_url(&entry.slug),
+            Some(wanted) => {
+                let season = season.ok_or_else(|| {
+                    ProviderError::StreamExtraction("Season required to fetch episode data".into())
+                })?;
+                self.cards(entry, season)
+                    .await?
+                    .into_iter()
+                    .find(|(episode, link)| episode.id == wanted.id && !link.is_empty())
+                    .map(|(_, link)| absolute(&link))
+                    .ok_or_else(|| {
+                        ProviderError::StreamExtraction("Episode URL not found".into())
+                    })?
             }
-        } else {
-            let path = entry.slug.trim_start_matches('/');
-            format!("{RAIPLAY_BASE}/{path}")
         };
-        self.resolve_stream(&page_url).await
-    }
-
-    fn catalog_limit(&self) -> usize {
-        0
-    }
-
-    async fn get_catalog(&self, limit: usize) -> ProviderResult<Vec<MediaEntry>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        static WASHI_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"window\.WashiContext\s*=\s*(\{.*?\});\s*</script>").unwrap()
-        });
-
-        let resp = self.client.get(RAIPLAY_BASE).send().await?;
-        let html = resp.text().await?;
-        let cap = WASHI_RE
-            .captures(&html)
-            .ok_or_else(|| ProviderError::Parse("No WashiContext".into()))?;
-        let washi: serde_json::Value = serde_json::from_str(&cap[1])
-            .map_err(|e| ProviderError::Parse(format!("WashiContext JSON: {e}")))?;
-
-        let fasce = washi["fasce"].as_object().cloned().unwrap_or_default();
-        let block_urls: Vec<String> = fasce
-            .values()
-            .filter_map(|v| {
-                if v["type"].as_str() == Some("RaiPlay Slider Block") {
-                    v["self_url"].as_str().map(|u| format!("{RAIPLAY_BASE}{u}"))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let mut entries = Vec::new();
-        let mut seen = HashSet::new();
-        for url in &block_urls {
-            let json: serde_json::Value = match self.client.get(url).send().await {
-                Ok(r) => match r.json().await {
-                    Ok(j) => j,
-                    Err(_) => continue,
-                },
-                Err(_) => continue,
-            };
-            let contents = json["contents"].as_array().cloned().unwrap_or_default();
-            for item in &contents {
-                if item["type"].as_str() != Some("RaiPlay Programma Item") {
-                    continue;
-                }
-                if let Some(e) = Self::parse_catalog_result(item) {
-                    if seen.insert(e.id) {
-                        entries.push(e);
-                    }
-                }
-            }
-            if entries.len() >= limit {
-                break;
-            }
-        }
-        entries.truncate(limit);
-        Ok(entries)
+        self.resolve(&page).await
     }
 }
 
-fn raiplay_abs_url(s: &str) -> String {
-    if s.starts_with("http") {
-        s.to_string()
-    } else {
-        format!("{RAIPLAY_BASE}{s}")
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_card_reads_year_from_image_path() {
+        let card = json!({
+            "path_id": "/programmi/montalbano.json", "titolo": "Montalbano",
+            "immagine": "/dl/img/2021/03/15/1615000000_2048x1152.jpg"
+        });
+        let entry = parse_card(&card).unwrap();
+        assert_eq!(entry.id, stable_hash("/programmi/montalbano.json"));
+        assert_eq!(entry.year.as_deref(), Some("2021"));
+        assert_eq!(
+            entry.image_url.as_deref(),
+            Some("https://www.raiplay.it/dl/img/2021/03/15/1615000000_2048x1152.jpg")
+        );
+        assert_eq!(entry.media_type, MediaType::Series);
+        assert!(parse_card(&json!({ "path_id": "/p", "titolo": "" })).is_none());
+    }
+
+    #[test]
+    fn enriched_fills_missing_fields_and_layout() {
+        let entry = MediaEntry {
+            year: Some("2020".into()),
+            ..Default::default()
+        };
+        let info = json!({ "description": " Plot ", "year": "1999", "layout": "single" });
+        let entry = enriched(entry, &info);
+        assert_eq!(entry.description.as_deref(), Some("Plot"));
+        assert_eq!(entry.year.as_deref(), Some("2020"));
+        assert_eq!(entry.media_type, MediaType::Movie);
+        assert_eq!(
+            enriched(MediaEntry::default(), &json!({})).media_type,
+            MediaType::Series
+        );
+    }
+
+    #[test]
+    fn parse_sets_skips_extras_and_empty_sets() {
+        let json = json!({ "blocks": [
+            { "type": "RaiPlay Multimedia Block", "name": "Episodi", "id": "b1", "sets": [
+                { "id": "s1", "episode_size": { "number": 10 } },
+                { "id": "s0", "episode_size": { "number": 0 } }
+            ]},
+            { "type": "RaiPlay Multimedia Block", "name": "Clip", "id": "b2",
+              "sets": [{ "id": "c", "episode_size": { "number": 3 } }] },
+            { "type": "Other", "id": "b3", "sets": [{ "id": "o", "episode_size": { "number": 3 } }] }
+        ]});
+        assert_eq!(parse_sets(&json), [("b1".to_owned(), "s1".to_owned())]);
+    }
+
+    #[test]
+    fn parse_cards_reads_nested_seasons() {
+        let json = json!({ "seasons": [{ "episodes": [{ "cards": [
+            { "episode": "4", "episode_title": "Quattro", "duration_in_minutes": "50",
+              "weblink": "/video/a.html", "images": { "portrait": "/img/p.jpg" } },
+            { "name": "Senza numero", "duration": "12", "url": "https://x/b.html" }
+        ]}]}]});
+        let cards = parse_cards("/programmi/x.json", &json);
+        assert_eq!(cards.len(), 2);
+        let (first, link) = &cards[0];
+        assert_eq!(
+            (first.number, first.name.as_str(), first.duration),
+            (4, "Quattro", Some(50))
+        );
+        assert_eq!(first.id, stable_hash("/programmi/x.json/video/a.html"));
+        assert_eq!(
+            first.image_url.as_deref(),
+            Some("https://www.raiplay.it/img/p.jpg")
+        );
+        assert_eq!(link, "/video/a.html");
+        assert_eq!((cards[1].0.number, cards[1].0.duration), (2, Some(12)));
+        assert_eq!(cards[1].1, "https://x/b.html");
+    }
+
+    #[test]
+    fn parse_cards_reads_flat_cards() {
+        let cards = parse_cards("/p", &json!({ "cards": [{ "toptitle": "Top" }] }));
+        assert_eq!(cards[0].0.name, "Top");
+        assert_eq!(cards[0].0.number, 1);
+        assert_eq!(cards[0].1, "");
+    }
+
+    #[test]
+    fn json_url_normalizes_page_urls() {
+        assert_eq!(json_url("https://r/v.html"), "https://r/v.json");
+        assert_eq!(json_url("https://r/v.json"), "https://r/v.json");
+        assert_eq!(json_url("https://r/v"), "https://r/v.json");
+        assert_eq!(with_json("https://r/v.html"), "https://r/v.html.json");
+    }
+
+    #[test]
+    fn absolute_prefixes_relative_paths() {
+        assert_eq!(absolute("/x"), "https://www.raiplay.it/x");
+        assert_eq!(absolute("https://y/z"), "https://y/z");
     }
 }

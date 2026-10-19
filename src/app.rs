@@ -1,880 +1,726 @@
-use crate::config::{
-    advance_watch_item, load_player_prefs, load_watch_items, remove_watch_item, save_player_prefs,
-    save_watch_items, upsert_watch_item, AppConfig, PlayerPrefs, WatchItem,
-};
-use crate::gui::{self, Screen};
+use crate::config::AppConfig;
+use crate::download::{self, Download, Status};
+use crate::gui::{DetailsView, DownloadsView, HomeView, Navbar, PlayerView, SearchView};
 use crate::providers::{
-    AnimeUnityProvider, AuroraProvider, MediaEntry, MediaType, Provider, RaiPlayProvider,
-    StreamingCommunityProvider,
+    Episode, MediaEntry, Provider, ProviderResult, Providers, StreamUrl, next_episode,
 };
 use crate::search;
-use crate::util::{DownloadEngine, DownloadProgress, DownloadRequest};
+use crate::state::{self, PlayerPrefs, WatchItem};
+use crate::sync::{self, SyncConfig};
+use dioxus::core::{Task, spawn_forever};
 use dioxus::prelude::*;
+use serde_json::{Map, Value};
 use std::collections::HashSet;
+use std::fmt::Display;
+use std::future::Future;
+use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use uuid::Uuid;
 
-#[component]
-pub fn App() -> Element {
-    let mut screen = use_signal(|| Screen::Home);
-    let config = use_hook(AppConfig::load);
-    let providers: Vec<Arc<dyn Provider>> = use_hook(|| {
-        let v: Vec<Arc<dyn Provider>> = vec![
-            Arc::new(StreamingCommunityProvider::with_config(
-                config.requests.timeout,
-            )),
-            Arc::new(RaiPlayProvider::with_config(config.requests.timeout)),
-            Arc::new(AuroraProvider::nove(config.requests.timeout)),
-            Arc::new(AuroraProvider::realtime(config.requests.timeout)),
-            Arc::new(AuroraProvider::dmax(config.requests.timeout)),
-            Arc::new(AuroraProvider::food_network(config.requests.timeout)),
-            Arc::new(AuroraProvider::discovery(config.requests.timeout)),
-            Arc::new(AnimeUnityProvider::with_config(config.requests.timeout)),
-        ];
-        v
-    });
-    let mut provider_online = use_signal(|| false);
-    let mut catalog_pending = use_signal(|| providers.len());
-    let mut search_pending = use_signal(|| 0usize);
-    let search_query = use_signal(String::new);
-    let mut search_results: Signal<Vec<MediaEntry>> = use_signal(Vec::new);
-    let mut is_searching = use_signal(|| false);
-    let mut selected_entry: Signal<Option<MediaEntry>> = use_signal(|| None);
-    let mut seasons: Signal<Vec<crate::providers::Season>> = use_signal(Vec::new);
-    let mut episodes: Signal<Vec<crate::providers::Episode>> = use_signal(Vec::new);
-    let mut selected_season: Signal<Option<u32>> = use_signal(|| None);
-    let mut is_loading = use_signal(|| false);
-    let mut error_msg: Signal<Option<String>> = use_signal(|| None);
-    let mut downloads: Signal<Vec<DownloadProgress>> = use_signal(Vec::new);
-    let mut playing_title = use_signal(String::new);
-    let mut stream_url: Signal<Option<String>> = use_signal(|| None);
-    let mut playing_season: Signal<Option<u32>> = use_signal(|| None);
-    let mut playing_episode_num: Signal<Option<u32>> = use_signal(|| None);
-    let mut catalog: Signal<Vec<MediaEntry>> = use_signal(Vec::new);
-    let mut catalog_loading = use_signal(|| true);
-    let mut catalog_more_loading = use_signal(|| false);
-    let mut catalog_done = use_signal(|| false);
-    let mut home_scroll = use_signal(|| 0.0f64);
-    let mut history: Signal<Vec<Screen>> = use_signal(Vec::new);
-    let mut has_update = use_signal(|| false);
-    let mut is_updating = use_signal(|| false);
-    let mut continue_watching: Signal<Vec<WatchItem>> = use_signal(load_watch_items);
-    let mut resume_time: Signal<Option<f64>> = use_signal(|| None);
-    let mut playing_episode: Signal<Option<crate::providers::Episode>> = use_signal(|| None);
-    let mut player_prefs: Signal<PlayerPrefs> = use_signal(load_player_prefs);
+const CSS: &str = include_str!("../assets/style.css");
+const REPOSITORY: &str = "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main";
+const LOAD_MORE_THRESHOLD: f64 = 600.0;
 
-    use_future(move || async move {
-        let Some(mut rx) = crate::sync::start() else {
-            return;
-        };
-        while let Some(m) = rx.recv().await {
-            continue_watching.set(m.watch);
-            player_prefs.set(m.prefs);
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Screen {
+    #[default]
+    Home,
+    Search,
+    Details,
+    Player,
+    Downloads,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Playback {
+    pub entry: MediaEntry,
+    pub season: Option<u32>,
+    pub episode: Option<Episode>,
+    pub start: f64,
+    pub url: Option<String>,
+}
+
+impl Playback {
+    pub fn title(&self) -> String {
+        match (self.season, &self.episode) {
+            (Some(season), Some(episode)) => self.entry.episode_title(season, episode),
+            _ => self.entry.display_title(),
         }
-    });
+    }
 
-    use_future(move || async move {
-        let Ok(resp) = reqwest::get(
-            "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/Cargo.toml",
-        )
-        .await
-        else {
-            return;
-        };
-        let text = resp.text().await.unwrap_or_default();
-        let remote = text
-            .lines()
-            .find_map(|l| {
-                l.trim()
-                    .strip_prefix("version")
-                    .filter(|r| r.starts_with(|c: char| [' ', '='].contains(&c)))
-            })
-            .map(|v| v.trim_start_matches([' ', '=']).trim().trim_matches('"'));
-        if remote.is_some_and(|v| v != env!("CARGO_PKG_VERSION")) {
-            has_update.set(true);
+    fn at(&self, current_time: f64, duration: f64) -> WatchItem {
+        WatchItem {
+            entry: self.entry.clone(),
+            current_time,
+            duration,
+            season: self.season,
+            episode: self.episode.clone(),
         }
-    });
+    }
+}
 
-    let dl_tx: mpsc::UnboundedSender<DownloadProgress> = use_hook(|| {
-        let (tx, mut rx) = mpsc::unbounded_channel::<DownloadProgress>();
-        spawn(async move {
-            while let Some(p) = rx.recv().await {
-                let mut dls = downloads.write();
-                if let Some(existing) = dls.iter_mut().find(|d| d.id == p.id) {
-                    *existing = p;
-                }
+#[derive(Clone, Copy)]
+pub struct Catalog {
+    pub items: Signal<Vec<MediaEntry>>,
+    pub loading: Signal<bool>,
+    pub loading_more: Signal<bool>,
+    done: Signal<bool>,
+    scroll: Signal<f64>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct Search {
+    pub query: Signal<String>,
+    pub results: Signal<Vec<MediaEntry>>,
+    pub busy: Signal<bool>,
+    task: Signal<Option<Task>>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct Details {
+    pub entry: Signal<Option<MediaEntry>>,
+    pub seasons: Signal<Vec<u32>>,
+    pub season: Signal<Option<u32>>,
+    pub episodes: Signal<Vec<Episode>>,
+    pub loading: Signal<bool>,
+    task: Signal<Option<Task>>,
+}
+
+#[derive(Clone, Copy)]
+pub struct AppState {
+    pub screen: Signal<Screen>,
+    history: Signal<Vec<Screen>>,
+    pub error: Signal<Option<String>>,
+    pub catalog: Catalog,
+    pub search: Search,
+    pub details: Details,
+    pub playback: Signal<Option<Playback>>,
+    stream_task: Signal<Option<Task>>,
+    pub downloads: Signal<Vec<Download>>,
+    pub watch: Signal<Vec<WatchItem>>,
+    pub prefs: Signal<PlayerPrefs>,
+    pub update_available: Signal<bool>,
+    pub updating: Signal<bool>,
+    providers: CopyValue<Providers>,
+    config: CopyValue<AppConfig>,
+}
+
+impl AppState {
+    fn new() -> Self {
+        let config = AppConfig::load();
+        Self {
+            screen: Signal::default(),
+            history: Signal::default(),
+            error: Signal::default(),
+            catalog: Catalog {
+                items: Signal::default(),
+                loading: Signal::new(true),
+                loading_more: Signal::default(),
+                done: Signal::default(),
+                scroll: Signal::default(),
+            },
+            search: Search::default(),
+            details: Details::default(),
+            playback: Signal::default(),
+            stream_task: Signal::default(),
+            downloads: Signal::default(),
+            watch: Signal::new(state::load_watch()),
+            prefs: Signal::new(state::load_prefs()),
+            update_available: Signal::default(),
+            updating: Signal::default(),
+            providers: CopyValue::new(Providers::new(config.timeout())),
+            config: CopyValue::new(config),
+        }
+    }
+
+    pub fn navigate(mut self, to: Screen) {
+        let from = *self.screen.peek();
+        if from != to {
+            self.history.push(from);
+            self.screen.set(to);
+        }
+    }
+
+    pub fn back(mut self) {
+        match self.history.pop().unwrap_or_default() {
+            Screen::Player => {
+                self.clear_playback();
+                self.screen.set(Screen::Home);
             }
+            screen => self.screen.set(screen),
+        }
+    }
+
+    pub fn stop(mut self) {
+        self.clear_playback();
+        let previous = self.history.pop().unwrap_or_default();
+        self.screen.set(previous);
+    }
+
+    pub fn search(mut self) {
+        let query = self.search.query.peek().trim().to_owned();
+        if query.is_empty() {
+            return;
+        }
+        self.search.busy.set(true);
+        self.search.results.set(Vec::new());
+        self.navigate(Screen::Search);
+        restart(self.search.task, async move {
+            let found = self.providers().search(&query).await;
+            self.search.results.set(search::rank(found, &query));
+            self.search.busy.set(false);
         });
-        tx
-    });
+    }
 
-    let config_clone = config.clone();
+    pub fn load_more(mut self) {
+        if *self.catalog.loading.peek()
+            || *self.catalog.loading_more.peek()
+            || *self.catalog.done.peek()
+        {
+            return;
+        }
+        self.catalog.loading_more.set(true);
+        spawn_forever(async move {
+            let mut seen: HashSet<_> = self
+                .catalog
+                .items
+                .peek()
+                .iter()
+                .map(MediaEntry::key)
+                .collect();
+            match self.providers().catalog_more(&mut seen).await {
+                Ok(Some(fresh)) => self.catalog.items.write().extend(fresh),
+                Ok(None) => self.catalog.done.set(true),
+                Err(e) => eprintln!("[StreamVault] catalog page failed: {e}"),
+            }
+            self.catalog.loading_more.set(false);
+        });
+    }
 
-    {
-        let providers = providers.clone();
-        use_future(move || {
-            let providers = providers.clone();
-            async move {
-                for (idx, p) in providers.iter().enumerate() {
-                    let p = p.clone();
-                    spawn(async move {
-                        p.init().await;
-                        if let Ok(entries) = p.get_catalog(p.catalog_limit()).await {
-                            provider_online.set(true);
-                            let mut cat = catalog.write();
-                            for mut e in entries {
-                                e.provider = idx;
-                                e.provider_name = p.name().to_string();
-                                cat.push(e);
-                            }
-                        }
-                        let prev = catalog_pending();
-                        catalog_pending.set(prev.saturating_sub(1));
-                        if prev <= 1 {
-                            catalog_loading.set(false);
-                        }
-                    });
-                }
+    pub fn open(mut self, entry: MediaEntry) {
+        self.details.entry.set(Some(entry.clone()));
+        self.details.season.set(None);
+        self.navigate(Screen::Details);
+        if entry.is_movie() {
+            cancel(self.details.task);
+            self.details.loading.set(false);
+        } else {
+            self.load_seasons(entry, None);
+        }
+    }
+
+    pub fn select_season(mut self, season: u32) {
+        let Some(entry) = self.details.entry.peek().clone() else {
+            return;
+        };
+        self.details.season.set(Some(season));
+        self.details.episodes.set(Vec::new());
+        self.details.loading.set(true);
+        restart(self.details.task, async move {
+            let episodes = async { self.provider(&entry)?.episodes(&entry, season).await };
+            match episodes.await {
+                Ok(episodes) => self.details.episodes.set(episodes),
+                Err(e) => self.report("Failed to load episodes", e),
+            }
+            self.details.loading.set(false);
+        });
+    }
+
+    fn load_seasons(mut self, entry: MediaEntry, preferred: Option<u32>) {
+        self.details.loading.set(true);
+        self.details.seasons.set(Vec::new());
+        self.details.episodes.set(Vec::new());
+        restart(self.details.task, async move {
+            if let Err(e) = self.fill_details(&entry, preferred).await {
+                self.report("Failed to load episodes", e);
+            }
+            self.details.loading.set(false);
+        });
+    }
+
+    async fn fill_details(
+        mut self,
+        entry: &MediaEntry,
+        preferred: Option<u32>,
+    ) -> ProviderResult<()> {
+        let provider = self.provider(entry)?;
+        let seasons = provider.seasons(entry).await?;
+        let pick = preferred
+            .filter(|p| seasons.contains(p))
+            .or(seasons.first().copied());
+        self.details.seasons.set(seasons);
+        if let Some(season) = pick {
+            self.details.season.set(Some(season));
+            self.details
+                .episodes
+                .set(provider.episodes(entry, season).await?);
+        }
+        Ok(())
+    }
+
+    pub fn play(
+        mut self,
+        entry: MediaEntry,
+        season: Option<u32>,
+        episode: Option<Episode>,
+        start: f64,
+    ) {
+        self.error.set(None);
+        let playback = Playback {
+            entry,
+            season,
+            episode,
+            start,
+            url: None,
+        };
+        self.playback.set(Some(playback.clone()));
+        self.navigate(Screen::Player);
+        restart(self.stream_task, self.load_stream(playback));
+    }
+
+    pub fn play_episode(self, season: u32, episode: Episode) {
+        if let Some(entry) = self.details.entry.peek().clone() {
+            self.play(entry, Some(season), Some(episode), 0.0);
+        }
+    }
+
+    pub fn resume(mut self, item: WatchItem) {
+        self.update_watch(|items| {
+            state::upsert(items, item.clone());
+            true
+        });
+        self.details.entry.set(Some(item.entry.clone()));
+        if let Some(season) = item.season {
+            self.load_seasons(item.entry.clone(), Some(season));
+        }
+        self.play(item.entry, item.season, item.episode, item.current_time);
+    }
+
+    pub fn has_next(&self) -> bool {
+        let playback = self.playback.read();
+        let Some(Playback {
+            season: Some(season),
+            episode: Some(current),
+            ..
+        }) = playback.as_ref()
+        else {
+            return false;
+        };
+        next_episode(&self.details.episodes.read(), current.number).is_some()
+            || self.details.seasons.read().iter().any(|s| s > season)
+    }
+
+    pub fn play_next(mut self) {
+        let Some(playback) = self.playback.peek().clone() else {
+            return;
+        };
+        let (Some(season), Some(current)) = (playback.season, &playback.episode) else {
+            return;
+        };
+        let next = next_episode(&self.details.episodes.peek(), current.number).cloned();
+        if let Some(next) = next {
+            return self.play(playback.entry, Some(season), Some(next), 0.0);
+        }
+        let next_season = self
+            .details
+            .seasons
+            .peek()
+            .iter()
+            .copied()
+            .filter(|s| *s > season)
+            .min();
+        let Some(next_season) = next_season else {
+            return;
+        };
+        self.error.set(None);
+        if let Some(current) = self.playback.write().as_mut() {
+            current.url = None;
+        }
+        restart(self.stream_task, async move {
+            let entry = playback.entry;
+            let episodes = async { self.provider(&entry)?.episodes(&entry, next_season).await };
+            let episodes = match episodes.await {
+                Ok(episodes) => episodes,
+                Err(e) => return self.report("Failed to load next season", e),
+            };
+            let Some(first) = episodes.iter().min_by_key(|e| e.number).cloned() else {
+                return;
+            };
+            self.details.episodes.set(episodes);
+            self.details.season.set(Some(next_season));
+            let next = Playback {
+                entry,
+                season: Some(next_season),
+                episode: Some(first),
+                start: 0.0,
+                url: None,
+            };
+            self.playback.set(Some(next.clone()));
+            self.load_stream(next).await;
+        });
+    }
+
+    pub fn show_playing_details(mut self) {
+        let Some(playback) = self.playback.peek().clone() else {
+            return;
+        };
+        let reusable = self.details.entry.peek().as_ref() == Some(&playback.entry)
+            && !self.details.seasons.peek().is_empty()
+            && !self.details.episodes.peek().is_empty()
+            && (playback.season.is_none() || *self.details.season.peek() == playback.season);
+        self.details.entry.set(Some(playback.entry.clone()));
+        self.navigate(Screen::Details);
+        if !playback.entry.is_movie() && !reusable {
+            self.load_seasons(playback.entry, playback.season);
+        }
+    }
+
+    pub fn progress(self, time: f64, duration: f64) {
+        let playback = self.playback.peek();
+        let Some(playback) = playback.as_ref() else {
+            return;
+        };
+        let episodes = self.details.episodes.peek();
+        self.update_watch(|items| state::record(items, playback.at(time, duration), &episodes));
+    }
+
+    pub fn finished(self) {
+        let Some(playback) = self.playback.peek().clone() else {
+            return;
+        };
+        let item = playback.at(0.0, 0.0);
+        let handled = {
+            let episodes = self.details.episodes.peek();
+            self.update_watch(|items| state::finish(items, &item, &episodes))
+        };
+        if handled {
+            return;
+        }
+        let Some(season) = item.season else {
+            return;
+        };
+        spawn_forever(async move {
+            if let Err(e) = self.queue_next_season(item.entry, season).await {
+                eprintln!("[StreamVault] next season lookup failed: {e}");
             }
         });
     }
 
-    let mut on_load_more = {
-        let providers = providers.clone();
-        move |_: ()| {
-            if catalog_loading() || catalog_more_loading() || catalog_done() {
-                return;
-            }
-            catalog_more_loading.set(true);
-            let providers = providers.clone();
-            spawn(async move {
-                let mut seen: HashSet<(usize, u64)> =
-                    catalog.read().iter().map(|e| (e.provider, e.id)).collect();
-                loop {
-                    let mut fresh = Vec::new();
-                    let mut got_data = false;
-                    let mut errored = false;
-                    for (idx, p) in providers.iter().enumerate() {
-                        match p.get_catalog_more().await {
-                            Ok(batch) => {
-                                got_data |= !batch.is_empty();
-                                for mut e in batch {
-                                    if seen.insert((idx, e.id)) {
-                                        e.provider = idx;
-                                        e.provider_name = p.name().to_string();
-                                        fresh.push(e);
-                                    }
-                                }
-                            }
-                            Err(_) => errored = true,
-                        }
-                    }
-                    if !fresh.is_empty() {
-                        catalog.write().extend(fresh);
-                        break;
-                    }
-                    if errored {
-                        break;
-                    }
-                    if !got_data {
-                        catalog_done.set(true);
-                        break;
-                    }
-                }
-                catalog_more_loading.set(false);
+    async fn queue_next_season(self, entry: MediaEntry, season: u32) -> ProviderResult<()> {
+        let provider = self.provider(&entry)?;
+        let next = provider
+            .seasons(&entry)
+            .await?
+            .into_iter()
+            .filter(|s| *s > season)
+            .min();
+        let Some(next) = next else {
+            self.remove_watch(entry.key());
+            return Ok(());
+        };
+        let episodes = provider.episodes(&entry, next).await?;
+        if let Some(first) = episodes.into_iter().min_by_key(|e| e.number) {
+            self.update_watch(|items| {
+                state::upsert(items, state::start_of(entry, next, first));
+                true
             });
         }
-    };
+        Ok(())
+    }
 
+    pub fn remove_watch(self, key: (usize, u64)) {
+        self.update_watch(|items| {
+            state::remove(items, key);
+            true
+        });
+    }
+
+    pub fn change_prefs(mut self, changes: Map<String, Value>) {
+        let merged = self.prefs.peek().merged(changes);
+        if merged != *self.prefs.peek() {
+            state::save_prefs(&merged);
+            self.prefs.set(merged);
+        }
+    }
+
+    pub fn download(mut self, entry: MediaEntry, season: Option<u32>, episode: Option<Episode>) {
+        let config = self.config.read().clone();
+        let download = match (season, &episode) {
+            (Some(season), Some(ep)) => Download::episode(&config, &entry.name, season, ep),
+            _ => Download::movie(&config, &entry),
+        };
+        let id = download.id;
+        self.downloads.push(download.clone());
+        self.navigate(Screen::Downloads);
+        spawn_forever(async move {
+            let report = move |status| self.set_status(id, status);
+            match self.stream(&entry, season, episode.as_ref()).await {
+                Ok(stream) => download::run(&config, &download, &stream, report).await,
+                Err(e) => report(Status::Failed(e.to_string())),
+            }
+        });
+    }
+
+    pub fn download_episode(self, season: u32, episode: Episode) {
+        if let Some(entry) = self.details.entry.peek().clone() {
+            self.download(entry, Some(season), Some(episode));
+        }
+    }
+
+    pub fn update(mut self) {
+        self.updating.set(true);
+        spawn_forever(async move {
+            let dir = std::env::current_exe()
+                .ok()
+                .and_then(|exe| {
+                    exe.ancestors()
+                        .find(|a| a.extension().is_some_and(|e| e == "app"))
+                        .and_then(Path::parent)
+                        .map(Path::to_path_buf)
+                })
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let installed = tokio::process::Command::new("bash")
+                .arg("-c")
+                .arg(format!(
+                    "set -o pipefail; curl -fsSL '{REPOSITORY}/scripts/package.sh' | bash"
+                ))
+                .current_dir(dir)
+                .status()
+                .await
+                .is_ok_and(|s| s.success());
+            if installed {
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).spawn();
+                }
+                std::process::exit(0);
+            }
+            self.updating.set(false);
+            self.error.set(Some("Update failed".into()));
+        });
+    }
+
+    async fn load_catalog(mut self) {
+        let entries = self.providers().catalog().await;
+        self.catalog.items.set(entries);
+        self.catalog.loading.set(false);
+    }
+
+    async fn check_update(mut self) {
+        let Ok(response) = reqwest::get(format!("{REPOSITORY}/Cargo.toml")).await else {
+            return;
+        };
+        let manifest = response.text().await.unwrap_or_default();
+        if manifest_version(&manifest).is_some_and(|v| is_newer(v, env!("CARGO_PKG_VERSION"))) {
+            self.update_available.set(true);
+        }
+    }
+
+    async fn sync(mut self) {
+        let Some(config) = SyncConfig::load() else {
+            return;
+        };
+        sync::run(config, move |watch, prefs| {
+            self.watch.set(watch);
+            self.prefs.set(prefs);
+        })
+        .await;
+    }
+
+    async fn load_stream(mut self, playback: Playback) {
+        let stream = self
+            .stream(&playback.entry, playback.season, playback.episode.as_ref())
+            .await;
+        match stream {
+            Ok(stream) => {
+                if let Some(current) = self.playback.write().as_mut() {
+                    current.url = Some(stream.url);
+                }
+            }
+            Err(e) => self.report("Failed to get stream", e),
+        }
+    }
+
+    async fn stream(
+        self,
+        entry: &MediaEntry,
+        season: Option<u32>,
+        episode: Option<&Episode>,
+    ) -> ProviderResult<StreamUrl> {
+        self.provider(entry)?.stream(entry, season, episode).await
+    }
+
+    fn provider(self, entry: &MediaEntry) -> ProviderResult<Arc<dyn Provider>> {
+        self.providers.read().get(entry.provider)
+    }
+
+    fn providers(self) -> Providers {
+        self.providers.read().clone()
+    }
+
+    fn clear_playback(mut self) {
+        cancel(self.stream_task);
+        self.playback.set(None);
+    }
+
+    fn update_watch(mut self, change: impl FnOnce(&mut Vec<WatchItem>) -> bool) -> bool {
+        let mut items = self.watch.write();
+        let changed = change(&mut items);
+        if changed {
+            state::save_watch(&items);
+        }
+        changed
+    }
+
+    fn set_status(mut self, id: Uuid, status: Status) {
+        if let Some(download) = self.downloads.write().iter_mut().find(|d| d.id == id) {
+            download.status = status;
+        }
+    }
+
+    fn report(mut self, context: &str, error: impl Display) {
+        self.error.set(Some(format!("{context}: {error}")));
+    }
+}
+
+fn restart(mut slot: Signal<Option<Task>>, future: impl Future<Output = ()> + 'static) {
+    cancel(slot);
+    slot.set(Some(spawn_forever(future)));
+}
+
+fn cancel(mut slot: Signal<Option<Task>>) {
+    if let Some(task) = slot.take() {
+        task.cancel();
+    }
+}
+
+fn manifest_version(manifest: &str) -> Option<&str> {
+    manifest.lines().find_map(|line| {
+        let value = line
+            .trim()
+            .strip_prefix("version")?
+            .trim_start()
+            .strip_prefix('=')?;
+        Some(value.trim().trim_matches('"'))
+    })
+}
+
+fn is_newer(remote: &str, local: &str) -> bool {
+    let parse = |v: &str| {
+        v.split('.')
+            .map(|part| part.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()
+    };
+    match (parse(remote), parse(local)) {
+        (Some(remote), Some(local)) => remote > local,
+        _ => remote != local,
+    }
+}
+
+#[component]
+pub fn App() -> Element {
+    let mut app = use_context_provider(AppState::new);
+    use_future(move || app.load_catalog());
+    use_future(move || app.check_update());
+    use_future(move || app.sync());
     use_effect(move || {
-        if screen() == Screen::Home {
-            let top = *home_scroll.peek();
+        if *app.screen.read() == Screen::Home {
+            let top = *app.catalog.scroll.peek();
             document::eval(&format!(
                 "document.querySelector('.content').scrollTop = {top};"
             ));
         }
     });
 
-    let on_update = move |_: ()| {
-        is_updating.set(true);
-        spawn(async move {
-            let dir = std::env::current_exe()
-                .ok()
-                .and_then(|p| {
-                    p.ancestors()
-                        .find(|a| a.extension().is_some_and(|e| e == "app"))
-                        .map(|a| a.parent().unwrap_or(a).to_path_buf())
-                })
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-            let script = format!(
-                "cd '{}' && curl -fsSL 'https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/package.sh' | bash",
-                dir.display()
-            );
-            let ok = tokio::process::Command::new("bash")
-                .arg("-c")
-                .arg(&script)
-                .status()
-                .await
-                .is_ok_and(|s| s.success());
-            if ok {
-                if let Ok(exe) = std::env::current_exe() {
-                    std::process::Command::new(exe).spawn().ok();
-                }
-                std::process::exit(0);
-            }
-            is_updating.set(false);
-        });
-    };
-
-    let on_search_submit = {
-        let providers = providers.clone();
-        move |q: String| {
-            let q = q.trim().to_string();
-            if q.is_empty() {
-                return;
-            }
-            is_searching.set(true);
-            search_results.set(Vec::new());
-            history.write().push(screen());
-            screen.set(Screen::Search);
-            search_pending.set(providers.len());
-
-            for (idx, p) in providers.iter().enumerate() {
-                let p = p.clone();
-                let q = q.clone();
-
-                spawn(async move {
-                    if let Ok(entries) = p.search(&q).await {
-                        search_results
-                            .write()
-                            .extend(entries.into_iter().map(|mut e| {
-                                e.provider = idx;
-                                e.provider_name = p.name().to_string();
-                                e
-                            }));
-                    }
-
-                    let new_pending = search_pending().saturating_sub(1);
-                    search_pending.set(new_pending);
-
-                    if new_pending == 0 {
-                        let unsorted = std::mem::take(&mut *search_results.write());
-                        search_results.set(search::rank_results(unsorted, &q));
-                        is_searching.set(false);
-                    }
-                });
-            }
-        }
-    };
-
-    let load_seasons_episodes = {
-        let providers = providers.clone();
-        move |entry: MediaEntry, preferred_season: Option<u32>| {
-            is_loading.set(true);
-            seasons.set(Vec::new());
-            episodes.set(Vec::new());
-            let p = providers[entry.provider].clone();
-            spawn(async move {
-                match p.get_seasons(&entry).await {
-                    Ok(s) => {
-                        let pick = preferred_season
-                            .filter(|t| s.iter().any(|sn| sn.number == *t))
-                            .or_else(|| s.first().map(|f| f.number));
-                        seasons.set(s);
-                        if let Some(n) = pick {
-                            selected_season.set(Some(n));
-                            match p.get_episodes(&entry, n).await {
-                                Ok(eps) => episodes.set(eps),
-                                Err(_) => episodes.set(Vec::new()),
-                            }
-                        }
-                    }
-                    Err(_) => seasons.set(Vec::new()),
-                }
-                is_loading.set(false);
-            });
-        }
-    };
-
-    let on_select_entry = {
-        let mut load_seasons_episodes = load_seasons_episodes.clone();
-        move |entry: MediaEntry| {
-            let is_movie = entry.is_movie();
-            selected_entry.set(Some(entry.clone()));
-            history.write().push(screen());
-            screen.set(Screen::Details);
-            selected_season.set(None);
-            if !is_movie {
-                load_seasons_episodes(entry, None);
-            }
-        }
-    };
-
-    let on_select_season = {
-        let providers = providers.clone();
-        move |n: u32| {
-            selected_season.set(Some(n));
-            episodes.set(Vec::new());
-            is_loading.set(true);
-            let providers = providers.clone();
-            spawn(async move {
-                if let Some(entry) = selected_entry() {
-                    let p = providers[entry.provider].clone();
-                    match p.get_episodes(&entry, n).await {
-                        Ok(eps) => episodes.set(eps),
-                        Err(_) => episodes.set(Vec::new()),
-                    }
-                }
-                is_loading.set(false);
-            });
-        }
-    };
-
-    let on_play_movie = {
-        let providers = providers.clone();
-        move |_: ()| {
-            if let Some(entry) = selected_entry() {
-                error_msg.set(None);
-                playing_episode.set(None);
-                resume_time.set(None);
-                playing_title.set(entry.display_title());
-                stream_url.set(None);
-                history.write().push(screen());
-                screen.set(Screen::Player);
-                let p = providers[entry.provider].clone();
-                spawn(async move {
-                    match p.get_stream_url(&entry, None, None).await {
-                        Ok(stream) => {
-                            eprintln!("[StreamVault] Playing: {}", stream.url);
-                            stream_url.set(Some(stream.url));
-                        }
-                        Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
-                    }
-                });
-            }
-        }
-    };
-
-    let on_play_episode = {
-        let providers = providers.clone();
-        move |(s, ep_num): (u32, u32)| {
-            if let Some(entry) = selected_entry() {
-                error_msg.set(None);
-                let episode = episodes().iter().find(|x| x.number == ep_num).cloned();
-                playing_episode.set(episode.clone());
-                resume_time.set(None);
-                playing_title.set(match &episode {
-                    Some(ep) => entry.episode_title(s, ep),
-                    None => format!("{} S{s:02}E{ep_num:02}", entry.name),
-                });
-                playing_season.set(Some(s));
-                playing_episode_num.set(Some(ep_num));
-                stream_url.set(None);
-                history.write().push(screen());
-                screen.set(Screen::Player);
-                let p = providers[entry.provider].clone();
-                spawn(async move {
-                    match p.get_stream_url(&entry, episode.as_ref(), Some(s)).await {
-                        Ok(stream) => {
-                            eprintln!("[StreamVault] Playing: {}", stream.url);
-                            stream_url.set(Some(stream.url));
-                        }
-                        Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
-                    }
-                });
-            }
-        }
-    };
-
-    let on_dl_movie = {
-        let providers = providers.clone();
-        let config = config_clone.clone();
-        let dl_tx = dl_tx.clone();
-        move |_: ()| {
-            if let Some(entry) = selected_entry() {
-                let p = providers[entry.provider].clone();
-                let cfg = config.clone();
-                let tx = dl_tx.clone();
-                let current = screen();
-                spawn(async move {
-                    match p.get_stream_url(&entry, None, None).await {
-                        Ok(stream) => {
-                            let title = entry.display_title();
-                            let id = uuid::Uuid::new_v4();
-                            let engine = DownloadEngine::new(cfg);
-                            let req = DownloadRequest {
-                                id,
-                                title: title.clone(),
-                                stream_url: stream.url,
-                                output_dir: engine.build_output_path(&title, true),
-                                filename: title.clone(),
-                                headers: stream.headers,
-                            };
-                            downloads.write().push(DownloadProgress::new(id, title));
-                            history.write().push(current);
-                            screen.set(Screen::Downloads);
-                            engine.download(req, tx).await;
-                        }
-                        Err(e) => error_msg.set(Some(format!("Download failed: {e}"))),
-                    }
-                });
-            }
-        }
-    };
-
-    let on_dl_episode = {
-        let providers = providers.clone();
-        let config = config_clone.clone();
-        let dl_tx = dl_tx.clone();
-        move |(season, ep_num): (u32, u32)| {
-            if let Some(entry) = selected_entry() {
-                let ep = episodes().iter().find(|e| e.number == ep_num).cloned();
-                let p = providers[entry.provider].clone();
-                let cfg = config.clone();
-                let tx = dl_tx.clone();
-                let show = entry.name.clone();
-                let current = screen();
-                spawn(async move {
-                    match p.get_stream_url(&entry, ep.as_ref(), Some(season)).await {
-                        Ok(stream) => {
-                            let engine = DownloadEngine::new(cfg);
-                            let fname = engine.format_episode_name(
-                                &show,
-                                season,
-                                ep_num,
-                                ep.as_ref().map(|e| e.name.as_str()).unwrap_or(""),
-                            );
-                            let id = uuid::Uuid::new_v4();
-                            let req = DownloadRequest {
-                                id,
-                                title: fname.clone(),
-                                stream_url: stream.url,
-                                output_dir: engine.build_series_episode_path(&show, season),
-                                filename: fname.clone(),
-                                headers: stream.headers,
-                            };
-                            downloads.write().push(DownloadProgress::new(id, fname));
-                            history.write().push(current);
-                            screen.set(Screen::Downloads);
-                            engine.download(req, tx).await;
-                        }
-                        Err(e) => error_msg.set(Some(format!("Download failed: {e}"))),
-                    }
-                });
-            }
-        }
-    };
-
-    let mut clear_player = move || {
-        stream_url.set(None);
-        playing_title.set(String::new());
-        playing_season.set(None);
-        playing_episode_num.set(None);
-        playing_episode.set(None);
-        resume_time.set(None);
-    };
-
-    let on_stop = move |_: ()| {
-        clear_player();
-        let prev = history.write().pop().unwrap_or(Screen::Home);
-        screen.set(prev);
-    };
-
-    let has_next_episode = use_memo(move || {
-        let Some(cur) = playing_episode_num() else {
-            return false;
-        };
-        if episodes().iter().any(|e| e.number > cur) {
-            return true;
-        }
-        if let Some(s) = playing_season() {
-            return seasons().iter().any(|sn| sn.number > s);
-        }
-        false
-    });
-
-    let on_next_episode = {
-        let providers = providers.clone();
-        move |_: ()| {
-            let Some(cur) = playing_episode_num() else {
-                return;
-            };
-            let Some(s) = playing_season() else { return };
-            let Some(entry) = selected_entry() else {
-                return;
-            };
-            let eps = episodes();
-            let next = eps
-                .iter()
-                .filter(|e| e.number > cur)
-                .min_by_key(|e| e.number);
-            if let Some(next_ep) = next {
-                error_msg.set(None);
-                let ep_num = next_ep.number;
-                let episode = next_ep.clone();
-                playing_episode.set(Some(episode.clone()));
-                resume_time.set(None);
-                playing_title.set(entry.episode_title(s, &episode));
-                playing_episode_num.set(Some(ep_num));
-                stream_url.set(None);
-                let p = providers[entry.provider].clone();
-                spawn(async move {
-                    match p.get_stream_url(&entry, Some(&episode), Some(s)).await {
-                        Ok(stream) => {
-                            eprintln!("[StreamVault] Playing: {}", stream.url);
-                            stream_url.set(Some(stream.url));
-                        }
-                        Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
-                    }
-                });
-            } else {
-                let next_season = seasons()
-                    .iter()
-                    .filter(|sn| sn.number > s)
-                    .min_by_key(|sn| sn.number)
-                    .cloned();
-                let Some(ns) = next_season else { return };
-                error_msg.set(None);
-                stream_url.set(None);
-                let p = providers[entry.provider].clone();
-                let ns_num = ns.number;
-                spawn(async move {
-                    let Ok(new_eps) = p.get_episodes(&entry, ns_num).await else {
-                        error_msg.set(Some("Failed to fetch next season episodes".into()));
-                        return;
-                    };
-                    let Some(first_ep) = new_eps.iter().min_by_key(|e| e.number).cloned() else {
-                        return;
-                    };
-                    episodes.set(new_eps);
-                    let ep_num = first_ep.number;
-                    playing_episode.set(Some(first_ep.clone()));
-                    resume_time.set(None);
-                    playing_title.set(entry.episode_title(ns_num, &first_ep));
-                    playing_episode_num.set(Some(ep_num));
-                    playing_season.set(Some(ns_num));
-                    selected_season.set(Some(ns_num));
-                    match p
-                        .get_stream_url(&entry, Some(&first_ep), Some(ns_num))
-                        .await
-                    {
-                        Ok(stream) => {
-                            eprintln!("[StreamVault] Playing: {}", stream.url);
-                            stream_url.set(Some(stream.url));
-                        }
-                        Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
-                    }
-                });
-            }
-        }
-    };
-
-    let on_back = move |_| {
-        let prev = history.write().pop().unwrap_or(Screen::Home);
-        if prev == Screen::Player {
-            clear_player();
-            screen.set(Screen::Home);
-        } else {
-            screen.set(prev);
-        }
-    };
-
-    let on_go_details = {
-        let mut load_seasons_episodes = load_seasons_episodes.clone();
-        move |_: ()| {
-            history.write().push(Screen::Player);
-            screen.set(Screen::Details);
-            if let Some(entry) = selected_entry() {
-                if !entry.is_movie() {
-                    let preferred = playing_season();
-                    let has_cached_data = !seasons().is_empty() && !episodes().is_empty();
-                    let season_is_synced = preferred.is_none() || selected_season() == preferred;
-                    if !(has_cached_data && season_is_synced) {
-                        load_seasons_episodes(entry, preferred);
-                    }
-                }
-            }
-        }
-    };
-
-    let on_time_update = move |(current, dur): (f64, f64)| {
-        if current < 1.0 || dur <= 0.0 {
-            return;
-        }
-        let Some(entry) = selected_entry() else {
-            return;
-        };
-        if dur - current > 20.0 {
-            let item = WatchItem {
-                entry,
-                current_time: current,
-                duration: dur,
-                season: playing_season(),
-                episode: playing_episode(),
-            };
-            let mut items = continue_watching.write();
-            upsert_watch_item(&mut items, item);
-            save_watch_items(&items);
-            return;
-        }
-        let mut items = continue_watching.write();
-        let stored = items
-            .iter()
-            .find(|i| i.entry.provider == entry.provider && i.entry.id == entry.id);
-        match stored {
-            None => return,
-            Some(i) if i.episode.as_ref().map(|e| e.number) != playing_episode_num() => return,
-            _ => {}
-        }
-        let cur_ep = match (playing_episode_num(), playing_season()) {
-            (Some(ep), Some(s)) if entry.media_type == MediaType::Series => (ep, s),
-            _ => {
-                remove_watch_item(&mut items, entry.provider, entry.id);
-                save_watch_items(&items);
-                return;
-            }
-        };
-        let eps = episodes();
-        if advance_watch_item(&mut items, entry, &eps, cur_ep.0, cur_ep.1) {
-            save_watch_items(&items);
-        }
-    };
-
-    let on_ended = {
-        let providers = providers.clone();
-        move |_: ()| {
-            let Some(entry) = selected_entry() else {
-                return;
-            };
-            let cur_ep = match (playing_episode_num(), playing_season()) {
-                (Some(ep), Some(s)) if entry.media_type == MediaType::Series => (ep, s),
-                _ => {
-                    let mut items = continue_watching.write();
-                    remove_watch_item(&mut items, entry.provider, entry.id);
-                    save_watch_items(&items);
-                    return;
-                }
-            };
-            let eps = episodes();
-            {
-                let mut items = continue_watching.write();
-                if advance_watch_item(&mut items, entry.clone(), &eps, cur_ep.0, cur_ep.1) {
-                    save_watch_items(&items);
-                    return;
-                }
-            }
-
-            let p = providers[entry.provider].clone();
-            spawn(async move {
-                let Ok(all_seasons) = p.get_seasons(&entry).await else {
-                    return;
-                };
-                let next_season = all_seasons
-                    .iter()
-                    .filter(|sn| sn.number > cur_ep.1)
-                    .min_by_key(|sn| sn.number);
-                let Some(ns) = next_season else {
-                    let mut items = continue_watching.write();
-                    remove_watch_item(&mut items, entry.provider, entry.id);
-                    save_watch_items(&items);
-                    return;
-                };
-                let Ok(new_eps) = p.get_episodes(&entry, ns.number).await else {
-                    return;
-                };
-                let Some(first_ep) = new_eps.into_iter().min_by_key(|e| e.number) else {
-                    return;
-                };
-                let item = WatchItem {
-                    entry,
-                    current_time: 0.0,
-                    duration: first_ep.duration.map(|d| d as f64).unwrap_or(0.0),
-                    season: Some(ns.number),
-                    episode: Some(first_ep),
-                };
-                let mut items = continue_watching.write();
-                upsert_watch_item(&mut items, item);
-                save_watch_items(&items);
-            });
-        }
-    };
-
-    let on_remove_watch = move |(provider, id): (usize, u64)| {
-        let mut items = continue_watching.write();
-        remove_watch_item(&mut items, provider, id);
-        save_watch_items(&items);
-    };
-
-    let on_prefs_change = move |prefs: PlayerPrefs| {
-        if *player_prefs.peek() == prefs {
-            return;
-        }
-        save_player_prefs(&prefs);
-        player_prefs.set(prefs);
-    };
-
-    let on_resume = {
-        let providers = providers.clone();
-        move |item: WatchItem| {
-            {
-                let mut items = continue_watching.write();
-                upsert_watch_item(&mut items, item.clone());
-                save_watch_items(&items);
-            }
-            selected_entry.set(Some(item.entry.clone()));
-            playing_episode.set(item.episode.clone());
-            error_msg.set(None);
-            playing_title.set(match (&item.season, &item.episode) {
-                (Some(s), Some(ep)) => item.entry.episode_title(*s, ep),
-                _ => item.entry.display_title(),
-            });
-            playing_season.set(item.season);
-            playing_episode_num.set(item.episode.as_ref().map(|e| e.number));
-            resume_time.set(Some(item.current_time));
-            stream_url.set(None);
-            if item.season.is_some() {
-                seasons.set(Vec::new());
-                episodes.set(Vec::new());
-            }
-            history.write().push(screen());
-            screen.set(Screen::Player);
-            let p = providers[item.entry.provider].clone();
-            let WatchItem {
-                entry,
-                episode,
-                season,
-                ..
-            } = item;
-            spawn(async move {
-                match p.get_stream_url(&entry, episode.as_ref(), season).await {
-                    Ok(stream) => {
-                        eprintln!("[StreamVault] Playing: {}", stream.url);
-                        stream_url.set(Some(stream.url));
-                        if let Some(s) = season {
-                            if let Ok(s_list) = p.get_seasons(&entry).await {
-                                seasons.set(s_list);
-                            }
-                            if let Ok(eps) = p.get_episodes(&entry, s).await {
-                                episodes.set(eps);
-                            }
-                            selected_season.set(Some(s));
-                        }
-                    }
-                    Err(e) => error_msg.set(Some(format!("Failed to get stream: {e}"))),
-                }
-            });
-        }
-    };
-
-    let current_entry = selected_entry();
-
     rsx! {
-        style { dangerous_inner_html: crate::style::GLOBAL_CSS }
+        style { dangerous_inner_html: CSS }
         div { class: "app",
-            gui::Navbar {
-                screen,
-                history,
-                search_query,
-                has_update: ReadSignal::from(has_update),
-                is_updating: ReadSignal::from(is_updating),
-                is_searching: ReadSignal::from(is_searching),
-                on_update,
-                on_search_submit,
-            }
-            if let Some(ref err) = error_msg() {
-                div { class: "error-bar",
-                    span { "{err}" }
-                    div { class: "fill", style: "flex:1;" }
-                    button { class: "dismiss", onclick: move |_| error_msg.set(None), "✕" }
+            Navbar {}
+            if let Some(message) = app.error.cloned() {
+                div { class: "error-bar", role: "alert",
+                    span { "{message}" }
+                    button {
+                        class: "dismiss",
+                        aria_label: "Dismiss error",
+                        onclick: move |_| app.error.set(None),
+                        "✕"
+                    }
                 }
             }
             div {
                 class: "content",
                 onscroll: move |e: Event<ScrollData>| {
-                    if screen() == Screen::Home {
-                        let d = e.data();
-                        home_scroll.set(d.scroll_top());
-                        if d.scroll_top() + f64::from(d.client_height())
-                            >= f64::from(d.scroll_height()) - 600.0
-                        {
-                            on_load_more(());
-                        }
+                    if *app.screen.peek() != Screen::Home {
+                        return;
+                    }
+                    let top = e.scroll_top();
+                    app.catalog.scroll.set(top);
+                    if top + f64::from(e.client_height())
+                        >= f64::from(e.scroll_height()) - LOAD_MORE_THRESHOLD
+                    {
+                        app.load_more();
                     }
                 },
-                match screen() {
-                    Screen::Home => rsx! {
-                        gui::HomeView {
-                            catalog: ReadSignal::from(catalog),
-                            is_loading: ReadSignal::from(catalog_loading),
-                            is_loading_more: ReadSignal::from(catalog_more_loading),
-                            continue_watching: ReadSignal::from(continue_watching),
-                            on_select: on_select_entry,
-                            on_resume,
-                            on_remove_watch,
-                        }
+                match *app.screen.read() {
+                    Screen::Home => rsx! { HomeView {} },
+                    Screen::Search => rsx! { SearchView {} },
+                    Screen::Details => match app.details.entry.cloned() {
+                        Some(entry) => rsx! { DetailsView { entry } },
+                        None => rsx! { HomeView {} },
                     },
-                    Screen::Search => rsx! {
-                        gui::SearchView {
-                            search_query: ReadSignal::from(search_query),
-                            search_results: ReadSignal::from(search_results),
-                            is_searching: ReadSignal::from(is_searching),
-                            on_select: on_select_entry,
-                        }
-                    },
-                    Screen::Details => {
-                        if let Some(ref entry) = current_entry {
-                            rsx! {
-                                gui::DetailsView {
-                                    entry: entry.clone(),
-                                    seasons: ReadSignal::from(seasons),
-                                    episodes: ReadSignal::from(episodes),
-                                    selected_season: ReadSignal::from(selected_season),
-                                    is_loading: ReadSignal::from(is_loading),
-                                    on_select_season,
-                                    on_play_movie,
-                                    on_play_episode,
-                                    on_dl_movie,
-                                    on_dl_episode,
-                                    on_back,
-                                }
-                            }
-                        } else {
-                            rsx! {
-                                gui::HomeView {
-                                    catalog: ReadSignal::from(catalog),
-                                    is_loading: ReadSignal::from(catalog_loading),
-                                    is_loading_more: ReadSignal::from(catalog_more_loading),
-                                    continue_watching: ReadSignal::from(continue_watching),
-                                    on_select: on_select_entry,
-                                    on_resume,
-                                    on_remove_watch,
-                                }
-                            }
-                        }
-                    },
-                    Screen::Player => rsx! {
-                        gui::PlayerView {
-                            stream_url: ReadSignal::from(stream_url),
-                            playing_title: ReadSignal::from(playing_title),
-                            has_next_episode: ReadSignal::from(has_next_episode),
-                            start_time: ReadSignal::from(resume_time),
-                            player_prefs: ReadSignal::from(player_prefs),
-                            on_stop,
-                            on_go_details,
-                            on_next_episode,
-                            on_time_update,
-                            on_ended,
-                            on_prefs_change,
-                        }
-                    },
-                    Screen::Downloads => rsx! {
-                        gui::DownloadsView {
-                            on_back,
-                            downloads: ReadSignal::from(downloads),
-                        }
-                    },
+                    Screen::Player => rsx! { PlayerView {} },
+                    Screen::Downloads => rsx! { DownloadsView {} },
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_version_reads_package_version() {
+        let manifest = "[package]\nname = \"x\"\nversion = \"1.2.3\"\n\n[dependencies]\nfoo = { version = \"9\" }\n";
+        assert_eq!(manifest_version(manifest), Some("1.2.3"));
+        assert_eq!(manifest_version("[package]\nversioned = 1\n"), None);
+    }
+
+    #[test]
+    fn is_newer_compares_numerically() {
+        assert!(is_newer("1.0.31", "1.0.30"));
+        assert!(is_newer("1.0.100", "1.0.99"));
+        assert!(!is_newer("1.0.30", "1.0.30"));
+        assert!(!is_newer("1.0.29", "1.0.30"));
+        assert!(is_newer("1.1.0-beta", "1.0.30"));
+    }
+
+    #[test]
+    fn playback_title_depends_on_episode() {
+        let entry = MediaEntry {
+            name: "Lost".into(),
+            year: Some("2004".into()),
+            ..Default::default()
+        };
+        let movie = Playback {
+            entry: entry.clone(),
+            season: None,
+            episode: None,
+            start: 0.0,
+            url: None,
+        };
+        assert_eq!(movie.title(), "Lost (2004)");
+        let episode = Playback {
+            season: Some(1),
+            episode: Some(Episode {
+                id: 1,
+                number: 2,
+                name: "Pilot".into(),
+                duration: None,
+                image_url: None,
+            }),
+            ..movie
+        };
+        assert_eq!(episode.title(), "Lost S01E02 - Pilot");
     }
 }
