@@ -13,4 +13,4 @@ pub use navbar::Navbar;
 pub use player::PlayerView;
 pub use search_view::SearchView;
 
-const LOGO: &str = include_str!("../../assets/icons/logo.svg");
+const LOGO: &str = include_str!("../../assets/img/vector/logo.svg");

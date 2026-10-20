@@ -4,7 +4,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::time::Duration;
 
-const PLAYER_JS: &str = include_str!("../../assets/player.js");
+const PLAYER_JS: &str = concat!(
+    include_str!("../../assets/js/tracks.js"),
+    include_str!("../../assets/js/player.js")
+);
 const TICK: Duration = Duration::from_secs(1);
 const SEEK_SECONDS: u32 = 10;
 
@@ -50,6 +53,7 @@ pub fn PlayerView() -> Element {
     let playback = app.playback.read();
     let title = playback.as_ref().map(Playback::title).unwrap_or_default();
     let url = playback.as_ref().and_then(|p| p.url.clone());
+    let tracks = playback.as_ref().map(Playback::tracks).unwrap_or_default();
 
     rsx! {
         div {
@@ -88,13 +92,75 @@ pub fn PlayerView() -> Element {
             div { class: "player-video-container",
                 if let Some(url) = url {
                     video {
+                        key: "{url}",
                         class: "player-video",
                         src: "{url}",
                         controls: true,
                         autoplay: true,
+                        for (src, language) in tracks {
+                            track {
+                                key: "{src}",
+                                kind: "subtitles",
+                                src: "{src}",
+                                srclang: "{language}",
+                                label: (!is_language_code(&language)).then_some(language.clone()),
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+fn is_language_code(language: &str) -> bool {
+    (2..=3).contains(&language.len()) && language.bytes().all(|b| b.is_ascii_alphabetic())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    fn eval(expression: &str) -> String {
+        let script = format!(
+            "{}JSON.stringify({expression});",
+            include_str!("../../assets/js/tracks.js")
+        );
+        let output = Command::new("osascript")
+            .args(["-l", "JavaScript", "-e", &script])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn only_plain_language_codes_go_without_a_label() {
+        assert!(is_language_code("ita"));
+        assert!(is_language_code("en"));
+        assert!(!is_language_code("forced-ita"));
+        assert!(!is_language_code(""));
+    }
+
+    #[test]
+    fn pick_prefers_the_exact_track_over_a_partial_match() {
+        let tracks = r#"[{ language: "eng", label: "English [CC]" }, { language: "forced-ita", label: "Italian [Forced]" }, { language: "ita", label: "Italian" }]"#;
+        assert_eq!(
+            eval(&format!(
+                r#"["ita", "forced-ita", "Italian"].map((lang) => pick({tracks}, lang))"#
+            )),
+            "[2,1,2]"
+        );
+    }
+
+    #[test]
+    fn pick_falls_back_to_a_partial_match_then_the_first_track() {
+        let tracks = r#"[{ language: "eng", label: "English [CC]" }, { language: "forced-ita", label: "Italian [Forced]" }, { language: "ita", label: "Italian" }]"#;
+        assert_eq!(
+            eval(&format!(
+                r#"["ital", "xyz", ""].map((lang) => pick({tracks}, lang))"#
+            )),
+            "[1,0,0]"
+        );
     }
 }

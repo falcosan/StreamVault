@@ -1,6 +1,6 @@
 [package]
 name = "streamvault"
-version = "1.0.32"
+version = "1.0.33"
 edition = "2024"
 
 [dependencies]
@@ -14,6 +14,7 @@ unicode-normalization = "0.1.26"
 tokio = { version = "1", features = [
   "rt",
   "fs",
+  "net",
   "time",
   "sync",
   "macros",
@@ -25,6 +26,3 @@ serde = { version = "1", features = ["derive"] }
 dioxus = { version = "0.7", features = ["desktop"] }
 dioxus-desktop = { version = "0.7", features = ["fullscreen"] }
 reqwest = { version = "0.13", features = ["json", "cookies", "query", "form"] }
-
-[dev-dependencies]
-tokio = { version = "1", features = ["net"] }

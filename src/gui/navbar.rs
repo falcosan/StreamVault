@@ -2,8 +2,8 @@ use super::LOGO;
 use crate::app::{AppState, Screen};
 use dioxus::prelude::*;
 
-const SEARCH_ICON: &str = include_str!("../../assets/icons/search.svg");
-const UPDATE_ICON: &str = include_str!("../../assets/icons/update.svg");
+const SEARCH_ICON: &str = include_str!("../../assets/img/vector/search.svg");
+const UPDATE_ICON: &str = include_str!("../../assets/img/vector/update.svg");
 
 #[component]
 pub fn Navbar() -> Element {

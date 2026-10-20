@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::download::{self, Download, Status};
+use crate::download::{self, Download, Status, Subtitle};
 use crate::gui::{DetailsView, DownloadsView, HomeView, Navbar, PlayerView, SearchView};
 use crate::media;
 use crate::providers::{
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
 
-const CSS: &str = include_str!("../assets/style.css");
+const CSS: &str = include_str!("../assets/style/style.css");
 const REPOSITORY: &str = "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main";
 const LOAD_MORE_THRESHOLD: f64 = 600.0;
 
@@ -41,6 +41,7 @@ pub struct Playback {
     pub start: f64,
     pub url: Option<String>,
     file: Option<PathBuf>,
+    subtitles: Vec<Subtitle>,
 }
 
 impl Playback {
@@ -52,14 +53,35 @@ impl Playback {
             start,
             url: None,
             file: None,
+            subtitles: Vec::new(),
         }
     }
 
     fn with_file(self, file: PathBuf) -> Self {
         Self {
             url: Some(media::url(Uuid::new_v4())),
+            subtitles: download::subtitles(&file),
             file: Some(file),
             ..self
+        }
+    }
+
+    pub fn tracks(&self) -> Vec<(String, String)> {
+        let url = self.url.as_deref().unwrap_or_default();
+        self.subtitles
+            .iter()
+            .enumerate()
+            .map(|(index, subtitle)| (format!("{url}/{index}"), subtitle.language.clone()))
+            .collect()
+    }
+
+    fn served(&self, path: &str) -> Option<&Path> {
+        match path.strip_prefix(self.url.as_deref()?)? {
+            "" => self.file.as_deref(),
+            rest => {
+                let index: usize = rest.strip_prefix('/')?.parse().ok()?;
+                self.subtitles.get(index).map(|s| s.file.as_path())
+            }
         }
     }
 
@@ -649,8 +671,8 @@ impl AppState {
         self.playback
             .peek()
             .as_ref()
-            .filter(|p| p.url.as_deref() == Some(path))
-            .and_then(|p| p.file.clone())
+            .and_then(|p| p.served(path))
+            .map(Path::to_path_buf)
     }
 
     fn set_status(mut self, id: Uuid, status: Status) {
@@ -767,6 +789,7 @@ pub fn App() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::scratch_dir;
 
     #[test]
     fn manifest_version_reads_package_version() {
@@ -822,5 +845,40 @@ mod tests {
         assert_eq!(first.file.as_deref(), Some(Path::new("/a.mp4")));
         assert_eq!(first.start, 12.0);
         assert_ne!(first.url, second.url);
+    }
+
+    #[test]
+    fn local_playback_serves_only_its_video_and_subtitles() {
+        let dir = scratch_dir("served");
+        let video = dir.join("Ep.mp4");
+        for file in ["Ep.mp4", "Ep.ita.3.vtt", "Ep.forced-ita.2.vtt"] {
+            std::fs::write(dir.join(file), "x").unwrap();
+        }
+        let playback =
+            Playback::new(MediaEntry::default(), None, None, 0.0).with_file(video.clone());
+        let url = playback.url.clone().unwrap();
+        assert_eq!(
+            playback.tracks(),
+            [
+                (format!("{url}/0"), "forced-ita".to_owned()),
+                (format!("{url}/1"), "ita".to_owned())
+            ]
+        );
+        assert_eq!(playback.served(&url), Some(video.as_path()));
+        assert_eq!(
+            playback.served(&format!("{url}/1")),
+            Some(dir.join("Ep.ita.3.vtt").as_path())
+        );
+        for path in [
+            format!("{url}/2"),
+            format!("{url}/x"),
+            format!("{url}0"),
+            "/media/other".into(),
+        ] {
+            assert_eq!(playback.served(&path), None);
+        }
+        let streaming = Playback::new(MediaEntry::default(), None, None, 0.0);
+        assert_eq!(streaming.served(&url), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -2,7 +2,7 @@ use crate::app::AppState;
 use crate::download::{Download, Status};
 use dioxus::prelude::*;
 
-const FOLDER_ICON: &str = include_str!("../../assets/icons/folder.svg");
+const FOLDER_ICON: &str = include_str!("../../assets/img/vector/folder.svg");
 
 #[component]
 pub fn DownloadsView() -> Element {

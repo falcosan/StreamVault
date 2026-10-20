@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo/logo_raster_small.png" alt="StreamVault Logo" width="120" />
+  <img src="assets/img/raster/logo_raster_small.png" alt="StreamVault Logo" width="120" />
 </p>
 
 <h1 align="center">StreamVault</h1>

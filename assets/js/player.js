@@ -4,18 +4,6 @@ if (!video || video.readyState < 2 || !Number.isFinite(video.duration)) {
   return null;
 }
 
-const normalize = (text) =>
-  String(text || "")
-    .trim()
-    .toLowerCase();
-const describe = (track) =>
-  normalize(`${track.language || ""} ${track.label || ""}`);
-const pick = (tracks, lang) =>
-  Math.max(
-    lang ? tracks.findIndex((t) => describe(t).includes(normalize(lang))) : 0,
-    0,
-  );
-
 const audio = Array.from(video.audioTracks || []);
 const subtitles = Array.from(video.textTracks || []).filter(
   (t) => t.kind === "subtitles" || t.kind === "captions",

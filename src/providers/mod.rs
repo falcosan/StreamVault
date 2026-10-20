@@ -231,8 +231,8 @@ fn domain(key: &str) -> String {
         full_url: String,
     }
     static DOMAINS: LazyLock<HashMap<String, Domain>> = LazyLock::new(|| {
-        serde_json::from_str(include_str!("../../assets/domains.json"))
-            .expect("assets/domains.json must be valid")
+        serde_json::from_str(include_str!("../../assets/js/domains.json"))
+            .expect("assets/js/domains.json must be valid")
     });
     DOMAINS
         .get(key)

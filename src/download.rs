@@ -9,6 +9,7 @@ use tokio::process::Command;
 use uuid::Uuid;
 
 const ERROR_LINES: usize = 5;
+const SAVE_PATTERN: &str = "<SaveName>.<Language>.<Id>";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
@@ -17,6 +18,12 @@ pub enum Status {
     Muxing,
     Completed,
     Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Subtitle {
+    pub file: PathBuf,
+    pub language: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +65,40 @@ pub fn local_file(
 ) -> Option<PathBuf> {
     let (_, file) = target(config, entry, season, episode);
     file.is_file().then_some(file)
+}
+
+pub fn subtitles(video: &Path) -> Vec<Subtitle> {
+    let (Some(dir), Some(name)) = (video.parent(), video.file_stem().and_then(OsStr::to_str))
+    else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut subtitles: Vec<(u32, Subtitle)> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|file| file.extension().is_some_and(|ext| ext == "vtt"))
+        .filter_map(|file| {
+            let (language, id) = sidecar(name, &file)?;
+            Some((id, Subtitle { file, language }))
+        })
+        .collect();
+    subtitles.sort_by_key(|(id, _)| *id);
+    subtitles
+        .into_iter()
+        .map(|(_, subtitle)| subtitle)
+        .collect()
+}
+
+fn sidecar(name: &str, file: &Path) -> Option<(String, u32)> {
+    let tags = file
+        .file_stem()?
+        .to_str()?
+        .strip_prefix(name)?
+        .strip_prefix('.')?;
+    let (language, id) = tags.rsplit_once('.').unwrap_or(("", tags));
+    Some((language.to_owned(), id.parse().ok()?))
 }
 
 fn target(
@@ -168,9 +209,12 @@ async fn fetch(
         report(Status::Muxing);
     }
     let muxed = work.join(file);
-    mux(config, &ffmpeg, &muxed, &media, &subtitles)
+    mux(&ffmpeg, &muxed, &media)
         .await
         .map_err(|e| format!("Mux failed: {e}"))?;
+    save_subtitles(&subtitles, &download.file)
+        .await
+        .map_err(|e| format!("Cannot save subtitles: {e}"))?;
     move_file(&muxed, &download.file)
         .await
         .map_err(|e| format!("Cannot save output: {e}"))
@@ -244,6 +288,8 @@ fn downloader(
         .arg(&stream.url)
         .arg("--save-name")
         .arg(name)
+        .arg("--save-pattern")
+        .arg(SAVE_PATTERN)
         .arg("--save-dir")
         .arg(work)
         .arg("--tmp-dir")
@@ -289,19 +335,13 @@ fn downloader(
     cmd
 }
 
-async fn mux(
-    config: &AppConfig,
-    ffmpeg: &Path,
-    output: &Path,
-    media: &[PathBuf],
-    subtitles: &[PathBuf],
-) -> Result<(), String> {
+async fn mux(ffmpeg: &Path, output: &Path, media: &[PathBuf]) -> Result<(), String> {
     if media.is_empty() {
         return Err("No .ts files found after download".into());
     }
     let mut cmd = Command::new(ffmpeg);
     cmd.kill_on_drop(true).arg("-y");
-    for input in media.iter().chain(subtitles) {
+    for input in media {
         cmd.arg("-i").arg(input);
     }
     for i in 0..media.len() {
@@ -310,18 +350,7 @@ async fn mux(
             .arg("-map")
             .arg(format!("{i}:a?"));
     }
-    for i in media.len()..media.len() + subtitles.len() {
-        cmd.arg("-map").arg(format!("{i}:s?"));
-    }
     cmd.args(["-c:v", "copy", "-c:a", "copy"]);
-    if !subtitles.is_empty() {
-        let codec = if config.process.extension == "mkv" {
-            "srt"
-        } else {
-            "mov_text"
-        };
-        cmd.args(["-c:s", codec]);
-    }
     let result = cmd
         .arg(output)
         .stdout(Stdio::null())
@@ -366,6 +395,18 @@ async fn scan_tracks(dir: &Path, with_subtitles: bool) -> (Vec<PathBuf>, Vec<Pat
     }
     media.sort_by_key(|(_, size)| std::cmp::Reverse(*size));
     (media.into_iter().map(|(path, _)| path).collect(), subtitles)
+}
+
+async fn save_subtitles(files: &[PathBuf], video: &Path) -> std::io::Result<()> {
+    for old in subtitles(video) {
+        tokio::fs::remove_file(old.file).await?;
+    }
+    for file in files {
+        if let Some(name) = file.file_name() {
+            move_file(file, &video.with_file_name(name)).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -652,6 +693,70 @@ mod tests {
     }
 
     #[test]
+    fn subtitles_are_the_video_sidecars_in_source_order() {
+        let dir = scratch_dir("subtitles");
+        let video = dir.join("Dr. House S01E01.mp4");
+        let sidecar = |language: &str, id: &str| {
+            let name = SAVE_PATTERN
+                .replace("<SaveName>", "Dr. House S01E01")
+                .replace("<Language>", language)
+                .replace("<Id>", id)
+                .replace("..", ".");
+            dir.join(format!("{name}.vtt"))
+        };
+        for file in [
+            sidecar("ita", "11"),
+            sidecar("forced-ita", "10"),
+            sidecar("", "2"),
+            sidecar("ita", "x"),
+            dir.join("Other.ita.1.vtt"),
+            dir.join("Dr. House S01E01.ita.3.srt"),
+        ] {
+            std::fs::write(file, "WEBVTT").unwrap();
+        }
+        let found: Vec<_> = subtitles(&video)
+            .into_iter()
+            .map(|s| (s.file, s.language))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (sidecar("", "2"), String::new()),
+                (sidecar("forced-ita", "10"), "forced-ita".into()),
+                (sidecar("ita", "11"), "ita".into()),
+            ]
+        );
+        assert_eq!(subtitles(&dir.join("missing/a.mp4")), []);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn save_subtitles_replaces_previous_sidecars() {
+        let dir = scratch_dir("save_subtitles");
+        let (work, out) = (dir.join("work"), dir.join("out"));
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        let video = out.join("Ep.mp4");
+        std::fs::write(out.join("Ep.fre.4.vtt"), "old").unwrap();
+        std::fs::write(work.join("Ep.ita.3.vtt"), "new").unwrap();
+        save_subtitles(&[work.join("Ep.ita.3.vtt")], &video)
+            .await
+            .unwrap();
+        assert_eq!(
+            subtitles(&video),
+            [Subtitle {
+                file: out.join("Ep.ita.3.vtt"),
+                language: "ita".into()
+            }]
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.join("Ep.ita.3.vtt")).unwrap(),
+            "new"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn is_meaningful_skips_stack_frames_and_rules() {
         assert!(is_meaningful("boom"));
         assert!(!is_meaningful("   at Foo.Bar()"));
@@ -706,15 +811,9 @@ mod tests {
 
     #[tokio::test]
     async fn mux_without_media_fails() {
-        let err = mux(
-            &AppConfig::default(),
-            Path::new("ffmpeg"),
-            Path::new("/tmp/out.mp4"),
-            &[],
-            &[],
-        )
-        .await
-        .unwrap_err();
+        let err = mux(Path::new("ffmpeg"), Path::new("/tmp/out.mp4"), &[])
+            .await
+            .unwrap_err();
         assert_eq!(err, "No .ts files found after download");
     }
 }
