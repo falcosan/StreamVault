@@ -1,6 +1,7 @@
 use crate::config::AppConfig;
 use crate::download::{self, Download, Status};
 use crate::gui::{DetailsView, DownloadsView, HomeView, Navbar, PlayerView, SearchView};
+use crate::media;
 use crate::providers::{
     Episode, MediaEntry, Provider, ProviderResult, Providers, StreamUrl, next_episode,
 };
@@ -8,12 +9,13 @@ use crate::search;
 use crate::state::{self, PlayerPrefs, WatchItem};
 use crate::sync::{self, SyncConfig};
 use dioxus::core::{Task, spawn_forever};
+use dioxus::desktop::use_asset_handler;
 use dioxus::prelude::*;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -38,9 +40,29 @@ pub struct Playback {
     pub episode: Option<Episode>,
     pub start: f64,
     pub url: Option<String>,
+    file: Option<PathBuf>,
 }
 
 impl Playback {
+    fn new(entry: MediaEntry, season: Option<u32>, episode: Option<Episode>, start: f64) -> Self {
+        Self {
+            entry,
+            season,
+            episode,
+            start,
+            url: None,
+            file: None,
+        }
+    }
+
+    fn with_file(self, file: PathBuf) -> Self {
+        Self {
+            url: Some(media::url(Uuid::new_v4())),
+            file: Some(file),
+            ..self
+        }
+    }
+
     pub fn title(&self) -> String {
         match (self.season, &self.episode) {
             (Some(season), Some(episode)) => self.entry.episode_title(season, episode),
@@ -172,7 +194,7 @@ impl AppState {
         });
     }
 
-    pub fn load_more(mut self) {
+    fn load_more(mut self) {
         if *self.catalog.loading.peek()
             || *self.catalog.loading_more.peek()
             || *self.catalog.done.peek()
@@ -202,8 +224,7 @@ impl AppState {
         self.details.season.set(None);
         self.navigate(Screen::Details);
         if entry.is_movie() {
-            cancel(self.details.task);
-            self.details.loading.set(false);
+            self.clear_episodes();
         } else {
             self.load_seasons(entry, None);
         }
@@ -259,23 +280,36 @@ impl AppState {
     }
 
     pub fn play(
-        mut self,
+        self,
         entry: MediaEntry,
         season: Option<u32>,
         episode: Option<Episode>,
         start: f64,
     ) {
-        self.error.set(None);
-        let playback = Playback {
-            entry,
-            season,
-            episode,
-            start,
-            url: None,
-        };
-        self.playback.set(Some(playback.clone()));
-        self.navigate(Screen::Player);
-        restart(self.stream_task, self.load_stream(playback));
+        self.start(self.local(Playback::new(entry, season, episode, start)));
+    }
+
+    pub fn play_download(self, download: Download) {
+        if !download.file.is_file() {
+            return self.report("File not found", download.file.display());
+        }
+        self.focus(&download.entry, None);
+        let playback = Playback::new(download.entry, download.season, download.episode, 0.0);
+        self.start(playback.with_file(download.file));
+    }
+
+    pub fn reveal(self, file: PathBuf) {
+        spawn_forever(async move {
+            let revealed = tokio::process::Command::new("open")
+                .arg("-R")
+                .arg(&file)
+                .status()
+                .await
+                .is_ok_and(|s| s.success());
+            if !revealed {
+                self.report("Cannot show in Finder", file.display());
+            }
+        });
     }
 
     pub fn play_episode(self, season: u32, episode: Episode) {
@@ -284,19 +318,66 @@ impl AppState {
         }
     }
 
-    pub fn resume(mut self, item: WatchItem) {
+    pub fn resume(self, item: WatchItem) {
         self.update_watch(|items| {
             state::upsert(items, item.clone());
             true
         });
-        self.details.entry.set(Some(item.entry.clone()));
-        if let Some(season) = item.season {
-            self.load_seasons(item.entry.clone(), Some(season));
-        }
-        self.play(item.entry, item.season, item.episode, item.current_time);
+        let playback = self.local(Playback::new(
+            item.entry,
+            item.season,
+            item.episode,
+            item.current_time,
+        ));
+        let season = playback.season.filter(|_| playback.file.is_none());
+        self.focus(&playback.entry, season);
+        self.start(playback);
     }
 
-    pub fn has_next(&self) -> bool {
+    fn local(self, playback: Playback) -> Playback {
+        let file = download::local_file(
+            &self.config.read(),
+            &playback.entry,
+            playback.season,
+            playback.episode.as_ref(),
+        );
+        match file {
+            Some(file) => playback.with_file(file),
+            None => playback,
+        }
+    }
+
+    fn start(self, playback: Playback) {
+        self.show_player(playback.clone());
+        if playback.file.is_some() {
+            cancel(self.stream_task);
+        } else {
+            restart(self.stream_task, self.load_stream(playback));
+        }
+    }
+
+    fn focus(mut self, entry: &MediaEntry, season: Option<u32>) {
+        self.details.entry.set(Some(entry.clone()));
+        match season {
+            Some(season) => self.load_seasons(entry.clone(), Some(season)),
+            None => self.clear_episodes(),
+        }
+    }
+
+    fn clear_episodes(mut self) {
+        cancel(self.details.task);
+        self.details.loading.set(false);
+        self.details.seasons.set(Vec::new());
+        self.details.episodes.set(Vec::new());
+    }
+
+    fn show_player(mut self, playback: Playback) {
+        self.error.set(None);
+        self.playback.set(Some(playback));
+        self.navigate(Screen::Player);
+    }
+
+    pub fn has_next(self) -> bool {
         let playback = self.playback.read();
         let Some(Playback {
             season: Some(season),
@@ -348,15 +429,11 @@ impl AppState {
             };
             self.details.episodes.set(episodes);
             self.details.season.set(Some(next_season));
-            let next = Playback {
-                entry,
-                season: Some(next_season),
-                episode: Some(first),
-                start: 0.0,
-                url: None,
-            };
+            let next = self.local(Playback::new(entry, Some(next_season), Some(first), 0.0));
             self.playback.set(Some(next.clone()));
-            self.load_stream(next).await;
+            if next.file.is_none() {
+                self.load_stream(next).await;
+            }
         });
     }
 
@@ -445,10 +522,7 @@ impl AppState {
 
     pub fn download(mut self, entry: MediaEntry, season: Option<u32>, episode: Option<Episode>) {
         let config = self.config.read().clone();
-        let download = match (season, &episode) {
-            (Some(season), Some(ep)) => Download::episode(&config, &entry.name, season, ep),
-            _ => Download::movie(&config, &entry),
-        };
+        let download = Download::new(&config, &entry, season, episode.as_ref());
         let id = download.id;
         self.downloads.push(download.clone());
         self.navigate(Screen::Downloads);
@@ -492,7 +566,7 @@ impl AppState {
                 if let Ok(exe) = std::env::current_exe() {
                     let _ = std::process::Command::new(exe).spawn();
                 }
-                std::process::exit(0);
+                return dioxus::desktop::window().close();
             }
             self.updating.set(false);
             self.error.set(Some("Update failed".into()));
@@ -571,6 +645,14 @@ impl AppState {
         changed
     }
 
+    fn playing_file(self, path: &str) -> Option<PathBuf> {
+        self.playback
+            .peek()
+            .as_ref()
+            .filter(|p| p.url.as_deref() == Some(path))
+            .and_then(|p| p.file.clone())
+    }
+
     fn set_status(mut self, id: Uuid, status: Status) {
         if let Some(download) = self.downloads.write().iter_mut().find(|d| d.id == id) {
             download.status = status;
@@ -622,6 +704,13 @@ pub fn App() -> Element {
     use_future(move || app.load_catalog());
     use_future(move || app.check_update());
     use_future(move || app.sync());
+    use_asset_handler(media::ROUTE, move |request, responder| {
+        let file = app.playing_file(request.uri().path());
+        let range = media::requested_range(&request);
+        tokio::spawn(async move {
+            responder.respond(media::respond(file.as_deref(), range.as_deref()).await);
+        });
+    });
     use_effect(move || {
         if *app.screen.read() == Screen::Home {
             let top = *app.catalog.scroll.peek();
@@ -702,25 +791,36 @@ mod tests {
             year: Some("2004".into()),
             ..Default::default()
         };
-        let movie = Playback {
-            entry: entry.clone(),
-            season: None,
-            episode: None,
-            start: 0.0,
-            url: None,
-        };
+        let movie = Playback::new(entry.clone(), None, None, 0.0);
         assert_eq!(movie.title(), "Lost (2004)");
-        let episode = Playback {
-            season: Some(1),
-            episode: Some(Episode {
-                id: 1,
-                number: 2,
-                name: "Pilot".into(),
-                duration: None,
-                image_url: None,
-            }),
-            ..movie
+        let pilot = Episode {
+            id: 1,
+            number: 2,
+            name: "Pilot".into(),
+            duration: None,
+            image_url: None,
         };
+        let episode = Playback::new(entry, Some(1), Some(pilot), 0.0);
         assert_eq!(episode.title(), "Lost S01E02 - Pilot");
+    }
+
+    #[test]
+    fn local_playback_gets_a_fresh_media_url() {
+        let streaming = Playback::new(MediaEntry::default(), None, None, 12.0);
+        assert_eq!(
+            (streaming.url.as_deref(), streaming.file.as_deref()),
+            (None, None)
+        );
+        let first = streaming.clone().with_file(PathBuf::from("/a.mp4"));
+        let second = streaming.with_file(PathBuf::from("/a.mp4"));
+        assert!(
+            first
+                .url
+                .as_deref()
+                .is_some_and(|u| u.starts_with("/media/"))
+        );
+        assert_eq!(first.file.as_deref(), Some(Path::new("/a.mp4")));
+        assert_eq!(first.start, 12.0);
+        assert_ne!(first.url, second.url);
     }
 }

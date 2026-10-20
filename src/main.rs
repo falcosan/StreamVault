@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod download;
 mod gui;
+mod media;
 mod providers;
 mod search;
 mod state;

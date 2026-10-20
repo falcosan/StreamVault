@@ -14,6 +14,7 @@ const DEFAULT_LANG: &str = "it";
 const LANGS: [&str; 2] = ["it", "en"];
 const IMAGE_TYPES: [&str; 4] = ["poster", "cover", "cover_mobile", "background"];
 const CATALOG_SIZE: usize = 100;
+const SLIDERS_PER_REQUEST: usize = 6;
 const BROWSE_PAGE_SIZE: usize = 60;
 const BROWSE_MAX_PAGES: usize = 17;
 
@@ -67,29 +68,9 @@ impl StreamingCommunity {
         }
     }
 
-    async fn page(&self, url: &str) -> ProviderResult<Value> {
-        data_page(&fetch_text(self.client.get(url)).await?)
-    }
-
-    async fn inertia(
-        &self,
-        version: &str,
-        path: &str,
-        query: &[(&str, &str)],
-    ) -> ProviderResult<Value> {
-        fetch_json(
-            self.client
-                .get(format!("{}{path}", self.base))
-                .query(query)
-                .header("x-inertia", "true")
-                .header("x-inertia-version", version),
-        )
-        .await
-    }
-
-    async fn title_page(&self, entry: &MediaEntry) -> ProviderResult<Value> {
-        self.page(&format!("{}{}", self.base, Self::title_path(entry)))
-            .await
+    async fn page(&self, path: &str, query: &[(&str, &str)]) -> ProviderResult<Value> {
+        let request = self.client.get(format!("{}{path}", self.base)).query(query);
+        data_page(&fetch_text(request).await?)
     }
 
     fn title_path(entry: &MediaEntry) -> String {
@@ -185,6 +166,16 @@ fn genres(page: &Value) -> Vec<String> {
         .collect()
 }
 
+fn slider_requests(genres: &[String]) -> impl Iterator<Item = Value> + '_ {
+    genres.chunks(SLIDERS_PER_REQUEST).map(|chunk| {
+        let sliders: Vec<Value> = chunk
+            .iter()
+            .map(|g| json!({ "name": "genre", "genre": g }))
+            .collect();
+        json!({ "sliders": sliders })
+    })
+}
+
 fn data_page(html: &str) -> ProviderResult<Value> {
     static APP: LazyLock<Selector> =
         LazyLock::new(|| Selector::parse("div#app[data-page]").unwrap());
@@ -225,19 +216,12 @@ impl Provider for StreamingCommunity {
     }
 
     async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>> {
-        let home = self.page(&self.base).await?;
-        let version = home["version"]
-            .as_str()
-            .ok_or_else(|| ProviderError::Parse("No version in data-page".into()))?;
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
         for lang in LANGS {
-            match self
-                .inertia(version, &format!("/{lang}/search"), &[("q", query)])
-                .await
-            {
-                Ok(json) => entries.extend(
-                    self.titles(items(&json["props"]["titles"]), lang)
+            match self.page(&format!("/{lang}/search"), &[("q", query)]).await {
+                Ok(page) => entries.extend(
+                    self.titles(items(&page["props"]["titles"]), lang)
                         .filter(|e| seen.insert(e.id)),
                 ),
                 Err(e) => eprintln!("[StreamVault] StreamingCommunity {lang} search failed: {e}"),
@@ -247,7 +231,7 @@ impl Provider for StreamingCommunity {
     }
 
     async fn seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<u32>> {
-        let page = self.title_page(entry).await?;
+        let page = self.page(&Self::title_path(entry), &[]).await?;
         let mut seasons: Vec<u32> = items(&page["props"]["title"]["seasons"])
             .filter_map(|s| u32::try_from(s["number"].as_u64()?).ok())
             .collect();
@@ -256,11 +240,9 @@ impl Provider for StreamingCommunity {
     }
 
     async fn episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>> {
-        let page = self.title_page(entry).await?;
-        let version = page["version"].as_str().unwrap_or_default();
         let path = format!("{}/season-{season}", Self::title_path(entry));
-        let json = self.inertia(version, &path, &[]).await?;
-        let mut episodes: Vec<Episode> = items(&json["props"]["loadedSeason"]["episodes"])
+        let page = self.page(&path, &[]).await?;
+        let mut episodes: Vec<Episode> = items(&page["props"]["loadedSeason"]["episodes"])
             .filter_map(|ep| {
                 Some(Episode {
                     id: ep["id"].as_u64()?,
@@ -282,9 +264,9 @@ impl Provider for StreamingCommunity {
         episode: Option<&Episode>,
     ) -> ProviderResult<StreamUrl> {
         let lang = Self::lang(entry);
-        let page = self.title_page(entry).await?;
-        let id = page["props"]["title"]["id"].as_u64().unwrap_or(entry.id);
-        let mut iframe = self.client.get(format!("{}/{lang}/iframe/{id}", self.base));
+        let mut iframe = self
+            .client
+            .get(format!("{}/{lang}/iframe/{}", self.base, entry.id));
         if let Some(ep) = episode {
             iframe = iframe.query(&[
                 ("episode_id", ep.id.to_string()),
@@ -303,7 +285,7 @@ impl Provider for StreamingCommunity {
     }
 
     async fn catalog(&self) -> ProviderResult<Vec<MediaEntry>> {
-        let page = self.page(&self.base).await?;
+        let page = self.page("", &[]).await?;
         let props = &page["props"];
         let mut seen = HashSet::new();
         let mut entries: Vec<MediaEntry> = self
@@ -320,11 +302,11 @@ impl Provider for StreamingCommunity {
                 .collect();
         }
         let genres = genres(&page);
-        let sliders = json!({
-            "sliders": genres.iter().map(|g| json!({ "name": "genre", "genre": g })).collect::<Vec<_>>()
-        });
-        for lang in LANGS {
-            if entries.len() >= CATALOG_SIZE || genres.is_empty() {
+        let batches = LANGS
+            .into_iter()
+            .flat_map(|lang| slider_requests(&genres).map(move |sliders| (lang, sliders)));
+        for (lang, sliders) in batches {
+            if entries.len() >= CATALOG_SIZE {
                 break;
             }
             let request = self
@@ -346,7 +328,7 @@ impl Provider for StreamingCommunity {
 
     async fn catalog_more(&self) -> ProviderResult<Vec<MediaEntry>> {
         if self.browse(|b| b.is_none()) {
-            let browse = Browse::new(genres(&self.page(&self.base).await?));
+            let browse = Browse::new(genres(&self.page("", &[]).await?));
             self.browse(|b| *b = Some(browse));
         }
         loop {
@@ -470,6 +452,23 @@ mod tests {
         let html = r#"<div id="app" data-page="{&quot;version&quot;:&quot;v1&quot;}"></div>"#;
         assert_eq!(data_page(html).unwrap()["version"], "v1");
         assert!(data_page("<div id=\"app\"></div>").is_err());
+    }
+
+    #[test]
+    fn slider_requests_respect_the_server_limit() {
+        let genres: Vec<String> = (0..13).map(|i| format!("g{i}")).collect();
+        let requests: Vec<Value> = slider_requests(&genres).collect();
+        assert_eq!(requests.len(), 3);
+        assert!(
+            requests
+                .iter()
+                .all(|r| items(&r["sliders"]).count() <= SLIDERS_PER_REQUEST)
+        );
+        assert_eq!(
+            requests[2],
+            json!({ "sliders": [{ "name": "genre", "genre": "g12" }] })
+        );
+        assert_eq!(slider_requests(&[]).count(), 0);
     }
 
     #[test]

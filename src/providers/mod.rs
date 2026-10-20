@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use aurora::Aurora;
 use raiplay::RaiPlay;
 use regex::Regex;
-use reqwest::{Client, ClientBuilder, RequestBuilder, Url};
+use reqwest::{Client, ClientBuilder, RequestBuilder, Response, Url};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -21,7 +21,9 @@ use std::time::Duration;
 use streaming_community::StreamingCommunity;
 use tokio::task::JoinSet;
 
-pub const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+const ATTEMPTS: u32 = 4;
+const RETRY_DELAY: Duration = Duration::from_millis(400);
+const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
 
 #[derive(Debug)]
@@ -200,11 +202,27 @@ fn build(builder: ClientBuilder) -> Client {
 }
 
 async fn fetch_json(request: RequestBuilder) -> ProviderResult<Value> {
-    Ok(request.send().await?.error_for_status()?.json().await?)
+    Ok(send(request).await?.json().await?)
 }
 
 async fn fetch_text(request: RequestBuilder) -> ProviderResult<String> {
-    Ok(request.send().await?.error_for_status()?.text().await?)
+    Ok(send(request).await?.text().await?)
+}
+
+async fn send(request: RequestBuilder) -> ProviderResult<Response> {
+    let mut delay = RETRY_DELAY;
+    for _ in 1..ATTEMPTS {
+        let Some(attempt) = request.try_clone() else {
+            break;
+        };
+        let response = attempt.send().await?;
+        if !response.status().is_server_error() {
+            return Ok(response.error_for_status()?);
+        }
+        tokio::time::sleep(delay).await;
+        delay *= 2;
+    }
+    Ok(request.send().await?.error_for_status()?)
 }
 
 fn domain(key: &str) -> String {
@@ -335,6 +353,57 @@ mod tests {
 
     fn failure() -> ProviderResult<Vec<MediaEntry>> {
         Err(ProviderError::Network("down".into()))
+    }
+
+    async fn serve(statuses: &'static [u16]) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = hits.clone();
+        tokio::spawn(async move {
+            for status in statuses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = socket.read(&mut [0; 1024]).await;
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok"
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (url, hits)
+    }
+
+    #[tokio::test]
+    async fn send_retries_transient_server_errors() {
+        let (url, hits) = serve(&[500, 200]).await;
+        assert_eq!(fetch_text(Client::new().get(url)).await.unwrap(), "ok");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn send_gives_up_after_all_attempts() {
+        let (url, hits) = serve(&[503, 500, 502, 504]).await;
+        assert!(fetch_text(Client::new().get(url)).await.is_err());
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn send_does_not_retry_client_errors() {
+        let (url, hits) = serve(&[404, 200]).await;
+        assert!(fetch_text(Client::new().get(url)).await.is_err());
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn send_does_not_retry_connection_failures() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        drop(listener);
+        let started = std::time::Instant::now();
+        assert!(fetch_text(Client::new().get(url)).await.is_err());
+        assert!(started.elapsed() < RETRY_DELAY);
     }
 
     #[test]

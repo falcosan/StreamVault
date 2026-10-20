@@ -1,8 +1,10 @@
 use crate::config::AppConfig;
 use crate::providers::{Episode, MediaEntry, StreamUrl};
+use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use uuid::Uuid;
 
@@ -11,7 +13,7 @@ const ERROR_LINES: usize = 5;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
     Queued,
-    Downloading,
+    Downloading(u8),
     Muxing,
     Completed,
     Failed(String),
@@ -21,39 +23,73 @@ pub enum Status {
 pub struct Download {
     pub id: Uuid,
     pub title: String,
-    pub dir: PathBuf,
+    pub file: PathBuf,
+    pub entry: MediaEntry,
+    pub season: Option<u32>,
+    pub episode: Option<Episode>,
     pub status: Status,
 }
 
 impl Download {
-    pub fn movie(config: &AppConfig, entry: &MediaEntry) -> Self {
-        let title = entry.display_title();
-        Self::new(config.movie_dir().join(sanitize_filename(&title)), title)
+    pub fn new(
+        config: &AppConfig,
+        entry: &MediaEntry,
+        season: Option<u32>,
+        episode: Option<&Episode>,
+    ) -> Self {
+        let (title, file) = target(config, entry, season, episode);
+        Self {
+            id: Uuid::new_v4(),
+            title,
+            file,
+            entry: entry.clone(),
+            season,
+            episode: episode.cloned(),
+            status: Status::Queued,
+        }
     }
+}
 
-    pub fn episode(config: &AppConfig, show: &str, season: u32, episode: &Episode) -> Self {
+pub fn local_file(
+    config: &AppConfig,
+    entry: &MediaEntry,
+    season: Option<u32>,
+    episode: Option<&Episode>,
+) -> Option<PathBuf> {
+    let (_, file) = target(config, entry, season, episode);
+    file.is_file().then_some(file)
+}
+
+fn target(
+    config: &AppConfig,
+    entry: &MediaEntry,
+    season: Option<u32>,
+    episode: Option<&Episode>,
+) -> (String, PathBuf) {
+    let (title, dir) = if let (Some(season), Some(episode)) = (season, episode) {
         let title = config
             .output
             .map_episode_name
             .replace("%(episode_name)", &episode.name)
             .replace("%(season)", &format!("{season:02}"))
             .replace("%(episode)", &format!("{:02}", episode.number))
-            .replace("%(show_name)", show);
+            .replace("%(show_name)", &entry.name);
         let dir = config
             .serie_dir()
-            .join(sanitize_filename(show))
+            .join(sanitize_filename(&entry.name))
             .join(format!("S{season:02}"));
-        Self::new(dir, title)
-    }
-
-    fn new(dir: PathBuf, title: String) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            title,
-            dir,
-            status: Status::Queued,
-        }
-    }
+        (title, dir)
+    } else {
+        let title = entry.display_title();
+        let dir = config.movie_dir().join(sanitize_filename(&title));
+        (title, dir)
+    };
+    let file = dir.join(format!(
+        "{}.{}",
+        sanitize_filename(&title),
+        config.process.extension
+    ));
+    (title, file)
 }
 
 pub async fn run(
@@ -62,7 +98,7 @@ pub async fn run(
     stream: &StreamUrl,
     mut report: impl FnMut(Status),
 ) {
-    report(Status::Downloading);
+    report(Status::Downloading(0));
     let work = work_dir(download.id);
     let result = fetch(config, download, stream, &work, &mut report).await;
     let _ = tokio::fs::remove_dir_all(&work).await;
@@ -79,7 +115,14 @@ async fn fetch(
     work: &Path,
     report: &mut impl FnMut(Status),
 ) -> Result<(), String> {
-    tokio::fs::create_dir_all(&download.dir)
+    let (Some(dir), Some(name), Some(file)) = (
+        download.file.parent(),
+        download.file.file_stem(),
+        download.file.file_name(),
+    ) else {
+        return Err(format!("Invalid output path: {}", download.file.display()));
+    };
+    tokio::fs::create_dir_all(dir)
         .await
         .map_err(|e| format!("Cannot create output dir: {e}"))?;
     let tmp = work.join("tmp");
@@ -87,36 +130,31 @@ async fn fetch(
         .await
         .map_err(|e| format!("Cannot create tmp dir: {e}"))?;
     let ffmpeg = find_binary("ffmpeg");
-    let name = sanitize_filename(&download.title);
-    let mut child = downloader(config, stream, &name, work, &tmp, &ffmpeg)
+    let mut child = downloader(config, stream, name, work, &tmp, &ffmpeg)
         .spawn()
         .map_err(|e| format!("Failed to start N_m3u8DL-RE: {e}"))?;
 
     let mut muxing = false;
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let watch_output = async {
-        let Some(stdout) = stdout else { return };
-        let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if !muxing && ["Muxing", "muxing", "MUX"].iter().any(|m| line.contains(m)) {
+    let mut progress = Progress::default();
+    let mut errors = Vec::new();
+    tokio::join!(
+        each_line(child.stdout.take(), |line| {
+            if muxing {
+                return;
+            }
+            if ["Muxing", "muxing", "MUX"].iter().any(|m| line.contains(m)) {
                 muxing = true;
                 report(Status::Muxing);
+            } else if let Some(percent) = progress.update(line) {
+                report(Status::Downloading(percent));
             }
-        }
-    };
-    let collect_errors = async {
-        let mut kept = Vec::new();
-        let Some(stderr) = stderr else { return kept };
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if kept.len() < ERROR_LINES && is_meaningful(&line) {
-                kept.push(line);
+        }),
+        each_line(child.stderr.take(), |line| {
+            if errors.len() < ERROR_LINES && is_meaningful(line) {
+                errors.push(line.to_owned());
             }
-        }
-        kept
-    };
-    let ((), errors) = tokio::join!(watch_output, collect_errors);
+        }),
+    );
 
     let exit = child
         .wait()
@@ -129,27 +167,81 @@ async fn fetch(
     if !muxing {
         report(Status::Muxing);
     }
-    let file = format!("{name}.{}", config.process.extension);
-    let muxed = work.join(&file);
+    let muxed = work.join(file);
     mux(config, &ffmpeg, &muxed, &media, &subtitles)
         .await
         .map_err(|e| format!("Mux failed: {e}"))?;
-    move_file(&muxed, &download.dir.join(&file))
+    move_file(&muxed, &download.file)
         .await
         .map_err(|e| format!("Cannot save output: {e}"))
+}
+
+#[derive(Default)]
+struct Progress {
+    streams: HashMap<String, (u64, u64)>,
+    percent: u8,
+}
+
+impl Progress {
+    fn update(&mut self, line: &str) -> Option<u8> {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        let (index, segments) = tokens.iter().enumerate().find_map(|(index, token)| {
+            let (done, total) = token.split_once('/')?;
+            let segments = (done.parse().ok()?, total.parse().ok()?);
+            let percent = tokens
+                .iter()
+                .skip(index + 1)
+                .take(2)
+                .any(|t| t.contains('%'));
+            percent.then_some((index, segments))
+        })?;
+        let stream = tokens[..index]
+            .iter()
+            .filter(|token| token.chars().any(char::is_alphanumeric))
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.streams.insert(stream, segments);
+        let (done, total) = self
+            .streams
+            .values()
+            .fold((0, 0), |(done, total), (d, t)| (done + d, total + t));
+        let percent = u8::try_from((done * 100 / total.max(1)).min(100)).ok()?;
+        (percent != self.percent).then(|| {
+            self.percent = percent;
+            percent
+        })
+    }
+}
+
+async fn each_line(source: Option<impl AsyncRead + Unpin>, mut handle: impl FnMut(&str)) {
+    let Some(source) = source else { return };
+    let mut reader = BufReader::new(source);
+    let mut buffer = Vec::new();
+    while reader
+        .read_until(b'\n', &mut buffer)
+        .await
+        .is_ok_and(|read| read > 0)
+    {
+        for line in buffer.split(|b| matches!(b, b'\r' | b'\n')) {
+            handle(&String::from_utf8_lossy(line));
+        }
+        buffer.clear();
+    }
 }
 
 fn downloader(
     config: &AppConfig,
     stream: &StreamUrl,
-    name: &str,
+    name: &OsStr,
     work: &Path,
     tmp: &Path,
     ffmpeg: &Path,
 ) -> Command {
     let settings = &config.download;
     let mut cmd = Command::new(find_binary("N_m3u8DL-RE"));
-    cmd.arg(&stream.url)
+    cmd.kill_on_drop(true)
+        .arg(&stream.url)
         .arg("--save-name")
         .arg(name)
         .arg("--save-dir")
@@ -208,7 +300,7 @@ async fn mux(
         return Err("No .ts files found after download".into());
     }
     let mut cmd = Command::new(ffmpeg);
-    cmd.arg("-y");
+    cmd.kill_on_drop(true).arg("-y");
     for input in media.iter().chain(subtitles) {
         cmd.arg("-i").arg(input);
     }
@@ -277,10 +369,16 @@ async fn scan_tracks(dir: &Path, with_subtitles: bool) -> (Vec<PathBuf>, Vec<Pat
 }
 
 async fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
-    if tokio::fs::rename(from, to).await.is_err() {
-        tokio::fs::copy(from, to).await?;
+    if tokio::fs::rename(from, to).await.is_ok() {
+        return Ok(());
     }
-    Ok(())
+    copy_atomically(from, to).await
+}
+
+async fn copy_atomically(from: &Path, to: &Path) -> std::io::Result<()> {
+    let partial = to.with_extension("part");
+    tokio::fs::copy(from, &partial).await?;
+    tokio::fs::rename(&partial, to).await
 }
 
 fn is_meaningful(line: &str) -> bool {
@@ -368,22 +466,44 @@ mod tests {
             year: Some("2010".into()),
             ..Default::default()
         };
-        let download = Download::movie(&AppConfig::default(), &entry);
+        let download = Download::new(&AppConfig::default(), &entry, None, None);
         assert_eq!(download.title, "Inception (2010)");
-        assert!(download.dir.ends_with("Movies/Movie/Inception (2010)"));
+        assert!(
+            download
+                .file
+                .ends_with("Medias/Movie/Inception (2010)/Inception (2010).mp4")
+        );
+        assert_eq!(download.entry, entry);
+        assert_eq!((download.season, download.episode), (None, None));
         assert_eq!(download.status, Status::Queued);
     }
 
     #[test]
     fn episode_download_uses_name_template_and_season_folder() {
         let mut config = AppConfig::default();
-        let download = Download::episode(&config, "Breaking/Bad", 2, &episode(5, "Mandala"));
+        let show = MediaEntry {
+            name: "Breaking/Bad".into(),
+            ..Default::default()
+        };
+        let download = Download::new(&config, &show, Some(2), Some(&episode(5, "Mandala")));
         assert_eq!(download.title, "Mandala S02E05");
-        assert!(download.dir.ends_with("Movies/Serie/Breaking_Bad/S02"));
+        assert!(
+            download
+                .file
+                .ends_with("Medias/Serie/Breaking_Bad/S02/Mandala S02E05.mp4")
+        );
+        assert_eq!(download.season, Some(2));
+        assert_eq!(download.episode, Some(episode(5, "Mandala")));
         config.output.map_episode_name =
             "%(show_name) - %(episode_name) S%(season)E%(episode)".into();
-        let named = Download::episode(&config, "Lost", 1, &episode(3, "Tabula Rasa"));
+        config.process.extension = "mkv".into();
+        let lost = MediaEntry {
+            name: "Lost".into(),
+            ..Default::default()
+        };
+        let named = Download::new(&config, &lost, Some(1), Some(&episode(3, "Tabula Rasa")));
         assert_eq!(named.title, "Lost - Tabula Rasa S01E03");
+        assert!(named.file.ends_with("Lost - Tabula Rasa S01E03.mkv"));
     }
 
     #[test]
@@ -391,9 +511,31 @@ mod tests {
         let entry = MediaEntry::default();
         let config = AppConfig::default();
         assert_ne!(
-            Download::movie(&config, &entry).id,
-            Download::movie(&config, &entry).id
+            Download::new(&config, &entry, None, None).id,
+            Download::new(&config, &entry, None, None).id
         );
+    }
+
+    #[test]
+    fn local_file_finds_only_existing_downloads() {
+        let root = scratch_dir("local_file");
+        let mut config = AppConfig::default();
+        config.output.root_path = root.to_string_lossy().into_owned();
+        let show = MediaEntry {
+            name: "Lost".into(),
+            ..Default::default()
+        };
+        let pilot = episode(1, "Pilot");
+        assert_eq!(local_file(&config, &show, Some(1), Some(&pilot)), None);
+        let download = Download::new(&config, &show, Some(1), Some(&pilot));
+        std::fs::create_dir_all(download.file.parent().unwrap()).unwrap();
+        std::fs::write(&download.file, "video").unwrap();
+        assert_eq!(
+            local_file(&config, &show, Some(1), Some(&pilot)),
+            Some(download.file)
+        );
+        assert_eq!(local_file(&config, &show, None, None), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -445,6 +587,71 @@ mod tests {
     }
 
     #[test]
+    fn progress_reads_segment_counts_from_downloader_lines() {
+        let mut progress = Progress::default();
+        assert_eq!(
+            progress.update("23:52:29 INFO : Start downloading..."),
+            None
+        );
+        assert_eq!(
+            progress.update("Vid Kbps ━━━━━━━━━━ 19/40 47.50% 725.94KB/3.15MB 725.94KBps 00:00:00"),
+            Some(47)
+        );
+        assert_eq!(
+            progress.update("Vid Kbps ━━━━━━━━━━ 19/40 47.50% 1.52MB/3.20MB 830.95KBps 00:00:00"),
+            None
+        );
+        assert_eq!(
+            progress.update(
+                "Vid Kbps ━━━━━━━━━━ 40/40 100.00% 2.68MB - 00:00:00   23:52:32 INFO : Done"
+            ),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn progress_does_not_depend_on_bar_glyphs() {
+        let mut progress = Progress::default();
+        assert_eq!(
+            progress.update("Vid 1080p | 4 Mbps ----- 12/48 25.00% 1MB/4MB"),
+            Some(25)
+        );
+        assert_eq!(progress.update("Vid 1080p | 4 Mbps 24/48 50.00%"), Some(50));
+        assert_eq!(progress.update("INFO : Vid | 48 Segments | 2/3 done"), None);
+    }
+
+    #[test]
+    fn progress_accepts_localized_percentages() {
+        let mut progress = Progress::default();
+        assert_eq!(progress.update("Vid ━━━ 12/48 25,00 % 1MB/4MB"), Some(25));
+        assert_eq!(progress.update("Vid ━━━ 36/48 75,00% 3MB/4MB"), Some(75));
+    }
+
+    #[test]
+    fn progress_skips_the_initial_zero() {
+        let mut progress = Progress::default();
+        assert_eq!(progress.update("Vid ━━━ 0/40 0.00%"), None);
+        assert_eq!(progress.update("Vid ━━━ 4/40 10.00%"), Some(10));
+    }
+
+    #[test]
+    fn progress_aggregates_all_streams() {
+        let mut progress = Progress::default();
+        assert_eq!(progress.update("Vid 1080p ━━━ 50/100 50.00%"), Some(50));
+        assert_eq!(progress.update("Aud ita ━━━ 0/100 0.00%"), Some(25));
+        assert_eq!(progress.update("Aud ita ━━━ 100/100 100.00%"), Some(75));
+    }
+
+    #[tokio::test]
+    async fn each_line_splits_on_any_newline_and_survives_invalid_utf8() {
+        let mut lines = Vec::new();
+        let source: &[u8] = b"a\rb\nc\xff\nd";
+        each_line(Some(source), |line| lines.push(line.to_owned())).await;
+        lines.retain(|line| !line.is_empty());
+        assert_eq!(lines, ["a", "b", "c\u{fffd}", "d"]);
+    }
+
+    #[test]
     fn is_meaningful_skips_stack_frames_and_rules() {
         assert!(is_meaningful("boom"));
         assert!(!is_meaningful("   at Foo.Bar()"));
@@ -482,6 +689,18 @@ mod tests {
         std::fs::write(&from, "video").unwrap();
         move_file(&from, &to).await.unwrap();
         assert_eq!(std::fs::read_to_string(&to).unwrap(), "video");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn copy_atomically_never_exposes_a_partial_file() {
+        let dir = scratch_dir("copy_atomically");
+        let (from, to) = (dir.join("work.mp4"), dir.join("out/final.mp4"));
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::write(&from, "video").unwrap();
+        copy_atomically(&from, &to).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "video");
+        assert!(!to.with_extension("part").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

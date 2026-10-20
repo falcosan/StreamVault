@@ -1,6 +1,6 @@
 use super::{
     Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl, domain,
-    fetch_json, fetch_text, items, vixcloud_playlist,
+    fetch_json, fetch_text, items, send, vixcloud_playlist,
 };
 use async_trait::async_trait;
 use percent_encoding::percent_decode_str;
@@ -44,7 +44,7 @@ impl AnimeUnity {
         {
             return Ok(auth.clone());
         }
-        let response = self.client.get(&self.base).send().await?;
+        let response = send(self.client.get(&self.base)).await?;
         let headers = response.headers();
         let auth = Auth {
             xsrf: cookie(headers, "XSRF-TOKEN")

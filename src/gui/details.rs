@@ -127,13 +127,13 @@ fn EpisodeRow(season: u32, episode: Episode) -> Element {
                 span { class: "ep-name", "{episode.name}" }
             }
             button {
-                class: "ep-play",
+                class: "btn-play",
                 aria_label: "Play episode {number}",
                 onclick: move |_| app.play_episode(season, play.clone()),
                 "▶"
             }
             button {
-                class: "ep-dl",
+                class: "btn-subtle",
                 aria_label: "Download episode {number}",
                 onclick: move |_| app.download_episode(season, download.clone()),
                 "⬇"

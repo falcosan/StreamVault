@@ -57,7 +57,7 @@ pub struct RequestsConfig {
 impl Default for OutputConfig {
     fn default() -> Self {
         Self {
-            root_path: "Movies".into(),
+            root_path: "Medias".into(),
             movie_folder_name: "Movie".into(),
             serie_folder_name: "Serie".into(),
             map_episode_name: "%(episode_name) S%(season)E%(episode)".into(),
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn defaults_match_documented_values() {
         let c = AppConfig::default();
-        assert_eq!(c.output.root_path, "Movies");
+        assert_eq!(c.output.root_path, "Medias");
         assert_eq!(c.output.movie_folder_name, "Movie");
         assert_eq!(c.output.serie_folder_name, "Serie");
         assert_eq!(c.download.thread_count, 8);
@@ -223,14 +223,14 @@ mod tests {
         assert_eq!(c.download.retry_count, 30);
         assert_eq!(c.process.extension, "mp4");
         assert_eq!(c.timeout(), Duration::from_secs(5));
-        assert_eq!(c.output.root_path, "Movies");
+        assert_eq!(c.output.root_path, "Medias");
     }
 
     #[test]
     fn media_dirs_nest_under_root_path() {
         let c = AppConfig::default();
-        assert!(c.movie_dir().ends_with("Movies/Movie"));
-        assert!(c.serie_dir().ends_with("Movies/Serie"));
+        assert!(c.movie_dir().ends_with("Medias/Movie"));
+        assert!(c.serie_dir().ends_with("Medias/Serie"));
     }
 
     #[test]

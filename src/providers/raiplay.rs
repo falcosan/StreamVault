@@ -1,6 +1,6 @@
 use super::{
     Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl, fetch_json,
-    items, non_blank, stable_hash,
+    items, non_blank, send, stable_hash,
 };
 use async_trait::async_trait;
 use reqwest::Client;
@@ -59,14 +59,8 @@ impl RaiPlay {
             .split('=')
             .nth(1)
             .ok_or_else(|| ProviderError::StreamExtraction("No cont parameter".into()))?;
-        let bytes = self
-            .client
-            .get(format!("{RELINKER}?cont={cont}&output=62"))
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await?;
+        let relinker = self.client.get(format!("{RELINKER}?cont={cont}&output=62"));
+        let bytes = send(relinker).await?.bytes().await?;
         let relinker: Value = serde_json::from_str(&String::from_utf8_lossy(&bytes))?;
         let url = relinker["video"][0]
             .as_str()

@@ -2,6 +2,8 @@ use crate::app::AppState;
 use crate::download::{Download, Status};
 use dioxus::prelude::*;
 
+const FOLDER_ICON: &str = include_str!("../../assets/icons/folder.svg");
+
 #[component]
 pub fn DownloadsView() -> Element {
     let app = use_context::<AppState>();
@@ -37,17 +39,45 @@ pub fn DownloadsView() -> Element {
 
 #[component]
 fn DownloadCard(download: Download) -> Element {
+    let app = use_context::<AppState>();
     let (text, class) = match &download.status {
-        Status::Queued => ("Queued", "queued"),
-        Status::Downloading => ("Downloading...", "downloading"),
-        Status::Muxing => ("Muxing...", "muxing"),
-        Status::Completed => ("Completed", "completed"),
-        Status::Failed(e) => (e.as_str(), "failed"),
+        Status::Queued => ("Queued".into(), "queued"),
+        Status::Downloading(percent) => (format!("Downloading... {percent}%"), "downloading"),
+        Status::Muxing => ("Muxing...".into(), "muxing"),
+        Status::Completed => ("Completed".into(), "completed"),
+        Status::Failed(e) => (e.clone(), "failed"),
     };
+    let file = download.file.clone();
+    let target = download.clone();
     rsx! {
         div { class: "dl-card",
             span { class: "dl-card-title", "{download.title}" }
-            span { class: "dl-card-status {class}", role: "status", "{text}" }
+            span { class: "dl-card-status {class}", "{text}" }
+            if download.status == Status::Completed {
+                div { class: "dl-actions",
+                    button {
+                        class: "btn-subtle",
+                        aria_label: "Show {download.title} in Finder",
+                        title: "Show in Finder",
+                        onclick: move |_| app.reveal(file.clone()),
+                        span { class: "folder-icon", dangerous_inner_html: FOLDER_ICON }
+                    }
+                    button {
+                        class: "btn-play",
+                        aria_label: "Play {download.title}",
+                        onclick: move |_| app.play_download(target.clone()),
+                        "▶"
+                    }
+                }
+            }
+            if let Status::Downloading(percent) = download.status {
+                progress {
+                    class: "dl-progress",
+                    aria_label: "{download.title} download progress",
+                    max: 100,
+                    value: "{percent}",
+                }
+            }
         }
     }
 }
