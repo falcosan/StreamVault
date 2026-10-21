@@ -9,6 +9,7 @@ use std::time::Duration;
 pub const WATCH_FILE: &str = "continue_watching.json";
 pub const PREFS_FILE: &str = "player_prefs.json";
 pub const SNAPSHOT_FILE: &str = "sync_snapshot.json";
+pub const DOWNLOADS_FILE: &str = "downloads.json";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]

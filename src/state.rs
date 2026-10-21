@@ -1,4 +1,5 @@
-use crate::config::{PREFS_FILE, WATCH_FILE, read_json, state_dir, write_json};
+use crate::config::{DOWNLOADS_FILE, PREFS_FILE, WATCH_FILE, read_json, state_dir, write_json};
+use crate::download::Download;
 use crate::providers::{Episode, MediaEntry, MediaType, next_episode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -69,6 +70,10 @@ pub fn prefs_path() -> PathBuf {
     state_dir().join(PREFS_FILE)
 }
 
+fn downloads_path() -> PathBuf {
+    state_dir().join(DOWNLOADS_FILE)
+}
+
 pub fn load_watch() -> Vec<WatchItem> {
     parse_items(load(&watch_path()))
 }
@@ -77,12 +82,23 @@ pub fn load_prefs() -> PlayerPrefs {
     load(&prefs_path())
 }
 
+pub fn load_downloads() -> Vec<Download> {
+    load::<Vec<Download>>(&downloads_path())
+        .into_iter()
+        .filter_map(Download::restored)
+        .collect()
+}
+
 pub fn save_watch(items: &[WatchItem]) {
     save(&watch_path(), items);
 }
 
 pub fn save_prefs(prefs: &PlayerPrefs) {
     save(&prefs_path(), prefs);
+}
+
+pub fn save_downloads(downloads: &[Download]) {
+    save(&downloads_path(), downloads);
 }
 
 fn load<T: DeserializeOwned + Default>(path: &Path) -> T {

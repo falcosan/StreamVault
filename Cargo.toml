@@ -21,8 +21,8 @@ tokio = { version = "1", features = [
   "process",
   "io-util",
 ] }
-uuid = { version = "1", features = ["v4"] }
 serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 dioxus = { version = "0.7", features = ["desktop"] }
 dioxus-desktop = { version = "0.7", features = ["fullscreen"] }
 reqwest = { version = "0.13", features = ["json", "cookies", "query", "form"] }

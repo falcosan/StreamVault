@@ -35,7 +35,7 @@ pub fn DetailsView(entry: MediaEntry) -> Element {
                             }
                             button {
                                 class: "btn-ghost btn-large",
-                                onclick: move |_| app.download(download.clone(), None, None),
+                                onclick: move |_| app.download(&download, None, None),
                                 "⬇  Download"
                             }
                         }
@@ -135,7 +135,7 @@ fn EpisodeRow(season: u32, episode: Episode) -> Element {
             button {
                 class: "btn-subtle",
                 aria_label: "Download episode {number}",
-                onclick: move |_| app.download_episode(season, download.clone()),
+                onclick: move |_| app.download_episode(season, &download),
                 "⬇"
             }
         }

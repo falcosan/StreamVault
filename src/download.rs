@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 use crate::providers::{Episode, MediaEntry, StreamUrl};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,7 @@ use uuid::Uuid;
 const ERROR_LINES: usize = 5;
 const SAVE_PATTERN: &str = "<SaveName>.<Language>.<Id>";
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Status {
     Queued,
     Downloading(u8),
@@ -26,7 +27,7 @@ pub struct Subtitle {
     pub language: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Download {
     pub id: Uuid,
     pub title: String,
@@ -53,6 +54,17 @@ impl Download {
             season,
             episode: episode.cloned(),
             status: Status::Queued,
+        }
+    }
+
+    pub fn restored(self) -> Option<Self> {
+        match self.status {
+            Status::Completed => self.file.is_file().then_some(self),
+            Status::Failed(_) => None,
+            _ => Some(Self {
+                status: Status::Queued,
+                ..self
+            }),
         }
     }
 }
@@ -170,8 +182,12 @@ async fn fetch(
     tokio::fs::create_dir_all(&tmp)
         .await
         .map_err(|e| format!("Cannot create tmp dir: {e}"))?;
+    let tracks = work.join("tracks");
+    reset_dir(&tracks)
+        .await
+        .map_err(|e| format!("Cannot create tracks dir: {e}"))?;
     let ffmpeg = find_binary("ffmpeg");
-    let mut child = downloader(config, stream, name, work, &tmp, &ffmpeg)
+    let mut child = downloader(config, stream, name, &tracks, &tmp, &ffmpeg)
         .spawn()
         .map_err(|e| format!("Failed to start N_m3u8DL-RE: {e}"))?;
 
@@ -201,7 +217,7 @@ async fn fetch(
         .wait()
         .await
         .map_err(|e| format!("Process error: {e}"))?;
-    let (media, subtitles) = scan_tracks(work, config.process.merge_subtitle).await;
+    let (media, subtitles) = scan_tracks(&tracks, config.process.merge_subtitle).await;
     if !exit.success() && media.is_empty() {
         return Err(exit_message(exit, &errors));
     }
@@ -278,7 +294,7 @@ fn downloader(
     config: &AppConfig,
     stream: &StreamUrl,
     name: &OsStr,
-    work: &Path,
+    tracks: &Path,
     tmp: &Path,
     ffmpeg: &Path,
 ) -> Command {
@@ -291,7 +307,7 @@ fn downloader(
         .arg("--save-pattern")
         .arg(SAVE_PATTERN)
         .arg("--save-dir")
-        .arg(work)
+        .arg(tracks)
         .arg("--tmp-dir")
         .arg(tmp)
         .arg("--ffmpeg-binary-path")
@@ -375,6 +391,15 @@ fn work_dir(id: Uuid) -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("StreamVault")
         .join(id.to_string())
+}
+
+async fn reset_dir(dir: &Path) -> std::io::Result<()> {
+    if let Err(e) = tokio::fs::remove_dir_all(dir).await
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(e);
+    }
+    tokio::fs::create_dir_all(dir).await
 }
 
 async fn scan_tracks(dir: &Path, with_subtitles: bool) -> (Vec<PathBuf>, Vec<PathBuf>) {
@@ -555,6 +580,53 @@ mod tests {
             Download::new(&config, &entry, None, None).id,
             Download::new(&config, &entry, None, None).id
         );
+    }
+
+    #[test]
+    fn restored_downloads_keep_saved_files_and_requeue_unfinished_ones() {
+        let dir = scratch_dir("restored");
+        let saved = Download {
+            file: dir.join("saved.mp4"),
+            ..Download::new(&AppConfig::default(), &MediaEntry::default(), None, None)
+        };
+        std::fs::write(&saved.file, "video").unwrap();
+        let with = |status| Download {
+            status,
+            ..saved.clone()
+        };
+        assert_eq!(
+            with(Status::Completed).restored(),
+            Some(with(Status::Completed))
+        );
+        for status in [Status::Queued, Status::Downloading(40), Status::Muxing] {
+            assert_eq!(with(status).restored(), Some(with(Status::Queued)));
+        }
+        assert_eq!(with(Status::Failed("boom".into())).restored(), None);
+        let deleted = Download {
+            file: dir.join("deleted.mp4"),
+            ..with(Status::Completed)
+        };
+        assert_eq!(deleted.restored(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn download_round_trips_through_json() {
+        let show = MediaEntry {
+            name: "Lost".into(),
+            ..Default::default()
+        };
+        let download = Download {
+            status: Status::Downloading(40),
+            ..Download::new(
+                &AppConfig::default(),
+                &show,
+                Some(1),
+                Some(&episode(2, "Pilot")),
+            )
+        };
+        let json = serde_json::to_string(&download).unwrap();
+        assert_eq!(serde_json::from_str::<Download>(&json).unwrap(), download);
     }
 
     #[test]
@@ -776,6 +848,17 @@ mod tests {
         assert_eq!(media, [dir.join("large.ts"), dir.join("small.ts")]);
         assert_eq!(subtitles, [dir.join("it.vtt")]);
         assert_eq!(scan_tracks(&dir, false).await.1, Vec::<PathBuf>::new());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reset_dir_leaves_an_empty_dir() {
+        let dir = scratch_dir("reset_dir");
+        let tracks = dir.join("tracks");
+        reset_dir(&tracks).await.unwrap();
+        std::fs::write(tracks.join("Ep.0.ts"), "stale").unwrap();
+        reset_dir(&tracks).await.unwrap();
+        assert_eq!(std::fs::read_dir(&tracks).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

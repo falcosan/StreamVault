@@ -9,10 +9,10 @@ use crate::search;
 use crate::state::{self, PlayerPrefs, WatchItem};
 use crate::sync::{self, SyncConfig};
 use dioxus::core::{Task, spawn_forever};
-use dioxus::desktop::use_asset_handler;
+use dioxus::desktop::{tao, use_asset_handler, use_wry_event_handler};
 use dioxus::prelude::*;
 use serde_json::{Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -141,6 +141,7 @@ pub struct AppState {
     pub playback: Signal<Option<Playback>>,
     stream_task: Signal<Option<Task>>,
     pub downloads: Signal<Vec<Download>>,
+    download_tasks: Signal<HashMap<Uuid, Task>>,
     pub watch: Signal<Vec<WatchItem>>,
     pub prefs: Signal<PlayerPrefs>,
     pub update_available: Signal<bool>,
@@ -167,7 +168,8 @@ impl AppState {
             details: Details::default(),
             playback: Signal::default(),
             stream_task: Signal::default(),
-            downloads: Signal::default(),
+            downloads: Signal::new(state::load_downloads()),
+            download_tasks: Signal::default(),
             watch: Signal::new(state::load_watch()),
             prefs: Signal::new(state::load_prefs()),
             update_available: Signal::default(),
@@ -542,24 +544,48 @@ impl AppState {
         }
     }
 
-    pub fn download(mut self, entry: MediaEntry, season: Option<u32>, episode: Option<Episode>) {
-        let config = self.config.read().clone();
-        let download = Download::new(&config, &entry, season, episode.as_ref());
-        let id = download.id;
+    pub fn download(mut self, entry: &MediaEntry, season: Option<u32>, episode: Option<&Episode>) {
+        let download = Download::new(&self.config.read(), entry, season, episode);
         self.downloads.push(download.clone());
+        state::save_downloads(&self.downloads.peek());
         self.navigate(Screen::Downloads);
-        spawn_forever(async move {
+        self.fetch(download);
+    }
+
+    fn resume_downloads(self) {
+        for download in self.downloads.peek().iter() {
+            if download.status == Status::Queued {
+                self.fetch(download.clone());
+            }
+        }
+    }
+
+    fn fetch(mut self, download: Download) {
+        let config = self.config.read().clone();
+        let id = download.id;
+        let task = spawn_forever(async move {
             let report = move |status| self.set_status(id, status);
-            match self.stream(&entry, season, episode.as_ref()).await {
+            let stream = self
+                .stream(&download.entry, download.season, download.episode.as_ref())
+                .await;
+            match stream {
                 Ok(stream) => download::run(&config, &download, &stream, report).await,
                 Err(e) => report(Status::Failed(e.to_string())),
             }
+            self.download_tasks.write().remove(&id);
         });
+        self.download_tasks.write().insert(id, task);
     }
 
-    pub fn download_episode(self, season: u32, episode: Episode) {
+    fn stop_downloads(mut self) {
+        for task in self.download_tasks.take().into_values() {
+            task.cancel();
+        }
+    }
+
+    pub fn download_episode(self, season: u32, episode: &Episode) {
         if let Some(entry) = self.details.entry.peek().clone() {
-            self.download(entry, Some(season), Some(episode));
+            self.download(&entry, Some(season), Some(episode));
         }
     }
 
@@ -676,8 +702,12 @@ impl AppState {
     }
 
     fn set_status(mut self, id: Uuid, status: Status) {
+        let finished = matches!(status, Status::Completed | Status::Failed(_));
         if let Some(download) = self.downloads.write().iter_mut().find(|d| d.id == id) {
             download.status = status;
+        }
+        if finished {
+            state::save_downloads(&self.downloads.peek());
         }
     }
 
@@ -726,6 +756,12 @@ pub fn App() -> Element {
     use_future(move || app.load_catalog());
     use_future(move || app.check_update());
     use_future(move || app.sync());
+    use_hook(move || app.resume_downloads());
+    use_wry_event_handler(move |event, _| {
+        if matches!(event, tao::event::Event::LoopDestroyed) {
+            app.stop_downloads();
+        }
+    });
     use_asset_handler(media::ROUTE, move |request, responder| {
         let file = app.playing_file(request.uri().path());
         let range = media::requested_range(&request);
