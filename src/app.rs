@@ -322,6 +322,27 @@ impl AppState {
         self.start(playback.with_file(download.file));
     }
 
+    pub fn delete_download(mut self, file: PathBuf) {
+        spawn_forever(async move {
+            if let Err(e) = download::delete(&file).await {
+                return self.report("Cannot delete download", e);
+            }
+            self.downloads
+                .retain(|d| d.status != Status::Completed || d.file != file);
+            state::save_downloads(&self.downloads.peek());
+        });
+    }
+
+    pub fn is_downloaded(
+        self,
+        entry: &MediaEntry,
+        season: Option<u32>,
+        episode: Option<&Episode>,
+    ) -> bool {
+        self.downloads.read();
+        download::local_file(&self.config.read(), entry, season, episode).is_some()
+    }
+
     pub fn reveal(self, file: PathBuf) {
         spawn_forever(async move {
             let revealed = tokio::process::Command::new("open")

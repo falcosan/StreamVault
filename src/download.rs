@@ -422,10 +422,24 @@ async fn scan_tracks(dir: &Path, with_subtitles: bool) -> (Vec<PathBuf>, Vec<Pat
     (media.into_iter().map(|(path, _)| path).collect(), subtitles)
 }
 
-async fn save_subtitles(files: &[PathBuf], video: &Path) -> std::io::Result<()> {
-    for old in subtitles(video) {
-        tokio::fs::remove_file(old.file).await?;
+pub async fn delete(video: &Path) -> std::io::Result<()> {
+    if let Err(e) = tokio::fs::remove_file(video).await
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(e);
     }
+    remove_subtitles(video).await
+}
+
+async fn remove_subtitles(video: &Path) -> std::io::Result<()> {
+    for subtitle in subtitles(video) {
+        tokio::fs::remove_file(subtitle.file).await?;
+    }
+    Ok(())
+}
+
+async fn save_subtitles(files: &[PathBuf], video: &Path) -> std::io::Result<()> {
+    remove_subtitles(video).await?;
     for file in files {
         if let Some(name) = file.file_name() {
             move_file(file, &video.with_file_name(name)).await?;
@@ -825,6 +839,38 @@ mod tests {
             std::fs::read_to_string(out.join("Ep.ita.3.vtt")).unwrap(),
             "new"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn delete_removes_the_video_and_only_its_subtitles() {
+        let dir = scratch_dir("delete");
+        let video = dir.join("Ep.mp4");
+        for file in [
+            "Ep.mp4",
+            "Ep.ita.3.vtt",
+            "Ep.forced-ita.2.vtt",
+            "Other.mp4",
+            "Other.ita.1.vtt",
+        ] {
+            std::fs::write(dir.join(file), "x").unwrap();
+        }
+        delete(&video).await.unwrap();
+        let mut left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["Other.ita.1.vtt", "Other.mp4"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn delete_of_a_missing_video_succeeds() {
+        let dir = scratch_dir("delete_missing");
+        std::fs::write(dir.join("Ep.ita.3.vtt"), "x").unwrap();
+        delete(&dir.join("Ep.mp4")).await.unwrap();
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

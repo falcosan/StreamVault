@@ -12,6 +12,7 @@ pub fn DetailsView(entry: MediaEntry) -> Element {
     let year = entry.year_display().to_owned();
     let score = entry.score.as_deref().map(format_score);
     let (play, download) = (entry.clone(), entry.clone());
+    let downloaded = movie && app.is_downloaded(&entry, None, None);
 
     rsx! {
         div { class: "details-view",
@@ -25,6 +26,9 @@ pub fn DetailsView(entry: MediaEntry) -> Element {
                         span { class: "details-kind-badge {tone}", "{label}" }
                         span { class: "details-provider-badge", "{entry.provider_name}" }
                         span { class: "details-year", "{year}" }
+                        if downloaded {
+                            span { class: "downloaded-badge", "Downloaded" }
+                        }
                     }
                     if movie {
                         div { class: "details-actions",
@@ -74,6 +78,7 @@ fn Episodes() -> Element {
     let episodes = app.details.episodes.read();
     let selected = *app.details.season.read();
     let season = selected.unwrap_or(1);
+    let entry = app.details.entry.read();
 
     rsx! {
         if seasons.is_empty() && loading {
@@ -103,7 +108,14 @@ fn Episodes() -> Element {
         } else {
             div { class: "episodes-list",
                 for (index, episode) in episodes.iter().enumerate() {
-                    EpisodeRow { key: "{index}", season, episode: episode.clone() }
+                    EpisodeRow {
+                        key: "{index}",
+                        season,
+                        episode: episode.clone(),
+                        downloaded: entry
+                            .as_ref()
+                            .is_some_and(|entry| app.is_downloaded(entry, Some(season), Some(episode))),
+                    }
                 }
             }
         }
@@ -111,7 +123,7 @@ fn Episodes() -> Element {
 }
 
 #[component]
-fn EpisodeRow(season: u32, episode: Episode) -> Element {
+fn EpisodeRow(season: u32, episode: Episode, downloaded: bool) -> Element {
     let app = use_context::<AppState>();
     let number = episode.number;
     let (open, play, download) = (episode.clone(), episode.clone(), episode.clone());
@@ -125,6 +137,9 @@ fn EpisodeRow(season: u32, episode: Episode) -> Element {
                 }
                 span { class: "ep-num", "{number}" }
                 span { class: "ep-name", "{episode.name}" }
+            }
+            if downloaded {
+                span { class: "downloaded-badge", "Downloaded" }
             }
             button {
                 class: "btn-play",

@@ -3,6 +3,7 @@ use crate::download::{Download, Status};
 use dioxus::prelude::*;
 
 const FOLDER_ICON: &str = include_str!("../../assets/img/vector/folder.svg");
+const TRASH_ICON: &str = include_str!("../../assets/img/vector/trash.svg");
 
 #[component]
 pub fn DownloadsView() -> Element {
@@ -47,7 +48,7 @@ fn DownloadCard(download: Download) -> Element {
         Status::Completed => ("Completed".into(), "completed"),
         Status::Failed(e) => (e.clone(), "failed"),
     };
-    let file = download.file.clone();
+    let (file, deleted) = (download.file.clone(), download.file.clone());
     let target = download.clone();
     rsx! {
         div { class: "dl-card",
@@ -55,6 +56,13 @@ fn DownloadCard(download: Download) -> Element {
             span { class: "dl-card-status {class}", "{text}" }
             if download.status == Status::Completed {
                 div { class: "dl-actions",
+                    button {
+                        class: "btn-subtle",
+                        aria_label: "Delete {download.title}",
+                        title: "Delete",
+                        onclick: move |_| app.delete_download(deleted.clone()),
+                        span { class: "trash-icon", dangerous_inner_html: TRASH_ICON }
+                    }
                     button {
                         class: "btn-subtle",
                         aria_label: "Show {download.title} in Finder",
