@@ -8,8 +8,8 @@ main() {
   local -r bar_width=30 steps=6
   local -r required_cmds=(curl unzip tar)
   local current=0 completed=false caller_dir="$PWD"
-  local remote_install=false rust_installed_by_script=false
-  local app="" dep_cache="" tmpdir_sv=""
+  local remote_install=false
+  local app="" dep_cache="" tmpdir_sv="" rust_home=""
 
   for cmd in "${required_cmds[@]}"; do
     command -v "$cmd" &>/dev/null || { printf '\n  %s is required\n' "$cmd" >&2; exit 1; }
@@ -23,18 +23,11 @@ main() {
     return 0
   }
 
-  remove_rust() {
-    [[ "${rust_installed_by_script:-}" == true ]] || return 0
-    rustup self uninstall -y &>/dev/null || :
-    rm -rf "$HOME/.rustup" "$HOME/.cargo" &>/dev/null || :
-  }
-
   cleanup() {
     [[ "${completed:-}" == true ]] && return 0
     printf "\n  Interrupted, cleaning up…\n" >&2
     rm -f "/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress" &>/dev/null || :
-    rm -rf "${app:+$app}" "${dep_cache:+$dep_cache}" "${tmpdir_sv:+$tmpdir_sv}" &>/dev/null || :
-    remove_rust
+    rm -rf "${app:+$app}" "${dep_cache:+$dep_cache}" "${tmpdir_sv:+$tmpdir_sv}" "${rust_home:+$rust_home}" &>/dev/null || :
   }
 
   trap cleanup EXIT INT TERM HUP PIPE
@@ -66,25 +59,23 @@ main() {
 
   cd "$p"
 
-  if cargo --version &>/dev/null; then
-    progress
-  elif command -v rustup &>/dev/null; then
-    progress
-    rustup default stable </dev/null &>/dev/null \
-      || { printf '\n  Failed to set Rust default toolchain\n' >&2; exit 1; }
-    [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
-  else
-    progress
-    rm -rf "$HOME/.rustup" "$HOME/.cargo" &>/dev/null || :
-    local rustup_init="$(mktemp)"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$rustup_init" \
-      || { printf '\n  Rust installation failed\n' >&2; rm -f "$rustup_init"; exit 1; }
-    sh "$rustup_init" -y --default-toolchain stable --quiet </dev/null \
-      || { printf '\n  Rust installation failed\n' >&2; rm -f "$rustup_init"; exit 1; }
-    rm -f "$rustup_init"
-    [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
-    export PATH="$HOME/.cargo/bin:$PATH"
-    rust_installed_by_script=true
+  [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
+
+  progress
+  if ! cargo --version &>/dev/null; then
+    if command -v rustup &>/dev/null; then
+      rustup toolchain install stable --profile minimal </dev/null &>/dev/null \
+        || { printf '\n  Rust toolchain installation failed\n' >&2; exit 1; }
+      export RUSTUP_TOOLCHAIN=stable
+    else
+      rust_home="$(mktemp -d)" || { printf '\n  Failed to create temp directory\n' >&2; exit 1; }
+      export RUSTUP_HOME="$rust_home/rustup" CARGO_HOME="$rust_home/cargo" RUSTUP_INIT_SKIP_PATH_CHECK=yes
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$rust_home/rustup-init" \
+        || { printf '\n  Rust installation failed\n' >&2; exit 1; }
+      sh "$rust_home/rustup-init" -y --no-modify-path --profile minimal --default-toolchain stable --quiet </dev/null \
+        || { printf '\n  Rust installation failed\n' >&2; exit 1; }
+      export PATH="$CARGO_HOME/bin:$PATH"
+    fi
   fi
 
   cargo --version &>/dev/null || { printf '\n  cargo not found after setup\n' >&2; exit 1; }
@@ -173,8 +164,7 @@ main() {
 
   completed=true
   trap - EXIT
-  remove_rust
-  [[ -n "$tmpdir_sv" ]] && rm -rf "$tmpdir_sv" &>/dev/null || :
+  rm -rf "${tmpdir_sv:+$tmpdir_sv}" "${rust_home:+$rust_home}" &>/dev/null || :
   progress
 }
 
