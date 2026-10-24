@@ -1,3 +1,4 @@
+const HAVE_FUTURE_DATA = 3;
 const PROGRESSIVE = /\.(mp4|m4v|mov|webm|mkv)$/i;
 
 const normalize = (text) =>
@@ -16,6 +17,11 @@ const pick = (tracks, lang) => {
     exact >= 0 ? exact : tracks.findIndex((t) => describe(t).includes(wanted));
   return Math.max(index, 0);
 };
+
+const buffering = (video, started) =>
+  video.paused
+    ? !started
+    : video.seeking || video.readyState < HAVE_FUTURE_DATA;
 
 const track = (t) => ({
   language: t.lang || t.language || "",
@@ -80,7 +86,7 @@ function applySubtitles(player, prefs) {
 }
 
 function attach(video, url, start, prefs, send) {
-  let waiting = true;
+  let started = false;
   let player;
   const status = () =>
     send({
@@ -88,7 +94,7 @@ function attach(video, url, start, prefs, send) {
       time: video.currentTime || 0,
       duration: Number.isFinite(video.duration) ? video.duration : 0,
       paused: video.paused,
-      waiting,
+      waiting: buffering(video, started),
     });
   const tracks = () =>
     send({
@@ -103,12 +109,12 @@ function attach(video, url, start, prefs, send) {
     durationchange: status,
     play: status,
     pause: status,
-    waiting: () => {
-      waiting = true;
-      status();
-    },
-    playing: () => {
-      waiting = false;
+    waiting: status,
+    playing: status,
+    seeking: status,
+    seeked: status,
+    canplay: () => {
+      started = true;
       status();
     },
     ended: () => send({ type: "ended" }),
@@ -233,8 +239,6 @@ async function control(channel) {
     if (!video) continue;
     if (command.type === "toggle")
       video.paused ? video.play().catch(() => {}) : video.pause();
-    else if (command.type === "seek")
-      seek(video, video.currentTime + command.by);
     else if (command.type === "seek_to") seek(video, command.time);
     else if (command.type === "select")
       session.select(command.menu, command.index);

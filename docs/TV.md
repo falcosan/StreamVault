@@ -66,7 +66,11 @@ Search: OK on the magnifier opens the TV keyboard, *Done* searches, *Cancel*
 or Return closes it.
 
 Player: the progress bar is focused when the controls appear; below it are
-Play/Pause, Audio, Subtitles and Next episode. The audio/subtitle choice is
+Play/Pause, Audio, Subtitles and Next episode. Seeking moves the bar and the
+time at once on every press; playback jumps there 0.6 s after the last press,
+keeping its play or pause state, or right away with OK, which also toggles
+play/pause. The spinner only shows while the first frames
+load or while playback is stalled, never while paused. The audio/subtitle choice is
 saved as the player preference (the same one the macOS app uses), applied to
 every title and synced.
 

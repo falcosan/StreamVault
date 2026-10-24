@@ -15,9 +15,10 @@ pub fn PlayerView() -> Element {
     let start = playback.as_ref().map_or(0.0, |p| p.start);
     let tracks = playback.as_ref().map(Playback::tracks).unwrap_or_default();
     let status = *player.status.read();
+    let time = player.scrub.read().unwrap_or(status.time);
     let loading = url.is_none() || status.waiting;
     let percent = if status.duration > 0.0 {
-        status.time / status.duration * 100.0
+        time / status.duration * 100.0
     } else {
         0.0
     };
@@ -76,7 +77,7 @@ pub fn PlayerView() -> Element {
                         TrackMenu { menu, tracks: list.clone() }
                     }
                     div { class: "player-timeline",
-                        span { class: "player-time", "{clock(status.time)}" }
+                        span { class: "player-time", "{clock(time)}" }
                         input {
                             id: "seek",
                             class: "player-seek",
@@ -84,10 +85,15 @@ pub fn PlayerView() -> Element {
                             min: "0",
                             max: "{status.duration}",
                             step: "any",
-                            value: "{status.time}",
+                            value: "{time}",
                             aria_label: "Seek",
                             style: "--progress: {percent}%;",
                             oninput: move |e| {
+                                if let Ok(time) = e.value().parse() {
+                                    player.scrub_to(time);
+                                }
+                            },
+                            onchange: move |e| {
                                 if let Ok(time) = e.value().parse() {
                                     player.seek_to(time);
                                 }
@@ -247,6 +253,22 @@ mod tests {
                 r#"["ita", "forced-ita", "Italian"].map((lang) => pick({TRACKS}, lang))"#
             )),
             "[2,1,2]"
+        );
+    }
+
+    #[test]
+    fn only_the_first_load_or_a_stalled_playback_is_buffering() {
+        assert_eq!(
+            eval(
+                r#"[
+                    buffering({ paused: true, seeking: false, readyState: 0 }, false),
+                    buffering({ paused: true, seeking: true, readyState: 1 }, true),
+                    buffering({ paused: false, seeking: false, readyState: 2 }, true),
+                    buffering({ paused: false, seeking: true, readyState: 4 }, true),
+                    buffering({ paused: false, seeking: false, readyState: 4 }, true),
+                ]"#
+            ),
+            "[true,false,true,true,false]"
         );
     }
 

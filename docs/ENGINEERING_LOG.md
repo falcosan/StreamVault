@@ -707,6 +707,21 @@ changes; `player.js` re-applies the chosen subtitle track after every audio
 switch, which was verified on the TV (English audio + Italian subtitles from a
 preference written by another device).
 
+Seeking scrubs before it seeks. Each Left/Right (or Rewind/Fast forward) moves
+`Player::scrub`, which the bar and the clock render in the same frame, and
+restarts a 0.6 s timer; only when it fires does `player.js` set
+`currentTime`, once. OK (play/pause) commits a pending scrub first, so playback
+resumes from the chosen time; on macOS dragging the bar scrubs and releasing or
+clicking it seeks at once. The scrub stays on screen until a status from the video
+reports the new position, so a status already in flight cannot pull the bar
+back. Measured on the TV: four presses 150 ms apart moved the bar 10 s each
+within 40 ms while the video kept playing at 0:13, then the video jumped to
+0:53 in one seek. The spinner follows `buffering` in `player.js`: before the
+first `canplay` it is on, while paused it is off, and while playing it is on
+only when the video is seeking or has less than `HAVE_FUTURE_DATA`. Before,
+it was set by `waiting` and cleared only by `playing`, so a seek while paused
+left it spinning until playback resumed.
+
 ### 12.3 Sync between macOS, TV and the browser userscript
 
 The previous protocol stored one document (`watch`, `stamps`, `prefs`, `rev`)
@@ -773,6 +788,8 @@ userscript at the same time. The old document is migrated on first use.
 | 21 | every dialog freezes after Return | `if let Some(x) = *signal.peek()` keeps the read guard alive through the block; writing the signal inside panics (`AlreadyBorrowed`) and a wasm panic stops the app | copy the value out of the signal before branching |
 | 22 | TV useless without the Mac | providers ran in a LAN service | run the providers in the TV app; the widget is exempt from CORS (§9) |
 | 23 | Continue Watching empty after a quick relaunch | the closing process still holds the IndexedDB lock | retry `indexedDB.open` for up to 5 s |
+| 24 | bar lags behind the remote, stream re-buffers on every press | each press seeked the video and the bar waited for its status | scrub in Rust at once, seek once 0.6 s after the last press |
+| 25 | spinner stuck after seeking while paused | `waiting` was cleared only by `playing` | buffering = first load, or playing and seeking / short of data |
 
 ---
 

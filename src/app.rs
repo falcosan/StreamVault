@@ -611,12 +611,12 @@ impl AppState {
     }
 }
 
-fn restart(mut slot: Signal<Option<Task>>, future: impl Future<Output = ()> + 'static) {
+pub fn restart(mut slot: Signal<Option<Task>>, future: impl Future<Output = ()> + 'static) {
     cancel(slot);
     slot.set(Some(spawn_forever(future)));
 }
 
-fn cancel(mut slot: Signal<Option<Task>>) {
+pub fn cancel(mut slot: Signal<Option<Task>>) {
     if let Some(task) = slot.take() {
         task.cancel();
     }

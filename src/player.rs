@@ -1,17 +1,21 @@
-use crate::app::AppState;
+use crate::app::{AppState, cancel, restart};
 use crate::gui::focus;
 use crate::prefs::PlayerPrefs;
-use crate::time::now_ms;
+use crate::time::{now_ms, sleep};
+use dioxus::core::Task;
 use dioxus::document::{Eval, EvalError};
 use dioxus::logger::tracing::warn;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 const SCRIPT: &str = concat!(
     include_str!("../assets/js/player.js"),
     "\nawait control(dioxus);"
 );
 const PROGRESS_SECONDS: f64 = 10.0;
+const SCRUB_DELAY: Duration = Duration::from_millis(600);
+const SCRUB_TOLERANCE: f64 = 1.0;
 pub const OSD_SECONDS: u64 = 4;
 pub const SEEK_SECONDS: f64 = 10.0;
 
@@ -95,9 +99,6 @@ enum Command<'a> {
     },
     Detach,
     Toggle,
-    Seek {
-        by: f64,
-    },
     SeekTo {
         time: f64,
     },
@@ -123,6 +124,8 @@ pub struct Player {
     pub menu: Signal<Option<Menu>>,
     pub status: Signal<Status>,
     pub tracks: Signal<Tracks>,
+    pub scrub: Signal<Option<f64>>,
+    pending: Signal<Option<Task>>,
     last_input: CopyValue<u64>,
     channel: CopyValue<Option<Eval>>,
 }
@@ -132,8 +135,10 @@ impl Player {
         Self {
             osd: Signal::default(),
             menu: Signal::default(),
+            scrub: Signal::default(),
             status: Signal::default(),
             tracks: Signal::default(),
+            pending: Signal::default(),
             last_input: CopyValue::new(0),
             channel: CopyValue::new(None),
         }
@@ -154,6 +159,12 @@ impl Player {
             };
             match event {
                 Event::Status(status) => {
+                    let target = *self.scrub.peek();
+                    if self.pending.peek().is_none()
+                        && target.is_some_and(|target| settled(target, status.time))
+                    {
+                        self.scrub.set(None);
+                    }
                     self.status.set(status);
                     let tick = (status.time / PROGRESS_SECONDS) as u64;
                     if status.paused || saved != Some(tick) {
@@ -181,6 +192,8 @@ impl Player {
     }
 
     pub fn reset(mut self) {
+        cancel(self.pending);
+        self.scrub.set(None);
         self.menu.set(None);
         self.status.set(Status::default());
         self.tracks.set(Tracks::default());
@@ -194,15 +207,43 @@ impl Player {
     }
 
     pub fn toggle(self) {
+        self.flush();
         self.send(Command::Toggle);
     }
 
     pub fn seek(self, by: f64) {
-        self.send(Command::Seek { by });
+        let from = self.scrub.peek().unwrap_or(self.status.peek().time);
+        self.scrub_to(from + by);
+    }
+
+    pub fn scrub_to(mut self, time: f64) {
+        let Some(target) = scrub_target(time, self.status.peek().duration) else {
+            return;
+        };
+        self.scrub.set(Some(target));
+        restart(self.pending, async move {
+            sleep(SCRUB_DELAY).await;
+            self.pending.set(None);
+            self.commit();
+        });
     }
 
     pub fn seek_to(self, time: f64) {
-        self.send(Command::SeekTo { time });
+        self.scrub_to(time);
+        self.flush();
+    }
+
+    fn flush(mut self) {
+        if let Some(task) = self.pending.take() {
+            task.cancel();
+            self.commit();
+        }
+    }
+
+    fn commit(self) {
+        if let Some(time) = *self.scrub.peek() {
+            self.send(Command::SeekTo { time });
+        }
     }
 
     pub fn fullscreen(self) {
@@ -253,6 +294,14 @@ impl Player {
     }
 }
 
+fn scrub_target(time: f64, duration: f64) -> Option<f64> {
+    (duration > 0.0).then(|| time.clamp(0.0, duration))
+}
+
+fn settled(target: f64, time: f64) -> bool {
+    (time - target).abs() < SCRUB_TOLERANCE
+}
+
 pub fn clock(seconds: f64) -> String {
     let total = if seconds.is_finite() {
         seconds.max(0.0) as u64
@@ -286,6 +335,21 @@ mod tests {
         assert_eq!(clock(3_725.0), "1:02:05");
         assert_eq!(clock(f64::NAN), "0:00");
         assert_eq!(clock(-4.0), "0:00");
+    }
+
+    #[test]
+    fn scrubbing_stays_inside_a_known_duration() {
+        assert_eq!(scrub_target(-5.0, 100.0), Some(0.0));
+        assert_eq!(scrub_target(40.0, 100.0), Some(40.0));
+        assert_eq!(scrub_target(130.0, 100.0), Some(100.0));
+        assert_eq!(scrub_target(40.0, 0.0), None);
+    }
+
+    #[test]
+    fn a_scrub_settles_once_playback_reaches_its_target() {
+        assert!(settled(40.0, 40.0));
+        assert!(settled(40.0, 40.6));
+        assert!(!settled(40.0, 12.0));
     }
 
     #[test]
