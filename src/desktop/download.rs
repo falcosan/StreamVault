@@ -1,4 +1,5 @@
-use crate::config::AppConfig;
+use super::config::AppConfig;
+use crate::app::Subtitle;
 use crate::providers::{Episode, MediaEntry, StreamUrl};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -19,12 +20,6 @@ pub enum Status {
     Muxing,
     Completed,
     Failed(String),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Subtitle {
-    pub file: PathBuf,
-    pub language: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -526,7 +521,7 @@ fn sanitize_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::scratch_dir;
+    use crate::desktop::test_support::scratch_dir;
     use std::os::unix::process::ExitStatusExt;
 
     fn episode(number: u32, name: &str) -> Episode {
@@ -536,6 +531,7 @@ mod tests {
             name: name.into(),
             duration: None,
             image_url: None,
+            description: None,
         }
     }
 

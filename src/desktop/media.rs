@@ -1,4 +1,5 @@
 use dioxus::desktop::wry::http::{HeaderValue, Request, Response, StatusCode, header};
+use dioxus::logger::tracing::warn;
 use std::io::SeekFrom;
 use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -27,7 +28,7 @@ pub async fn respond(file: Option<&Path>, range: Option<&str>) -> Response<Vec<u
         Ok(response) => response,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => status(StatusCode::NOT_FOUND),
         Err(e) => {
-            eprintln!("[StreamVault] media read error {}: {e}", file.display());
+            warn!("media read error {}: {e}", file.display());
             status(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -90,7 +91,7 @@ fn content_type(file: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::scratch_dir;
+    use crate::desktop::test_support::scratch_dir;
 
     fn request(path: &str, range: Option<&str>) -> Request<Vec<u8>> {
         let mut builder = Request::builder().uri(format!("dioxus://index.html{path}"));

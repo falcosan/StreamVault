@@ -1,11 +1,5 @@
-use crate::config::{DOWNLOADS_FILE, PREFS_FILE, WATCH_FILE, read_json, state_dir, write_json};
-use crate::download::Download;
 use crate::providers::{Episode, MediaEntry, MediaType, next_episode};
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
-use std::io;
-use std::path::{Path, PathBuf};
 
 const END_MARGIN: f64 = 20.0;
 
@@ -16,36 +10,6 @@ pub struct WatchItem {
     pub duration: f64,
     pub season: Option<u32>,
     pub episode: Option<Episode>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PlayerPrefs {
-    pub audio_lang: String,
-    pub subtitle_lang: String,
-    pub subtitles_on: bool,
-    pub speed: f64,
-}
-
-impl Default for PlayerPrefs {
-    fn default() -> Self {
-        Self {
-            audio_lang: String::new(),
-            subtitle_lang: String::new(),
-            subtitles_on: false,
-            speed: 1.0,
-        }
-    }
-}
-
-impl PlayerPrefs {
-    pub fn merged(&self, changes: Map<String, Value>) -> Self {
-        let Ok(Value::Object(mut current)) = serde_json::to_value(self) else {
-            return self.clone();
-        };
-        current.extend(changes);
-        serde_json::from_value(Value::Object(current)).unwrap_or_else(|_| self.clone())
-    }
 }
 
 impl WatchItem {
@@ -60,71 +24,6 @@ impl WatchItem {
     fn episode_number(&self) -> Option<u32> {
         self.episode.as_ref().map(|e| e.number)
     }
-}
-
-pub fn watch_path() -> PathBuf {
-    state_dir().join(WATCH_FILE)
-}
-
-pub fn prefs_path() -> PathBuf {
-    state_dir().join(PREFS_FILE)
-}
-
-fn downloads_path() -> PathBuf {
-    state_dir().join(DOWNLOADS_FILE)
-}
-
-pub fn load_watch() -> Vec<WatchItem> {
-    parse_items(load(&watch_path()))
-}
-
-pub fn load_prefs() -> PlayerPrefs {
-    load(&prefs_path())
-}
-
-pub fn load_downloads() -> Vec<Download> {
-    load::<Vec<Download>>(&downloads_path())
-        .into_iter()
-        .filter_map(Download::restored)
-        .collect()
-}
-
-pub fn save_watch(items: &[WatchItem]) {
-    save(&watch_path(), items);
-}
-
-pub fn save_prefs(prefs: &PlayerPrefs) {
-    save(&prefs_path(), prefs);
-}
-
-pub fn save_downloads(downloads: &[Download]) {
-    save(&downloads_path(), downloads);
-}
-
-fn load<T: DeserializeOwned + Default>(path: &Path) -> T {
-    read_json(path).unwrap_or_else(|e| {
-        if e.kind() != io::ErrorKind::NotFound {
-            eprintln!("[StreamVault] {} read error: {e}", path.display());
-        }
-        T::default()
-    })
-}
-
-fn save(path: &Path, value: &(impl Serialize + ?Sized)) {
-    if let Err(e) = write_json(path, value) {
-        eprintln!("[StreamVault] {} write error: {e}", path.display());
-    }
-}
-
-pub fn parse_items(values: Vec<Value>) -> Vec<WatchItem> {
-    values
-        .into_iter()
-        .filter_map(|v| {
-            serde_json::from_value(v)
-                .inspect_err(|e| eprintln!("[StreamVault] skipping watch item: {e}"))
-                .ok()
-        })
-        .collect()
 }
 
 pub fn upsert(items: &mut Vec<WatchItem>, item: WatchItem) {
@@ -178,7 +77,6 @@ pub fn start_of(entry: MediaEntry, season: u32, episode: Episode) -> WatchItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn entry(id: u64, media_type: MediaType) -> MediaEntry {
         MediaEntry {
@@ -195,6 +93,7 @@ mod tests {
             name: format!("Ep {number}"),
             duration: Some(45),
             image_url: None,
+            description: None,
         }
     }
 
@@ -314,40 +213,6 @@ mod tests {
             (item.current_time, item.duration, item.season),
             (0.0, 0.0, Some(2))
         );
-    }
-
-    #[test]
-    fn prefs_merge_only_changed_fields() {
-        let prefs = PlayerPrefs {
-            audio_lang: "ita".into(),
-            ..Default::default()
-        };
-        let changes = json!({ "subtitles_on": true, "subtitle_lang": "eng" });
-        let merged = prefs.merged(changes.as_object().unwrap().clone());
-        assert_eq!(merged.audio_lang, "ita");
-        assert_eq!(merged.subtitle_lang, "eng");
-        assert!(merged.subtitles_on);
-    }
-
-    #[test]
-    fn prefs_merge_rejects_invalid_values() {
-        let prefs = PlayerPrefs::default();
-        let changes = json!({ "speed": "fast" });
-        assert_eq!(prefs.merged(changes.as_object().unwrap().clone()), prefs);
-    }
-
-    #[test]
-    fn prefs_deserialize_partial_with_defaults() {
-        let prefs: PlayerPrefs = serde_json::from_str(r#"{"audio_lang":"it"}"#).unwrap();
-        assert_eq!(prefs.audio_lang, "it");
-        assert_eq!(prefs.speed, 1.0);
-    }
-
-    #[test]
-    fn parse_items_drops_invalid_entries() {
-        let valid = serde_json::to_value(movie_at(7, 5.0)).unwrap();
-        let items = parse_items(vec![json!({ "entry": { "id": null } }), valid]);
-        assert_eq!(ids(&items), [7]);
     }
 
     #[test]

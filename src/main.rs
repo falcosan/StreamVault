@@ -1,26 +1,22 @@
 mod app;
-mod config;
-mod download;
+#[cfg(feature = "desktop")]
+mod desktop;
 mod gui;
-mod media;
+mod player;
+mod prefs;
 mod providers;
 mod search;
-mod state;
 mod sync;
-#[cfg(test)]
-mod test_support;
+mod time;
+#[cfg(feature = "tv")]
+mod tv;
+mod watch;
 
-use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
+#[cfg(feature = "desktop")]
+use desktop as platform;
+#[cfg(feature = "tv")]
+use tv as platform;
 
 fn main() {
-    dioxus::LaunchBuilder::desktop()
-        .with_cfg(
-            Config::new().with_disable_context_menu(true).with_window(
-                WindowBuilder::new()
-                    .with_title("StreamVault")
-                    .with_inner_size(LogicalSize::new(1200.0, 800.0))
-                    .with_min_inner_size(LogicalSize::new(800.0, 600.0)),
-            ),
-        )
-        .launch(app::App);
+    platform::launch(app::App);
 }

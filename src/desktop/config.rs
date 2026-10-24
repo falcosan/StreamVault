@@ -1,3 +1,4 @@
+use dioxus::logger::tracing::warn;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -8,7 +9,7 @@ use std::time::Duration;
 
 pub const WATCH_FILE: &str = "continue_watching.json";
 pub const PREFS_FILE: &str = "player_prefs.json";
-pub const SNAPSHOT_FILE: &str = "sync_snapshot.json";
+pub const REPLICA_FILE: &str = "sync_replica.json";
 pub const DOWNLOADS_FILE: &str = "downloads.json";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -104,12 +105,12 @@ impl AppConfig {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 let config = Self::default();
                 if let Err(e) = write_json(&path, &config) {
-                    eprintln!("[StreamVault] config write error: {e}");
+                    warn!("config write error: {e}");
                 }
                 config
             }
             Err(e) => {
-                eprintln!("[StreamVault] config read error, using defaults: {e}");
+                warn!("config read error, using defaults: {e}");
                 Self::default()
             }
         }
@@ -143,7 +144,7 @@ pub fn state_dir() -> &'static Path {
     DIR.get_or_init(|| {
         let dir = local_dir().join("state");
         let legacy = config_dir();
-        for name in [WATCH_FILE, PREFS_FILE, SNAPSHOT_FILE] {
+        for name in [WATCH_FILE, PREFS_FILE] {
             migrate_file(&legacy.join(name), &dir.join(name));
         }
         dir
@@ -172,7 +173,7 @@ fn migrate_file(from: &Path, to: &Path) {
         return;
     }
     if let Err(e) = replace_file(to, |tmp| fs::copy(from, tmp).map(drop)) {
-        eprintln!("[StreamVault] state migration error: {e}");
+        warn!("state migration error: {e}");
     }
 }
 
@@ -197,7 +198,7 @@ fn replace_file(path: &Path, fill: impl FnOnce(&Path) -> io::Result<()>) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::scratch_dir;
+    use crate::desktop::test_support::scratch_dir;
 
     #[test]
     fn defaults_match_documented_values() {

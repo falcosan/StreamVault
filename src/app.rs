@@ -1,27 +1,25 @@
-use crate::config::AppConfig;
-use crate::download::{self, Download, Status, Subtitle};
-use crate::gui::{DetailsView, DownloadsView, HomeView, Navbar, PlayerView, SearchView};
-use crate::media;
+use crate::gui::{CLOSE_ICON, DetailsView, HomeView, Navbar, PlayerView, SearchView};
+use crate::platform::{self, Device};
+use crate::player::Player;
+use crate::prefs::PlayerPrefs;
 use crate::providers::{
     Episode, MediaEntry, Provider, ProviderResult, Providers, StreamUrl, next_episode,
 };
 use crate::search;
-use crate::state::{self, PlayerPrefs, WatchItem};
-use crate::sync::{self, SyncConfig};
+use crate::sync::{self, Replica};
+use crate::time::now_ms;
+use crate::watch::{self, WatchItem};
 use dioxus::core::{Task, spawn_forever};
-use dioxus::desktop::{tao, use_asset_handler, use_wry_event_handler};
+use dioxus::logger::tracing::warn;
 use dioxus::prelude::*;
-use serde_json::{Map, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use uuid::Uuid;
 
 const CSS: &str = include_str!("../assets/style/style.css");
-const REPOSITORY: &str = "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main";
-const LOAD_MORE_THRESHOLD: f64 = 600.0;
+const LOAD_MORE_THRESHOLD: f64 = 1200.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -30,7 +28,14 @@ pub enum Screen {
     Search,
     Details,
     Player,
+    #[cfg(feature = "desktop")]
     Downloads,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Subtitle {
+    pub file: PathBuf,
+    pub language: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,12 +45,17 @@ pub struct Playback {
     pub episode: Option<Episode>,
     pub start: f64,
     pub url: Option<String>,
-    file: Option<PathBuf>,
-    subtitles: Vec<Subtitle>,
+    pub file: Option<PathBuf>,
+    pub subtitles: Vec<Subtitle>,
 }
 
 impl Playback {
-    fn new(entry: MediaEntry, season: Option<u32>, episode: Option<Episode>, start: f64) -> Self {
+    pub fn new(
+        entry: MediaEntry,
+        season: Option<u32>,
+        episode: Option<Episode>,
+        start: f64,
+    ) -> Self {
         Self {
             entry,
             season,
@@ -57,15 +67,6 @@ impl Playback {
         }
     }
 
-    fn with_file(self, file: PathBuf) -> Self {
-        Self {
-            url: Some(media::url(Uuid::new_v4())),
-            subtitles: download::subtitles(&file),
-            file: Some(file),
-            ..self
-        }
-    }
-
     pub fn tracks(&self) -> Vec<(String, String)> {
         let url = self.url.as_deref().unwrap_or_default();
         self.subtitles
@@ -73,16 +74,6 @@ impl Playback {
             .enumerate()
             .map(|(index, subtitle)| (format!("{url}/{index}"), subtitle.language.clone()))
             .collect()
-    }
-
-    fn served(&self, path: &str) -> Option<&Path> {
-        match path.strip_prefix(self.url.as_deref()?)? {
-            "" => self.file.as_deref(),
-            rest => {
-                let index: usize = rest.strip_prefix('/')?.parse().ok()?;
-                self.subtitles.get(index).map(|s| s.file.as_path())
-            }
-        }
     }
 
     pub fn title(&self) -> String {
@@ -133,26 +124,24 @@ pub struct Details {
 #[derive(Clone, Copy)]
 pub struct AppState {
     pub screen: Signal<Screen>,
-    history: Signal<Vec<Screen>>,
+    history: Signal<Vec<(Screen, Option<String>)>>,
     pub error: Signal<Option<String>>,
     pub catalog: Catalog,
     pub search: Search,
     pub details: Details,
     pub playback: Signal<Option<Playback>>,
+    pub player: Player,
     stream_task: Signal<Option<Task>>,
-    pub downloads: Signal<Vec<Download>>,
-    download_tasks: Signal<HashMap<Uuid, Task>>,
     pub watch: Signal<Vec<WatchItem>>,
     pub prefs: Signal<PlayerPrefs>,
-    pub update_available: Signal<bool>,
-    pub updating: Signal<bool>,
+    pub device: Device,
+    replica: CopyValue<Replica>,
     providers: CopyValue<Providers>,
-    config: CopyValue<AppConfig>,
 }
 
 impl AppState {
     fn new() -> Self {
-        let config = AppConfig::load();
+        let device = Device::new();
         Self {
             screen: Signal::default(),
             history: Signal::default(),
@@ -167,40 +156,41 @@ impl AppState {
             search: Search::default(),
             details: Details::default(),
             playback: Signal::default(),
+            player: Player::new(),
             stream_task: Signal::default(),
-            downloads: Signal::new(state::load_downloads()),
-            download_tasks: Signal::default(),
-            watch: Signal::new(state::load_watch()),
-            prefs: Signal::new(state::load_prefs()),
-            update_available: Signal::default(),
-            updating: Signal::default(),
-            providers: CopyValue::new(Providers::new(config.timeout())),
-            config: CopyValue::new(config),
+            watch: Signal::default(),
+            prefs: Signal::default(),
+            replica: CopyValue::new(Replica::default()),
+            providers: CopyValue::new(Providers::new(device.timeout())),
+            device,
         }
     }
 
     pub fn navigate(mut self, to: Screen) {
         let from = *self.screen.peek();
-        if from != to {
-            self.history.push(from);
-            self.screen.set(to);
+        if from == to {
+            return;
         }
+        if from == Screen::Player {
+            self.clear_playback();
+        } else {
+            self.history.push((from, platform::focus_key()));
+        }
+        self.error.set(None);
+        self.screen.set(to);
     }
 
-    pub fn back(mut self) {
-        match self.history.pop().unwrap_or_default() {
-            Screen::Player => {
-                self.clear_playback();
-                self.screen.set(Screen::Home);
-            }
-            screen => self.screen.set(screen),
+    pub fn back(mut self) -> bool {
+        let Some((screen, focus)) = self.history.pop() else {
+            return false;
+        };
+        if *self.screen.peek() == Screen::Player {
+            self.clear_playback();
         }
-    }
-
-    pub fn stop(mut self) {
-        self.clear_playback();
-        let previous = self.history.pop().unwrap_or_default();
-        self.screen.set(previous);
+        self.error.set(None);
+        platform::restore_focus(focus);
+        self.screen.set(screen);
+        true
     }
 
     pub fn search(mut self) {
@@ -218,10 +208,24 @@ impl AppState {
         });
     }
 
+    pub fn reload(self) {
+        spawn_forever(self.load_catalog());
+    }
+
+    async fn load_catalog(mut self) {
+        self.error.set(None);
+        self.catalog.loading.set(true);
+        let entries = self.providers().catalog().await;
+        self.catalog.items.set(entries);
+        self.catalog.done.set(false);
+        self.catalog.loading.set(false);
+    }
+
     fn load_more(mut self) {
         if *self.catalog.loading.peek()
             || *self.catalog.loading_more.peek()
             || *self.catalog.done.peek()
+            || self.catalog.items.peek().is_empty()
         {
             return;
         }
@@ -237,7 +241,7 @@ impl AppState {
             match self.providers().catalog_more(&mut seen).await {
                 Ok(Some(fresh)) => self.catalog.items.write().extend(fresh),
                 Ok(None) => self.catalog.done.set(true),
-                Err(e) => eprintln!("[StreamVault] catalog page failed: {e}"),
+                Err(e) => warn!("catalog page failed: {e}"),
             }
             self.catalog.loading_more.set(false);
         });
@@ -250,7 +254,13 @@ impl AppState {
         if entry.is_movie() {
             self.clear_episodes();
         } else {
-            self.load_seasons(entry, None);
+            let watching = self
+                .watch
+                .peek()
+                .iter()
+                .find(|item| item.entry.key() == entry.key())
+                .and_then(|item| item.season);
+            self.load_seasons(entry, watching);
         }
     }
 
@@ -310,51 +320,10 @@ impl AppState {
         episode: Option<Episode>,
         start: f64,
     ) {
-        self.start(self.local(Playback::new(entry, season, episode, start)));
-    }
-
-    pub fn play_download(self, download: Download) {
-        if !download.file.is_file() {
-            return self.report("File not found", download.file.display());
-        }
-        self.focus(&download.entry, None);
-        let playback = Playback::new(download.entry, download.season, download.episode, 0.0);
-        self.start(playback.with_file(download.file));
-    }
-
-    pub fn delete_download(mut self, file: PathBuf) {
-        spawn_forever(async move {
-            if let Err(e) = download::delete(&file).await {
-                return self.report("Cannot delete download", e);
-            }
-            self.downloads
-                .retain(|d| d.status != Status::Completed || d.file != file);
-            state::save_downloads(&self.downloads.peek());
-        });
-    }
-
-    pub fn is_downloaded(
-        self,
-        entry: &MediaEntry,
-        season: Option<u32>,
-        episode: Option<&Episode>,
-    ) -> bool {
-        self.downloads.read();
-        download::local_file(&self.config.read(), entry, season, episode).is_some()
-    }
-
-    pub fn reveal(self, file: PathBuf) {
-        spawn_forever(async move {
-            let revealed = tokio::process::Command::new("open")
-                .arg("-R")
-                .arg(&file)
-                .status()
-                .await
-                .is_ok_and(|s| s.success());
-            if !revealed {
-                self.report("Cannot show in Finder", file.display());
-            }
-        });
+        self.start(
+            self.device
+                .local(Playback::new(entry, season, episode, start)),
+        );
     }
 
     pub fn play_episode(self, season: u32, episode: Episode) {
@@ -365,43 +334,30 @@ impl AppState {
 
     pub fn resume(self, item: WatchItem) {
         self.update_watch(|items| {
-            state::upsert(items, item.clone());
+            watch::upsert(items, item.clone());
             true
         });
-        let playback = self.local(Playback::new(
+        let playback = self.device.local(Playback::new(
             item.entry,
             item.season,
             item.episode,
             item.current_time,
         ));
         let season = playback.season.filter(|_| playback.file.is_none());
-        self.focus(&playback.entry, season);
+        self.prepare_details(&playback.entry, season);
         self.start(playback);
     }
 
-    fn local(self, playback: Playback) -> Playback {
-        let file = download::local_file(
-            &self.config.read(),
-            &playback.entry,
-            playback.season,
-            playback.episode.as_ref(),
-        );
-        match file {
-            Some(file) => playback.with_file(file),
-            None => playback,
-        }
-    }
-
-    fn start(self, playback: Playback) {
+    pub fn start(self, playback: Playback) {
         self.show_player(playback.clone());
-        if playback.file.is_some() {
+        if playback.url.is_some() {
             cancel(self.stream_task);
         } else {
             restart(self.stream_task, self.load_stream(playback));
         }
     }
 
-    fn focus(mut self, entry: &MediaEntry, season: Option<u32>) {
+    pub fn prepare_details(mut self, entry: &MediaEntry, season: Option<u32>) {
         self.details.entry.set(Some(entry.clone()));
         match season {
             Some(season) => self.load_seasons(entry.clone(), Some(season)),
@@ -417,6 +373,7 @@ impl AppState {
     }
 
     fn show_player(mut self, playback: Playback) {
+        self.end_session();
         self.error.set(None);
         self.playback.set(Some(playback));
         self.navigate(Screen::Player);
@@ -458,6 +415,7 @@ impl AppState {
         let Some(next_season) = next_season else {
             return;
         };
+        self.end_session();
         self.error.set(None);
         if let Some(current) = self.playback.write().as_mut() {
             current.url = None;
@@ -474,9 +432,11 @@ impl AppState {
             };
             self.details.episodes.set(episodes);
             self.details.season.set(Some(next_season));
-            let next = self.local(Playback::new(entry, Some(next_season), Some(first), 0.0));
+            let next = self
+                .device
+                .local(Playback::new(entry, Some(next_season), Some(first), 0.0));
             self.playback.set(Some(next.clone()));
-            if next.file.is_none() {
+            if next.url.is_none() {
                 self.load_stream(next).await;
             }
         });
@@ -503,7 +463,7 @@ impl AppState {
             return;
         };
         let episodes = self.details.episodes.peek();
-        self.update_watch(|items| state::record(items, playback.at(time, duration), &episodes));
+        self.update_watch(|items| watch::record(items, playback.at(time, duration), &episodes));
     }
 
     pub fn finished(self) {
@@ -513,7 +473,7 @@ impl AppState {
         let item = playback.at(0.0, 0.0);
         let handled = {
             let episodes = self.details.episodes.peek();
-            self.update_watch(|items| state::finish(items, &item, &episodes))
+            self.update_watch(|items| watch::finish(items, &item, &episodes))
         };
         if handled {
             return;
@@ -523,7 +483,7 @@ impl AppState {
         };
         spawn_forever(async move {
             if let Err(e) = self.queue_next_season(item.entry, season).await {
-                eprintln!("[StreamVault] next season lookup failed: {e}");
+                warn!("next season lookup failed: {e}");
             }
         });
     }
@@ -543,7 +503,7 @@ impl AppState {
         let episodes = provider.episodes(&entry, next).await?;
         if let Some(first) = episodes.into_iter().min_by_key(|e| e.number) {
             self.update_watch(|items| {
-                state::upsert(items, state::start_of(entry, next, first));
+                watch::upsert(items, watch::start_of(entry, next, first));
                 true
             });
         }
@@ -552,121 +512,16 @@ impl AppState {
 
     pub fn remove_watch(self, key: (usize, u64)) {
         self.update_watch(|items| {
-            state::remove(items, key);
+            watch::remove(items, key);
             true
         });
     }
 
-    pub fn change_prefs(mut self, changes: Map<String, Value>) {
-        let merged = self.prefs.peek().merged(changes);
-        if merged != *self.prefs.peek() {
-            state::save_prefs(&merged);
-            self.prefs.set(merged);
+    pub fn change_prefs(mut self, prefs: PlayerPrefs) {
+        if *self.prefs.peek() != prefs {
+            self.replica.write().record_prefs(&prefs, now_ms());
+            self.publish();
         }
-    }
-
-    pub fn download(mut self, entry: &MediaEntry, season: Option<u32>, episode: Option<&Episode>) {
-        let download = Download::new(&self.config.read(), entry, season, episode);
-        self.downloads.push(download.clone());
-        state::save_downloads(&self.downloads.peek());
-        self.navigate(Screen::Downloads);
-        self.fetch(download);
-    }
-
-    fn resume_downloads(self) {
-        for download in self.downloads.peek().iter() {
-            if download.status == Status::Queued {
-                self.fetch(download.clone());
-            }
-        }
-    }
-
-    fn fetch(mut self, download: Download) {
-        let config = self.config.read().clone();
-        let id = download.id;
-        let task = spawn_forever(async move {
-            let report = move |status| self.set_status(id, status);
-            let stream = self
-                .stream(&download.entry, download.season, download.episode.as_ref())
-                .await;
-            match stream {
-                Ok(stream) => download::run(&config, &download, &stream, report).await,
-                Err(e) => report(Status::Failed(e.to_string())),
-            }
-            self.download_tasks.write().remove(&id);
-        });
-        self.download_tasks.write().insert(id, task);
-    }
-
-    fn stop_downloads(mut self) {
-        for task in self.download_tasks.take().into_values() {
-            task.cancel();
-        }
-    }
-
-    pub fn download_episode(self, season: u32, episode: &Episode) {
-        if let Some(entry) = self.details.entry.peek().clone() {
-            self.download(&entry, Some(season), Some(episode));
-        }
-    }
-
-    pub fn update(mut self) {
-        self.updating.set(true);
-        spawn_forever(async move {
-            let dir = std::env::current_exe()
-                .ok()
-                .and_then(|exe| {
-                    exe.ancestors()
-                        .find(|a| a.extension().is_some_and(|e| e == "app"))
-                        .and_then(Path::parent)
-                        .map(Path::to_path_buf)
-                })
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-            let installed = tokio::process::Command::new("bash")
-                .arg("-c")
-                .arg(format!(
-                    "set -o pipefail; curl -fsSL '{REPOSITORY}/scripts/package.sh' | bash"
-                ))
-                .current_dir(dir)
-                .status()
-                .await
-                .is_ok_and(|s| s.success());
-            if installed {
-                if let Ok(exe) = std::env::current_exe() {
-                    let _ = std::process::Command::new(exe).spawn();
-                }
-                return dioxus::desktop::window().close();
-            }
-            self.updating.set(false);
-            self.error.set(Some("Update failed".into()));
-        });
-    }
-
-    async fn load_catalog(mut self) {
-        let entries = self.providers().catalog().await;
-        self.catalog.items.set(entries);
-        self.catalog.loading.set(false);
-    }
-
-    async fn check_update(mut self) {
-        let Ok(response) = reqwest::get(format!("{REPOSITORY}/Cargo.toml")).await else {
-            return;
-        };
-        let manifest = response.text().await.unwrap_or_default();
-        if manifest_version(&manifest).is_some_and(|v| is_newer(v, env!("CARGO_PKG_VERSION"))) {
-            self.update_available.set(true);
-        }
-    }
-
-    async fn sync(mut self) {
-        let Some(config) = SyncConfig::load() else {
-            return;
-        };
-        sync::run(config, move |watch, prefs| {
-            self.watch.set(watch);
-            self.prefs.set(prefs);
-        })
-        .await;
     }
 
     async fn load_stream(mut self, playback: Playback) {
@@ -683,7 +538,7 @@ impl AppState {
         }
     }
 
-    async fn stream(
+    pub async fn stream(
         self,
         entry: &MediaEntry,
         season: Option<u32>,
@@ -700,39 +555,58 @@ impl AppState {
         self.providers.read().clone()
     }
 
+    fn end_session(self) {
+        let status = *self.player.status.peek();
+        self.progress(status.time, status.duration);
+        self.player.reset();
+    }
+
     fn clear_playback(mut self) {
+        self.end_session();
         cancel(self.stream_task);
         self.playback.set(None);
     }
 
     fn update_watch(mut self, change: impl FnOnce(&mut Vec<WatchItem>) -> bool) -> bool {
-        let mut items = self.watch.write();
-        let changed = change(&mut items);
+        let before = self.watch.peek().clone();
+        let mut after = before.clone();
+        let changed = change(&mut after);
         if changed {
-            state::save_watch(&items);
+            self.replica.write().record_watch(&before, &after, now_ms());
+            self.publish();
         }
         changed
     }
 
-    fn playing_file(self, path: &str) -> Option<PathBuf> {
-        self.playback
-            .peek()
-            .as_ref()
-            .and_then(|p| p.served(path))
-            .map(Path::to_path_buf)
+    async fn load_state(mut self) {
+        let replica = platform::load_replica()
+            .await
+            .unwrap_or_else(Replica::fresh);
+        self.replica.set(replica);
+        self.publish();
     }
 
-    fn set_status(mut self, id: Uuid, status: Status) {
-        let finished = matches!(status, Status::Completed | Status::Failed(_));
-        if let Some(download) = self.downloads.write().iter_mut().find(|d| d.id == id) {
-            download.status = status;
+    async fn sync(self) {
+        sync::run(self.replica, platform::sync_config(), move || {
+            self.publish()
+        })
+        .await;
+    }
+
+    fn publish(mut self) {
+        let replica = self.replica.peek();
+        platform::save_replica(&replica);
+        let watch = replica.watch();
+        if *self.watch.peek() != watch {
+            self.watch.set(watch);
         }
-        if finished {
-            state::save_downloads(&self.downloads.peek());
+        let prefs = replica.prefs().unwrap_or_default();
+        if *self.prefs.peek() != prefs {
+            self.prefs.set(prefs);
         }
     }
 
-    fn report(mut self, context: &str, error: impl Display) {
+    pub fn report(mut self, context: &str, error: impl Display) {
         self.error.set(Some(format!("{context}: {error}")));
     }
 }
@@ -748,48 +622,16 @@ fn cancel(mut slot: Signal<Option<Task>>) {
     }
 }
 
-fn manifest_version(manifest: &str) -> Option<&str> {
-    manifest.lines().find_map(|line| {
-        let value = line
-            .trim()
-            .strip_prefix("version")?
-            .trim_start()
-            .strip_prefix('=')?;
-        Some(value.trim().trim_matches('"'))
-    })
-}
-
-fn is_newer(remote: &str, local: &str) -> bool {
-    let parse = |v: &str| {
-        v.split('.')
-            .map(|part| part.parse::<u64>().ok())
-            .collect::<Option<Vec<_>>>()
-    };
-    match (parse(remote), parse(local)) {
-        (Some(remote), Some(local)) => remote > local,
-        _ => remote != local,
-    }
-}
-
 #[component]
 pub fn App() -> Element {
     let mut app = use_context_provider(AppState::new);
+    platform::use_device(app);
+    use_future(move || app.player.run(app));
+    use_future(move || async move {
+        app.load_state().await;
+        app.sync().await;
+    });
     use_future(move || app.load_catalog());
-    use_future(move || app.check_update());
-    use_future(move || app.sync());
-    use_hook(move || app.resume_downloads());
-    use_wry_event_handler(move |event, _| {
-        if matches!(event, tao::event::Event::LoopDestroyed) {
-            app.stop_downloads();
-        }
-    });
-    use_asset_handler(media::ROUTE, move |request, responder| {
-        let file = app.playing_file(request.uri().path());
-        let range = media::requested_range(&request);
-        tokio::spawn(async move {
-            responder.respond(media::respond(file.as_deref(), range.as_deref()).await);
-        });
-    });
     use_effect(move || {
         if *app.screen.read() == Screen::Home {
             let top = *app.catalog.scroll.peek();
@@ -799,10 +641,26 @@ pub fn App() -> Element {
         }
     });
 
+    let screen = *app.screen.read();
+    let page = match screen {
+        Screen::Home => rsx! { HomeView {} },
+        Screen::Search => rsx! { SearchView {} },
+        Screen::Details => match app.details.entry.cloned() {
+            Some(entry) => rsx! { DetailsView { entry } },
+            None => rsx! { HomeView {} },
+        },
+        Screen::Player => rsx! { PlayerView {} },
+        #[cfg(feature = "desktop")]
+        Screen::Downloads => rsx! { platform::DownloadsView {} },
+    };
+
     rsx! {
         style { dangerous_inner_html: CSS }
+        platform::Head {}
         div { class: "app",
-            Navbar {}
+            if screen != Screen::Player {
+                Navbar {}
+            }
             if let Some(message) = app.error.cloned() {
                 div { class: "error-bar", role: "alert",
                     span { "{message}" }
@@ -810,11 +668,11 @@ pub fn App() -> Element {
                         class: "dismiss",
                         aria_label: "Dismiss error",
                         onclick: move |_| app.error.set(None),
-                        "✕"
+                        span { class: "close-icon", dangerous_inner_html: CLOSE_ICON }
                     }
                 }
             }
-            div {
+            main {
                 class: "content",
                 onscroll: move |e: Event<ScrollData>| {
                     if *app.screen.peek() != Screen::Home {
@@ -828,16 +686,7 @@ pub fn App() -> Element {
                         app.load_more();
                     }
                 },
-                match *app.screen.read() {
-                    Screen::Home => rsx! { HomeView {} },
-                    Screen::Search => rsx! { SearchView {} },
-                    Screen::Details => match app.details.entry.cloned() {
-                        Some(entry) => rsx! { DetailsView { entry } },
-                        None => rsx! { HomeView {} },
-                    },
-                    Screen::Player => rsx! { PlayerView {} },
-                    Screen::Downloads => rsx! { DownloadsView {} },
-                }
+                {page}
             }
         }
     }
@@ -846,23 +695,6 @@ pub fn App() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::scratch_dir;
-
-    #[test]
-    fn manifest_version_reads_package_version() {
-        let manifest = "[package]\nname = \"x\"\nversion = \"1.2.3\"\n\n[dependencies]\nfoo = { version = \"9\" }\n";
-        assert_eq!(manifest_version(manifest), Some("1.2.3"));
-        assert_eq!(manifest_version("[package]\nversioned = 1\n"), None);
-    }
-
-    #[test]
-    fn is_newer_compares_numerically() {
-        assert!(is_newer("1.0.31", "1.0.30"));
-        assert!(is_newer("1.0.100", "1.0.99"));
-        assert!(!is_newer("1.0.30", "1.0.30"));
-        assert!(!is_newer("1.0.29", "1.0.30"));
-        assert!(is_newer("1.1.0-beta", "1.0.30"));
-    }
 
     #[test]
     fn playback_title_depends_on_episode() {
@@ -879,63 +711,39 @@ mod tests {
             name: "Pilot".into(),
             duration: None,
             image_url: None,
+            description: None,
         };
         let episode = Playback::new(entry, Some(1), Some(pilot), 0.0);
         assert_eq!(episode.title(), "Lost S01E02 - Pilot");
     }
 
     #[test]
-    fn local_playback_gets_a_fresh_media_url() {
-        let streaming = Playback::new(MediaEntry::default(), None, None, 12.0);
-        assert_eq!(
-            (streaming.url.as_deref(), streaming.file.as_deref()),
-            (None, None)
-        );
-        let first = streaming.clone().with_file(PathBuf::from("/a.mp4"));
-        let second = streaming.with_file(PathBuf::from("/a.mp4"));
-        assert!(
-            first
-                .url
-                .as_deref()
-                .is_some_and(|u| u.starts_with("/media/"))
-        );
-        assert_eq!(first.file.as_deref(), Some(Path::new("/a.mp4")));
-        assert_eq!(first.start, 12.0);
-        assert_ne!(first.url, second.url);
-    }
-
-    #[test]
-    fn local_playback_serves_only_its_video_and_subtitles() {
-        let dir = scratch_dir("served");
-        let video = dir.join("Ep.mp4");
-        for file in ["Ep.mp4", "Ep.ita.3.vtt", "Ep.forced-ita.2.vtt"] {
-            std::fs::write(dir.join(file), "x").unwrap();
-        }
-        let playback =
-            Playback::new(MediaEntry::default(), None, None, 0.0).with_file(video.clone());
-        let url = playback.url.clone().unwrap();
+    fn sidecar_tracks_are_served_under_the_playback_url() {
+        let playback = Playback {
+            url: Some("/media/x".into()),
+            subtitles: vec![
+                Subtitle {
+                    file: PathBuf::from("/a.forced-ita.2.vtt"),
+                    language: "forced-ita".into(),
+                },
+                Subtitle {
+                    file: PathBuf::from("/a.ita.3.vtt"),
+                    language: "ita".into(),
+                },
+            ],
+            ..Playback::new(MediaEntry::default(), None, None, 0.0)
+        };
         assert_eq!(
             playback.tracks(),
             [
-                (format!("{url}/0"), "forced-ita".to_owned()),
-                (format!("{url}/1"), "ita".to_owned())
+                ("/media/x/0".to_owned(), "forced-ita".to_owned()),
+                ("/media/x/1".to_owned(), "ita".to_owned())
             ]
         );
-        assert_eq!(playback.served(&url), Some(video.as_path()));
-        assert_eq!(
-            playback.served(&format!("{url}/1")),
-            Some(dir.join("Ep.ita.3.vtt").as_path())
+        assert!(
+            Playback::new(MediaEntry::default(), None, None, 0.0)
+                .tracks()
+                .is_empty()
         );
-        for path in [
-            format!("{url}/2"),
-            format!("{url}/x"),
-            format!("{url}0"),
-            "/media/other".into(),
-        ] {
-            assert_eq!(playback.served(&path), None);
-        }
-        let streaming = Playback::new(MediaEntry::default(), None, None, 0.0);
-        assert_eq!(streaming.served(&url), None);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

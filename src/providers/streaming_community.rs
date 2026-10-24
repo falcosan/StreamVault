@@ -1,10 +1,10 @@
 use super::{
-    Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl, USER_AGENT,
+    Episode, Http, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl,
     domain, fetch_json, fetch_text, items, non_blank, vixcloud_playlist,
 };
 use async_trait::async_trait;
+use dioxus::logger::tracing::warn;
 use regex::Regex;
-use reqwest::Client;
 use scraper::{Html, Selector};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -13,13 +13,14 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 const DEFAULT_LANG: &str = "it";
 const LANGS: [&str; 2] = ["it", "en"];
 const IMAGE_TYPES: [&str; 4] = ["poster", "cover", "cover_mobile", "background"];
+const BACKDROP_TYPES: [&str; 2] = ["background", "cover"];
 const CATALOG_SIZE: usize = 100;
 const SLIDERS_PER_REQUEST: usize = 6;
 const BROWSE_PAGE_SIZE: usize = 60;
 const BROWSE_MAX_PAGES: usize = 17;
 
 pub struct StreamingCommunity {
-    client: Client,
+    client: Http,
     base: String,
     cdn: String,
     browse: Mutex<Option<Browse>>,
@@ -58,7 +59,7 @@ impl Browse {
 }
 
 impl StreamingCommunity {
-    pub fn new(client: Client) -> Self {
+    pub fn new(client: Http) -> Self {
         let base = domain("streamingcommunity");
         Self {
             client,
@@ -112,6 +113,7 @@ impl StreamingCommunity {
             year: year(v),
             score: v["score"].as_str().map(String::from),
             image_url: self.image(v),
+            backdrop_url: self.find_image(v, &BACKDROP_TYPES),
             description: description(v),
             name,
             ..Default::default()
@@ -119,8 +121,15 @@ impl StreamingCommunity {
     }
 
     fn image(&self, v: &Value) -> Option<String> {
+        self.find_image(v, &IMAGE_TYPES).or_else(|| {
+            let first = v["images"].as_array()?.first()?["filename"].as_str()?;
+            Some(format!("{}/images/{first}", self.cdn))
+        })
+    }
+
+    fn find_image(&self, v: &Value, kinds: &[&str]) -> Option<String> {
         let images = v["images"].as_array()?;
-        IMAGE_TYPES
+        kinds
             .iter()
             .find_map(|kind| {
                 images
@@ -128,7 +137,6 @@ impl StreamingCommunity {
                     .filter(|i| i["type"] == *kind)
                     .find_map(|i| i["filename"].as_str())
             })
-            .or_else(|| images.first()?["filename"].as_str())
             .map(|f| format!("{}/images/{f}", self.cdn))
     }
 
@@ -209,7 +217,7 @@ fn scripts(html: &str) -> String {
         .join("\n")
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Provider for StreamingCommunity {
     fn name(&self) -> &'static str {
         "StreamingCommunity"
@@ -224,7 +232,7 @@ impl Provider for StreamingCommunity {
                     self.titles(items(&page["props"]["titles"]), lang)
                         .filter(|e| seen.insert(e.id)),
                 ),
-                Err(e) => eprintln!("[StreamVault] StreamingCommunity {lang} search failed: {e}"),
+                Err(e) => warn!("StreamingCommunity {lang} search failed: {e}"),
             }
         }
         Ok(entries)
@@ -250,6 +258,7 @@ impl Provider for StreamingCommunity {
                     name: ep["name"].as_str().unwrap_or_default().to_owned(),
                     duration: ep["duration"].as_u64().and_then(|d| u32::try_from(d).ok()),
                     image_url: self.image(ep),
+                    description: ep["plot"].as_str().and_then(non_blank),
                 })
             })
             .collect();
@@ -280,7 +289,8 @@ impl Provider for StreamingCommunity {
             .ok_or_else(|| ProviderError::StreamExtraction("No HLS params in script".into()))?;
         Ok(StreamUrl {
             url,
-            headers: vec![("User-Agent".into(), USER_AGENT.into())],
+            #[cfg(feature = "desktop")]
+            headers: vec![("User-Agent".into(), super::USER_AGENT.into())],
         })
     }
 
@@ -319,7 +329,7 @@ impl Provider for StreamingCommunity {
                     self.titles(items(&json).flat_map(|s| items(&s["titles"])), lang)
                         .filter(|e| seen.insert(e.id)),
                 ),
-                Err(e) => eprintln!("[StreamVault] StreamingCommunity {lang} sliders failed: {e}"),
+                Err(e) => warn!("StreamingCommunity {lang} sliders failed: {e}"),
             }
         }
         entries.truncate(CATALOG_SIZE);
@@ -370,7 +380,10 @@ mod tests {
 
     fn provider() -> StreamingCommunity {
         StreamingCommunity {
-            client: Client::new(),
+            client: Http::new(
+                reqwest::Client::builder(),
+                std::time::Duration::from_secs(1),
+            ),
             base: "https://streamingcommunity.test".into(),
             cdn: "https://cdn.streamingcommunity.test".into(),
             browse: Mutex::new(None),
@@ -407,6 +420,10 @@ mod tests {
             entry.image_url.as_deref(),
             Some("https://cdn.streamingcommunity.test/images/poster.webp")
         );
+        assert_eq!(
+            entry.backdrop_url.as_deref(),
+            Some("https://cdn.streamingcommunity.test/images/bg.webp")
+        );
     }
 
     #[test]
@@ -425,6 +442,7 @@ mod tests {
             entry.image_url.as_deref(),
             Some("https://cdn.streamingcommunity.test/images/logo.png")
         );
+        assert_eq!(entry.backdrop_url, None);
     }
 
     #[test]

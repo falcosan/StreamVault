@@ -20,6 +20,7 @@ pub struct MediaEntry {
     pub year: Option<String>,
     pub score: Option<String>,
     pub image_url: Option<String>,
+    pub backdrop_url: Option<String>,
     pub description: Option<String>,
 }
 
@@ -30,12 +31,25 @@ pub struct Episode {
     pub name: String,
     pub duration: Option<u32>,
     pub image_url: Option<String>,
+    #[serde(skip)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct StreamUrl {
     pub url: String,
+    #[cfg(feature = "desktop")]
     pub headers: Vec<(String, String)>,
+}
+
+impl StreamUrl {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            #[cfg(feature = "desktop")]
+            headers: Vec::new(),
+        }
+    }
 }
 
 impl MediaEntry {
@@ -95,7 +109,27 @@ mod tests {
             name: name.into(),
             duration: None,
             image_url: None,
+            description: None,
         }
+    }
+
+    #[test]
+    fn records_saved_before_backdrops_still_load() {
+        let json = r#"{"id":1,"name":"x","slug":"","provider":0,"provider_name":"","language":"","media_type":"Movie","alternative_names":[],"year":null,"score":null,"image_url":null,"description":null}"#;
+        let entry: MediaEntry = serde_json::from_str(json).unwrap();
+        assert_eq!((entry.id, entry.backdrop_url), (1, None));
+    }
+
+    #[test]
+    fn episode_synopses_are_never_persisted() {
+        let episode = Episode {
+            description: Some("Plot".into()),
+            ..episode(1, "Pilot")
+        };
+        let json = serde_json::to_value(&episode).unwrap();
+        assert!(json.get("description").is_none());
+        let restored: Episode = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.description, None);
     }
 
     #[test]
@@ -149,7 +183,7 @@ mod tests {
                 "id": 0, "name": "Inception", "slug": "", "provider": 0,
                 "provider_name": "", "language": "", "media_type": "Movie",
                 "alternative_names": [], "year": "2010", "score": null,
-                "image_url": null, "description": null
+                "image_url": null, "backdrop_url": null, "description": null
             })
         );
     }

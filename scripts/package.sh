@@ -116,8 +116,8 @@ main() {
   install -d "$contents/MacOS" "$bin_dir" "$dep_cache/f" "$dep_cache/n" "$contents/Resources"
 
   cp target/release/streamvault "$contents/MacOS/"
-  [[ -f resources/Info.plist ]] && cp resources/Info.plist "$contents/"
-  [[ -f resources/AppIcon.icns ]] && cp resources/AppIcon.icns "$contents/Resources/"
+  [[ -f resources/macos/Info.plist ]] && cp resources/macos/Info.plist "$contents/"
+  [[ -f resources/macos/AppIcon.icns ]] && cp resources/macos/AppIcon.icns "$contents/Resources/"
 
   local narch ffmpeg_url
   case "$(uname -m)" in

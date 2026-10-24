@@ -1,7 +1,7 @@
-use super::LOGO;
 use super::poster::{PosterCard, card_background};
+use super::{CLOSE_ICON, LOGO};
 use crate::app::AppState;
-use crate::state::WatchItem;
+use crate::watch::WatchItem;
 use dioxus::prelude::*;
 
 #[component]
@@ -15,11 +15,6 @@ pub fn HomeView() -> Element {
             div { class: "splash-screen",
                 div { class: "splash-logo", dangerous_inner_html: LOGO }
             }
-        };
-    }
-    if catalog.is_empty() && watching.is_empty() {
-        return rsx! {
-            div { class: "center-msg", span { class: "empty-msg", "No media available" } }
         };
     }
 
@@ -41,7 +36,15 @@ pub fn HomeView() -> Element {
                 }
             }
             if catalog.is_empty() {
-                p { class: "empty-msg catalog-empty", "No media available" }
+                div { class: "center-msg compact",
+                    span { class: "empty-msg", "No media available" }
+                    button {
+                        class: "btn-accent",
+                        "data-focus": "retry",
+                        onclick: move |_| app.reload(),
+                        "Retry"
+                    }
+                }
             }
             div { class: "media-grid",
                 for entry in catalog.iter() {
@@ -75,6 +78,7 @@ fn ContinueCard(item: WatchItem) -> Element {
         div { class: "continue-card", style: "{background}",
             button {
                 class: "continue-open",
+                "data-focus": "watch-{key.0}-{key.1}",
                 onclick: move |_| app.resume(item.clone()),
                 div { class: "continue-overlay",
                     div { class: "continue-name", "{name}" }
@@ -90,7 +94,7 @@ fn ContinueCard(item: WatchItem) -> Element {
                 class: "continue-remove",
                 aria_label: "Remove {name} from Continue Watching",
                 onclick: move |_| app.remove_watch(key),
-                span { class: "continue-remove-icon", "✕" }
+                span { class: "close-icon", dangerous_inner_html: CLOSE_ICON }
             }
         }
     }

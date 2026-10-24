@@ -1,480 +1,261 @@
-use crate::config::{SNAPSHOT_FILE, config_dir, read_json, state_dir, write_json};
-use crate::state::{PlayerPrefs, WatchItem, parse_items, prefs_path, watch_path};
-use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::io;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::prefs::PlayerPrefs;
+use crate::time::sleep;
+use crate::watch::WatchItem;
+use dioxus::logger::tracing::warn;
+use dioxus::prelude::*;
+use futures::future::{Either, select};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::pin::pin;
+use std::time::Duration;
+use uuid::Uuid;
 
+const MAX_WATCH: usize = 100;
+const WATCH_PREFIX: &str = "watch:";
+const PREFS_KEY: &str = "prefs";
 const TICK: Duration = Duration::from_secs(10);
-const PULL_INTERVAL_MS: u64 = 60_000;
-const MAX_ITEMS: usize = 100;
+const PULL_TICKS: u32 = 6;
+const BACKOFF: Duration = Duration::from_secs(60);
+const TIMEOUT: Duration = Duration::from_secs(30);
+const VISIBLE: &str = "document.addEventListener('visibilitychange', () => document.hidden || dioxus.send(true)); await new Promise(() => {});";
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct SyncConfig {
-    enabled: bool,
-    endpoint: String,
-    token: String,
+    pub enabled: bool,
+    pub endpoint: String,
+    pub token: String,
 }
 
 impl SyncConfig {
-    pub fn load() -> Option<Self> {
-        let config: Self = read_json(&config_dir().join("sync.json")).ok()?;
-        (config.enabled && !config.endpoint.trim().is_empty() && !config.token.trim().is_empty())
-            .then_some(config)
+    fn is_active(&self) -> bool {
+        self.enabled && !self.endpoint.trim().is_empty() && !self.token.trim().is_empty()
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-struct SyncDoc {
-    rev: u64,
-    prefs_updated_at: u64,
-    #[serde(deserialize_with = "lenient_items")]
-    watch: Vec<WatchItem>,
-    stamps: HashMap<String, u64>,
-    prefs: Option<PlayerPrefs>,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Change {
+    key: String,
+    value: Option<Value>,
+    at: u64,
 }
 
-fn lenient_items<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<WatchItem>, D::Error> {
-    Vec::deserialize(d).map(parse_items)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Record {
+    key: String,
+    value: Option<Value>,
+    at: u64,
+    device: String,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-struct Snapshot {
-    doc: SyncDoc,
-    ledger: HashMap<String, LedgerEntry>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct LedgerEntry {
-    stamp: u64,
-    item: WatchItem,
-}
-
-#[derive(Deserialize)]
-struct ApiResponse {
-    #[serde(default)]
-    ok: bool,
-    #[serde(default)]
-    conflict: bool,
-    #[serde(default)]
-    doc: Option<SyncDoc>,
-}
-
-#[derive(Serialize)]
-struct PushBody<'a> {
+#[derive(Debug, Serialize)]
+struct Request<'a> {
     token: &'a str,
-    base_rev: u64,
-    watch: &'a [WatchItem],
-    stamps: &'a HashMap<String, u64>,
-    prefs: &'a PlayerPrefs,
-    prefs_updated_at: u64,
+    device: &'a str,
+    since: u64,
+    changes: &'a [Change],
 }
 
-enum PushOutcome {
-    Accepted(SyncDoc),
-    Conflict(SyncDoc),
-    Failed,
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Response {
+    ok: bool,
+    error: Option<String>,
+    seq: u64,
+    reset: bool,
+    entries: Vec<Record>,
 }
 
-struct LocalState {
-    watch: Vec<WatchItem>,
-    prefs: PlayerPrefs,
-    watch_mtime: u64,
-    prefs_mtime: u64,
-    missing: bool,
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Replica {
+    device: String,
+    since: u64,
+    entries: BTreeMap<String, Record>,
+    pending: BTreeMap<String, Change>,
 }
 
-struct Remote<'a> {
-    config: &'a SyncConfig,
-    client: reqwest::Client,
-}
-
-pub async fn run(config: SyncConfig, mut on_merge: impl FnMut(Vec<WatchItem>, PlayerPrefs)) {
-    let remote = Remote {
-        config: &config,
-        client: reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap_or_default(),
-    };
-    let mut snap: Snapshot = read_json(&snapshot_path()).unwrap_or_default();
-    let mut last_pull = 0;
-    let mut cooldown_until = 0;
-    let mut ticker = tokio::time::interval(TICK);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        ticker.tick().await;
-        let now = now_ms();
-        if now < cooldown_until {
-            continue;
-        }
-        let Some(local) = read_local(&snap.doc) else {
-            continue;
-        };
-        let local_changed = local.watch != snap.doc.watch
-            || snap.doc.prefs.as_ref() != Some(&local.prefs)
-            || local.missing;
-        if !local_changed {
-            if now.saturating_sub(last_pull) < PULL_INTERVAL_MS {
-                continue;
-            }
-            last_pull = now;
-        }
-        let (next, ok) = sync_once(&remote, snap, local, local_changed, &mut on_merge).await;
-        snap = next;
-        if !ok {
-            cooldown_until = now_ms() + PULL_INTERVAL_MS;
+impl Replica {
+    fn new(device: impl Into<String>) -> Self {
+        Self {
+            device: device.into(),
+            ..Self::default()
         }
     }
-}
 
-fn snapshot_path() -> PathBuf {
-    state_dir().join(SNAPSHOT_FILE)
-}
+    pub fn fresh() -> Self {
+        Self::new(Uuid::new_v4().to_string())
+    }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| millis(d.as_millis()))
-}
+    pub fn is_dirty(&self) -> bool {
+        !self.pending.is_empty()
+    }
 
-fn millis(value: u128) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
-}
+    fn changes(&self) -> Vec<Change> {
+        self.pending.values().cloned().collect()
+    }
 
-fn mtime_ms(path: &Path) -> u64 {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map_or_else(now_ms, |d| millis(d.as_millis()).min(now_ms()))
-}
-
-fn read_local(base: &SyncDoc) -> Option<LocalState> {
-    let (watch, watch_missing) = match read_json::<Vec<WatchItem>>(&watch_path()) {
-        Ok(watch) => (watch, false),
-        Err(e) if e.kind() == io::ErrorKind::NotFound && base.watch.is_empty() => {
-            (Vec::new(), true)
+    fn request<'a>(&'a self, token: &'a str, changes: &'a [Change]) -> Request<'a> {
+        Request {
+            token,
+            device: &self.device,
+            since: self.since,
+            changes,
         }
-        Err(_) => return None,
-    };
-    let (prefs, prefs_missing) = match read_json::<PlayerPrefs>(&prefs_path()) {
-        Ok(prefs) => (prefs, false),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            (base.prefs.clone().unwrap_or_default(), true)
-        }
-        Err(_) => return None,
-    };
-    Some(LocalState {
-        watch,
-        prefs,
-        watch_mtime: mtime_ms(&watch_path()),
-        prefs_mtime: mtime_ms(&prefs_path()),
-        missing: watch_missing || prefs_missing,
-    })
-}
+    }
 
-async fn sync_once(
-    remote: &Remote<'_>,
-    mut snap: Snapshot,
-    local: LocalState,
-    local_changed: bool,
-    on_merge: &mut impl FnMut(Vec<WatchItem>, PlayerPrefs),
-) -> (Snapshot, bool) {
-    let mut doc = if local_changed && snap.doc.rev > 0 {
-        snap.doc.clone()
-    } else {
-        match remote.fetch().await {
-            Some(doc) => doc,
-            None => return (snap, false),
+    fn apply(&mut self, sent: &[Change], response: Response) -> Result<(), String> {
+        if !response.ok {
+            return Err(response.error.unwrap_or_else(|| "sync rejected".into()));
         }
-    };
-    let fresh_base = SyncDoc::default();
-    let mut ledger_dirty = false;
-    for _ in 0..2 {
-        let base = if doc.rev < snap.doc.rev {
-            &fresh_base
-        } else {
-            &snap.doc
-        };
-        let (local_stamps, dirty) = stamp_local(base, &local, &mut snap.ledger);
-        ledger_dirty |= dirty;
-        let prefs_stamp = local_prefs_stamp(base, &local);
-        let (watch, stamps) = merge_watch(base, &local.watch, &local_stamps, &doc);
-        let (prefs, prefs_updated_at) = merge_prefs(base, &local.prefs, prefs_stamp, &doc);
-        let remote_dirty =
-            watch != doc.watch || stamps != doc.stamps || doc.prefs.as_ref() != Some(&prefs);
-        let merged = if remote_dirty {
-            let body = PushBody {
-                token: &remote.config.token,
-                base_rev: doc.rev,
-                watch: &watch,
-                stamps: &stamps,
-                prefs: &prefs,
-                prefs_updated_at,
-            };
-            match remote.push(&body).await {
-                PushOutcome::Accepted(accepted) => accepted,
-                PushOutcome::Conflict(current) => {
-                    doc = current;
+        if response.reset {
+            let pending = &self.pending;
+            self.entries.retain(|key, _| pending.contains_key(key));
+        }
+        for record in response.entries {
+            if let Some(change) = self.pending.get(&record.key) {
+                let processed = sent.iter().any(|s| s == change);
+                if !processed && wins((change.at, &self.device), (record.at, &record.device)) {
                     continue;
                 }
-                PushOutcome::Failed => return (persist_ledger(snap, ledger_dirty), false),
+                self.pending.remove(&record.key);
             }
-        } else {
-            doc
-        };
-        return (
-            apply_local(snap, merged, &local, watch, prefs, ledger_dirty, on_merge),
-            true,
-        );
-    }
-    (persist_ledger(snap, ledger_dirty), true)
-}
-
-fn persist_ledger(snap: Snapshot, dirty: bool) -> Snapshot {
-    if dirty {
-        write_logged(&snapshot_path(), &snap);
-    }
-    snap
-}
-
-fn write_logged(path: &Path, value: &(impl Serialize + ?Sized)) -> bool {
-    write_json(path, value)
-        .inspect_err(|e| eprintln!("[StreamVault] sync write error {}: {e}", path.display()))
-        .is_ok()
-}
-
-fn apply_local(
-    mut snap: Snapshot,
-    merged: SyncDoc,
-    local: &LocalState,
-    watch: Vec<WatchItem>,
-    prefs: PlayerPrefs,
-    ledger_dirty: bool,
-    on_merge: &mut impl FnMut(Vec<WatchItem>, PlayerPrefs),
-) -> Snapshot {
-    let Some(current) = read_local(&snap.doc) else {
-        return snap;
-    };
-    if current.watch != local.watch || current.prefs != local.prefs {
-        return snap;
-    }
-    let changed = watch != local.watch || prefs != local.prefs;
-    if changed || local.missing {
-        if !(write_logged(&watch_path(), &watch) && write_logged(&prefs_path(), &prefs)) {
-            return snap;
+            self.entries.insert(record.key.clone(), record);
         }
-        if changed {
-            on_merge(watch, prefs);
-        }
-    }
-    if merged.rev != snap.doc.rev || ledger_dirty {
-        let previous = std::mem::replace(&mut snap.doc, merged);
-        if !write_logged(&snapshot_path(), &snap) {
-            snap.doc = previous;
-        }
-    } else {
-        snap.doc = merged;
-    }
-    snap
-}
-
-impl Remote<'_> {
-    async fn call(request: reqwest::RequestBuilder) -> Option<ApiResponse> {
-        request.send().await.ok()?.json().await.ok()
+        self.since = response.seq;
+        Ok(())
     }
 
-    async fn fetch(&self) -> Option<SyncDoc> {
-        let request = self
-            .client
-            .get(&self.config.endpoint)
-            .query(&[("token", self.config.token.as_str())]);
-        let response = Self::call(request).await?;
-        response.ok.then_some(response.doc).flatten()
+    pub fn watch(&self) -> Vec<WatchItem> {
+        let mut live: Vec<&Record> = self
+            .entries
+            .values()
+            .filter(|r| r.key.starts_with(WATCH_PREFIX) && r.value.is_some())
+            .collect();
+        live.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.key.cmp(&b.key)));
+        live.into_iter()
+            .filter_map(|r| serde_json::from_value(r.value.clone()?).ok())
+            .take(MAX_WATCH)
+            .collect()
     }
 
-    async fn push(&self, body: &PushBody<'_>) -> PushOutcome {
-        let Ok(body) = serde_json::to_string(body) else {
-            return PushOutcome::Failed;
-        };
-        let request = self
-            .client
-            .post(&self.config.endpoint)
-            .header("content-type", "text/plain;charset=utf-8")
-            .body(body);
-        match Self::call(request).await {
-            Some(ApiResponse {
-                ok: true,
-                doc: Some(doc),
-                ..
-            }) => PushOutcome::Accepted(doc),
-            Some(ApiResponse {
-                ok: false,
-                conflict: true,
-                doc: Some(doc),
-            }) => PushOutcome::Conflict(doc),
-            _ => PushOutcome::Failed,
-        }
+    pub fn prefs(&self) -> Option<PlayerPrefs> {
+        let value = self.entries.get(PREFS_KEY)?.value.clone()?;
+        serde_json::from_value(value).ok()
     }
-}
 
-fn item_key(i: &WatchItem) -> String {
-    format!("{}:{}", i.entry.provider, i.entry.id)
-}
-
-fn stamp_local(
-    base: &SyncDoc,
-    local: &LocalState,
-    ledger: &mut HashMap<String, LedgerEntry>,
-) -> (HashMap<String, u64>, bool) {
-    let base_items: HashMap<String, &WatchItem> =
-        base.watch.iter().map(|i| (item_key(i), i)).collect();
-    let fresh = if base.rev == 0 { 0 } else { local.watch_mtime };
-    let mut dirty = false;
-    let mut stamps = HashMap::new();
-    for (pos, i) in local.watch.iter().enumerate() {
-        let k = item_key(i);
-        let stamp = match base_items.get(&k) {
-            Some(b) if **b == *i => {
-                dirty |= ledger.remove(&k).is_some();
-                base.stamps.get(&k).copied().unwrap_or(0)
+    pub fn record_watch(&mut self, before: &[WatchItem], after: &[WatchItem], at: u64) {
+        let previous: HashMap<String, &WatchItem> =
+            before.iter().map(|item| (watch_key(item), item)).collect();
+        let mut kept = HashSet::new();
+        for (index, item) in after.iter().enumerate() {
+            let key = watch_key(item);
+            if previous.get(&key) != Some(&item) {
+                let value = serde_json::to_value(item).ok();
+                self.write(key.clone(), value, at.saturating_sub(index as u64));
             }
-            _ => match ledger.get(&k) {
-                Some(e) if e.item == *i => e.stamp,
-                _ => {
-                    let s = fresh.saturating_sub(pos as u64);
-                    ledger.insert(
-                        k.clone(),
-                        LedgerEntry {
-                            stamp: s,
-                            item: i.clone(),
-                        },
-                    );
-                    dirty = true;
-                    s
+            kept.insert(key);
+        }
+        for key in previous.into_keys().filter(|key| !kept.contains(key)) {
+            self.write(key, None, at);
+        }
+    }
+
+    pub fn record_prefs(&mut self, prefs: &PlayerPrefs, at: u64) {
+        if self.prefs().as_ref() != Some(prefs) {
+            let value = serde_json::to_value(prefs).ok();
+            self.write(PREFS_KEY.into(), value, at);
+        }
+    }
+
+    fn write(&mut self, key: String, value: Option<Value>, at: u64) {
+        let at = self
+            .entries
+            .get(&key)
+            .map_or(at, |current| at.max(current.at.saturating_add(1)));
+        let record = Record {
+            key: key.clone(),
+            value: value.clone(),
+            at,
+            device: self.device.clone(),
+        };
+        self.entries.insert(key.clone(), record);
+        self.pending.insert(key.clone(), Change { key, value, at });
+    }
+}
+
+fn wins(a: (u64, &str), b: (u64, &str)) -> bool {
+    a > b
+}
+
+fn watch_key(item: &WatchItem) -> String {
+    format!("{WATCH_PREFIX}{}:{}", item.entry.provider, item.entry.id)
+}
+
+pub async fn run(mut replica: CopyValue<Replica>, config: SyncConfig, mut publish: impl FnMut()) {
+    if !config.is_active() {
+        return;
+    }
+    let client = Client::new();
+    let mut visible = document::eval(VISIBLE);
+    let mut idle = PULL_TICKS;
+    loop {
+        if idle >= PULL_TICKS || replica.peek().is_dirty() {
+            idle = 0;
+            let (sent, body) = {
+                let replica = replica.peek();
+                let changes = replica.changes();
+                let body = serde_json::to_string(&replica.request(&config.token, &changes));
+                (changes, body.unwrap_or_default())
+            };
+            let result = exchange(&client, &config, body)
+                .await
+                .and_then(|response| replica.write().apply(&sent, response));
+            match result {
+                Ok(()) => publish(),
+                Err(e) => {
+                    warn!("sync failed: {e}");
+                    sleep(BACKOFF).await;
                 }
-            },
-        };
-        stamps.insert(k, stamp);
-    }
-    let before = ledger.len();
-    ledger.retain(|k, _| stamps.contains_key(k));
-    dirty |= ledger.len() != before;
-    (stamps, dirty)
-}
-
-fn local_prefs_stamp(base: &SyncDoc, local: &LocalState) -> u64 {
-    if base.prefs.as_ref() == Some(&local.prefs) {
-        base.prefs_updated_at
-    } else if base.rev == 0 {
-        0
-    } else {
-        local.prefs_mtime
+            }
+        }
+        idle += 1;
+        match select(pin!(sleep(TICK)), pin!(visible.recv::<bool>())).await {
+            Either::Right((Ok(_), _)) => idle = PULL_TICKS,
+            Either::Right((Err(_), tick)) => tick.await,
+            Either::Left(_) => {}
+        }
     }
 }
 
-fn merge_watch(
-    base: &SyncDoc,
-    local: &[WatchItem],
-    local_stamps: &HashMap<String, u64>,
-    remote: &SyncDoc,
-) -> (Vec<WatchItem>, HashMap<String, u64>) {
-    let base_keys: HashSet<String> = base.watch.iter().map(item_key).collect();
-    let base_stamp = |k: &str| base.stamps.get(k).copied().unwrap_or(0);
-    let local_map: HashMap<String, &WatchItem> = local.iter().map(|i| (item_key(i), i)).collect();
-    let remote_map: HashMap<String, &WatchItem> =
-        remote.watch.iter().map(|i| (item_key(i), i)).collect();
-    let mut keys = Vec::new();
-    let mut seen = HashSet::new();
-    for i in local.iter().chain(remote.watch.iter()) {
-        let k = item_key(i);
-        if seen.insert(k.clone()) {
-            keys.push(k);
-        }
-    }
-    let mut merged: Vec<(WatchItem, u64)> = Vec::new();
-    for k in keys {
-        let ls = local_stamps.get(&k).copied().unwrap_or(0);
-        let rs = remote.stamps.get(&k).copied().unwrap_or(0);
-        let pick = match (local_map.get(&k), remote_map.get(&k)) {
-            (Some(l), Some(r)) => Some(if rs > ls {
-                ((*r).clone(), rs)
-            } else {
-                ((*l).clone(), ls)
-            }),
-            (Some(l), None) => {
-                (!base_keys.contains(&k) || ls > base_stamp(&k)).then(|| ((*l).clone(), ls))
-            }
-            (None, Some(r)) => {
-                (!base_keys.contains(&k) || rs > base_stamp(&k)).then(|| ((*r).clone(), rs))
-            }
-            (None, None) => None,
-        };
-        if let Some(p) = pick {
-            merged.push(p);
-        }
-    }
-    merged.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
-    merged.truncate(MAX_ITEMS);
-    let stamps = merged.iter().map(|(i, s)| (item_key(i), *s)).collect();
-    (merged.into_iter().map(|(i, _)| i).collect(), stamps)
-}
-
-fn merge_prefs(
-    base: &SyncDoc,
-    local: &PlayerPrefs,
-    local_stamp: u64,
-    remote: &SyncDoc,
-) -> (PlayerPrefs, u64) {
-    let base_prefs = base.prefs.clone().unwrap_or_default();
-    let remote_prefs = remote.prefs.clone().unwrap_or_default();
-    let local_changed = base.prefs.as_ref() != Some(local);
-    let remote_changed =
-        remote.prefs_updated_at > base.prefs_updated_at || remote_prefs != base_prefs;
-    match (local_changed, remote_changed) {
-        (true, true) => {
-            if remote.prefs_updated_at > local_stamp {
-                (remote_prefs, remote.prefs_updated_at)
-            } else {
-                (local.clone(), local_stamp)
-            }
-        }
-        (true, false) => (local.clone(), local_stamp.max(base.prefs_updated_at)),
-        (false, true) => (remote_prefs, remote.prefs_updated_at),
-        (false, false) => (local.clone(), base.prefs_updated_at),
-    }
+async fn exchange(client: &Client, config: &SyncConfig, body: String) -> Result<Response, String> {
+    client
+        .post(&config.endpoint)
+        .header("content-type", "text/plain;charset=utf-8")
+        .body(body)
+        .timeout(TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{MediaEntry, MediaType};
+    use crate::providers::MediaEntry;
+    use serde_json::json;
 
-    fn make_entry(id: u64) -> MediaEntry {
-        MediaEntry {
-            id,
-            name: format!("Title {id}"),
-            slug: String::new(),
-            provider: 0,
-            provider_name: "StreamingCommunity".into(),
-            language: "it".into(),
-            media_type: MediaType::Movie,
-            alternative_names: Vec::new(),
-            year: None,
-            score: None,
-            image_url: None,
-            description: None,
-        }
-    }
-
-    fn make_item(id: u64, time: f64) -> WatchItem {
+    fn item(id: u64, time: f64) -> WatchItem {
         WatchItem {
-            entry: make_entry(id),
+            entry: MediaEntry {
+                id,
+                name: format!("Title {id}"),
+                ..Default::default()
+            },
             current_time: time,
             duration: 100.0,
             season: None,
@@ -482,379 +263,428 @@ mod tests {
         }
     }
 
-    fn make_doc(rev: u64, items: Vec<(WatchItem, u64)>) -> SyncDoc {
-        let stamps = items.iter().map(|(i, s)| (item_key(i), *s)).collect();
-        SyncDoc {
-            rev,
-            prefs_updated_at: 0,
-            watch: items.into_iter().map(|(i, _)| i).collect(),
-            stamps,
-            prefs: None,
+    fn ids(items: &[WatchItem]) -> Vec<u64> {
+        items.iter().map(|i| i.entry.id).collect()
+    }
+
+    fn record(key: &str, value: Option<Value>, at: u64, device: &str) -> Record {
+        Record {
+            key: key.into(),
+            value,
+            at,
+            device: device.into(),
         }
     }
 
-    fn local_state(watch: Vec<WatchItem>, watch_mtime: u64) -> LocalState {
-        LocalState {
-            watch,
-            prefs: PlayerPrefs::default(),
-            watch_mtime,
-            prefs_mtime: 0,
-            missing: false,
+    fn accepted(seq: u64, entries: Vec<Record>) -> Response {
+        Response {
+            ok: true,
+            seq,
+            entries,
+            ..Response::default()
         }
     }
 
-    fn stamps_of(
-        base: &SyncDoc,
-        local: &LocalState,
-        ledger: &mut HashMap<String, LedgerEntry>,
-    ) -> HashMap<String, u64> {
-        stamp_local(base, local, ledger).0
+    #[test]
+    fn record_watch_writes_only_what_changed() {
+        let mut replica = Replica::new("tv");
+        replica.record_watch(&[], &[item(1, 5.0), item(2, 5.0)], 1_000);
+        replica.pending.clear();
+        replica.record_watch(
+            &[item(1, 5.0), item(2, 5.0)],
+            &[item(2, 9.0), item(3, 1.0)],
+            2_000,
+        );
+        let changes: Vec<_> = replica
+            .changes()
+            .into_iter()
+            .map(|c| (c.key, c.value.is_some(), c.at))
+            .collect();
+        assert_eq!(
+            changes,
+            [
+                ("watch:0:1".into(), false, 2_000),
+                ("watch:0:2".into(), true, 2_000),
+                ("watch:0:3".into(), true, 1_999),
+            ]
+        );
+        assert_eq!(ids(&replica.watch()), [2, 3]);
     }
 
     #[test]
-    fn stamp_unchanged_item_keeps_base_stamp() {
-        let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
-        let stamps = stamps_of(
-            &base,
-            &local_state(vec![make_item(1, 10.0)], 900),
-            &mut HashMap::new(),
-        );
-        assert_eq!(stamps.get("0:1"), Some(&5));
+    fn local_writes_supersede_the_version_they_replace() {
+        let mut replica = Replica::new("tv");
+        let value = serde_json::to_value(item(1, 5.0)).ok();
+        replica
+            .apply(
+                &[],
+                accepted(1, vec![record("watch:0:1", value, 9_000, "mac")]),
+            )
+            .unwrap();
+        replica.record_watch(&replica.watch(), &[item(1, 7.0)], 4_000);
+        assert_eq!(replica.changes()[0].at, 9_001);
     }
 
     #[test]
-    fn stamp_changed_item_uses_file_mtime() {
-        let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
-        let stamps = stamps_of(
-            &base,
-            &local_state(vec![make_item(1, 42.0)], 900),
-            &mut HashMap::new(),
-        );
-        assert_eq!(stamps.get("0:1"), Some(&900));
+    fn apply_takes_remote_winners_and_acknowledges_pending() {
+        let mut replica = Replica::new("tv");
+        replica.record_watch(&[], &[item(1, 5.0), item(2, 5.0)], 1_000);
+        let mine = replica.changes();
+        let theirs = serde_json::to_value(item(2, 50.0)).ok();
+        replica
+            .apply(
+                &mine,
+                accepted(
+                    7,
+                    vec![
+                        record("watch:0:1", mine[0].value.clone(), mine[0].at, "tv"),
+                        record("watch:0:2", theirs, 5_000, "mac"),
+                    ],
+                ),
+            )
+            .unwrap();
+        assert!(!replica.is_dirty());
+        assert_eq!(replica.since, 7);
+        assert_eq!(replica.watch()[0].current_time, 50.0);
     }
 
     #[test]
-    fn stamp_fresh_base_is_zero() {
-        let base = make_doc(0, vec![]);
-        let stamps = stamps_of(
-            &base,
-            &local_state(vec![make_item(1, 42.0)], 900),
-            &mut HashMap::new(),
-        );
-        assert_eq!(stamps.get("0:1"), Some(&0));
+    fn newer_local_changes_survive_an_older_echo() {
+        let mut replica = Replica::new("tv");
+        replica.record_watch(&[], &[item(1, 5.0)], 1_000);
+        let sent = replica.changes();
+        replica.record_watch(&[item(1, 5.0)], &[item(1, 9.0)], 2_000);
+        replica
+            .apply(
+                &sent,
+                accepted(
+                    1,
+                    vec![record("watch:0:1", sent[0].value.clone(), sent[0].at, "tv")],
+                ),
+            )
+            .unwrap();
+        assert!(replica.is_dirty());
+        assert_eq!(replica.watch()[0].current_time, 9.0);
     }
 
     #[test]
-    fn stamp_new_items_preserve_list_order() {
-        let base = make_doc(1, vec![]);
-        let stamps = stamps_of(
-            &base,
-            &local_state(vec![make_item(1, 1.0), make_item(2, 2.0)], 900),
-            &mut HashMap::new(),
-        );
-        assert!(stamps.get("0:1").unwrap() > stamps.get("0:2").unwrap());
+    fn reset_drops_entries_the_server_no_longer_has() {
+        let mut replica = Replica::new("tv");
+        let value = serde_json::to_value(item(1, 5.0)).ok();
+        replica
+            .apply(
+                &[],
+                accepted(1, vec![record("watch:0:1", value, 1_000, "mac")]),
+            )
+            .unwrap();
+        replica.record_watch(&replica.watch(), &[item(2, 5.0), item(1, 5.0)], 2_000);
+        replica
+            .apply(
+                &[],
+                Response {
+                    reset: true,
+                    ..accepted(9, Vec::new())
+                },
+            )
+            .unwrap();
+        assert_eq!(ids(&replica.watch()), [2]);
     }
 
     #[test]
-    fn ledger_preserves_first_change_stamp_across_ticks() {
-        let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
-        let mut ledger = HashMap::new();
-        let (s1, d1) = stamp_local(
-            &base,
-            &local_state(vec![make_item(1, 42.0)], 900),
-            &mut ledger,
-        );
-        let (s2, d2) = stamp_local(
-            &base,
-            &local_state(vec![make_item(1, 42.0)], 2000),
-            &mut ledger,
-        );
-        assert!(d1);
-        assert!(!d2);
-        assert_eq!(s1.get("0:1"), Some(&900));
-        assert_eq!(s2.get("0:1"), Some(&900));
-    }
-
-    #[test]
-    fn ledger_refreshes_stamp_when_item_changes_again() {
-        let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
-        let mut ledger = HashMap::new();
-        stamp_local(
-            &base,
-            &local_state(vec![make_item(1, 42.0)], 900),
-            &mut ledger,
-        );
-        let (s2, d2) = stamp_local(
-            &base,
-            &local_state(vec![make_item(1, 60.0)], 2000),
-            &mut ledger,
-        );
-        assert!(d2);
-        assert_eq!(s2.get("0:1"), Some(&2000));
-    }
-
-    #[test]
-    fn ledger_pruned_when_item_matches_base_again() {
-        let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
-        let mut ledger = HashMap::new();
-        stamp_local(
-            &base,
-            &local_state(vec![make_item(1, 42.0)], 900),
-            &mut ledger,
-        );
-        let (s2, d2) = stamp_local(
-            &base,
-            &local_state(vec![make_item(1, 10.0)], 2000),
-            &mut ledger,
-        );
-        assert!(d2);
-        assert!(ledger.is_empty());
-        assert_eq!(s2.get("0:1"), Some(&5));
-    }
-
-    #[test]
-    fn snapshot_serde_round_trip() {
-        let mut ledger = HashMap::new();
-        ledger.insert(
-            "0:1".to_string(),
-            LedgerEntry {
-                stamp: 42,
-                item: make_item(1, 7.0),
+    fn rejected_responses_leave_the_replica_untouched() {
+        let mut replica = Replica::new("tv");
+        replica.record_watch(&[], &[item(1, 5.0)], 1_000);
+        let before = replica.clone();
+        let error = replica.apply(
+            &replica.changes(),
+            Response {
+                error: Some("unauthorized".into()),
+                ..Response::default()
             },
         );
-        let snap = Snapshot {
-            doc: make_doc(3, vec![(make_item(1, 7.0), 42)]),
-            ledger,
+        assert_eq!(error, Err("unauthorized".into()));
+        assert_eq!(replica, before);
+    }
+
+    #[test]
+    fn watch_is_newest_first_capped_and_lenient() {
+        let mut replica = Replica::new("tv");
+        let items: Vec<_> = (0..MAX_WATCH as u64 + 5).map(|id| item(id, 1.0)).collect();
+        replica.record_watch(&[], &items, 10_000);
+        replica
+            .apply(
+                &[],
+                accepted(
+                    1,
+                    vec![record(
+                        "watch:9:9",
+                        Some(json!({ "entry": null })),
+                        20_000,
+                        "mac",
+                    )],
+                ),
+            )
+            .unwrap();
+        let watch = replica.watch();
+        assert_eq!(watch.len(), MAX_WATCH);
+        assert_eq!(ids(&watch)[..3], [0, 1, 2]);
+    }
+
+    #[test]
+    fn prefs_are_recorded_only_when_they_change() {
+        let mut replica = Replica::new("tv");
+        let prefs = PlayerPrefs {
+            audio_lang: "ita".into(),
+            ..PlayerPrefs::default()
         };
-        let json = serde_json::to_string(&snap).unwrap();
-        let loaded: Snapshot = serde_json::from_str(&json).unwrap();
-        assert_eq!(loaded.doc.rev, 3);
-        assert_eq!(loaded.ledger.get("0:1").unwrap().stamp, 42);
+        replica.record_prefs(&prefs, 1_000);
+        replica.pending.clear();
+        replica.record_prefs(&prefs, 2_000);
+        assert!(!replica.is_dirty());
+        assert_eq!(replica.prefs(), Some(prefs));
     }
 
     #[test]
-    fn legacy_snapshot_parses_as_fresh() {
-        let legacy = serde_json::to_string(&make_doc(9, vec![(make_item(1, 1.0), 4)])).unwrap();
-        let loaded: Snapshot = serde_json::from_str(&legacy).unwrap();
-        assert_eq!(loaded.doc.rev, 0);
-        assert!(loaded.ledger.is_empty());
+    fn config_needs_the_flag_an_endpoint_and_a_token() {
+        let config = |enabled, endpoint: &str, token: &str| SyncConfig {
+            enabled,
+            endpoint: endpoint.into(),
+            token: token.into(),
+        };
+        assert!(config(true, "https://x", "t").is_active());
+        assert!(!config(false, "https://x", "t").is_active());
+        assert!(!config(true, " ", "t").is_active());
+        assert!(!config(true, "https://x", "").is_active());
     }
 
-    #[test]
-    fn merge_takes_newer_remote() {
-        let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
-        let remote = make_doc(2, vec![(make_item(1, 50.0), 9)]);
-        let local = vec![make_item(1, 10.0)];
-        let stamps = stamps_of(&base, &local_state(local.clone(), 900), &mut HashMap::new());
-        let (m, s) = merge_watch(&base, &local, &stamps, &remote);
-        assert_eq!(m.len(), 1);
-        assert!((m[0].current_time - 50.0).abs() < 0.01);
-        assert_eq!(s.get("0:1"), Some(&9));
-    }
+    #[tokio::test]
+    async fn exchange_posts_pending_changes_and_applies_the_answer() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    #[test]
-    fn merge_takes_newer_local() {
-        let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
-        let remote = make_doc(2, vec![(make_item(1, 50.0), 9)]);
-        let local = vec![make_item(1, 70.0)];
-        let stamps = stamps_of(&base, &local_state(local.clone(), 900), &mut HashMap::new());
-        let (m, _) = merge_watch(&base, &local, &stamps, &remote);
-        assert_eq!(m.len(), 1);
-        assert!((m[0].current_time - 70.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn merge_stale_local_change_loses_to_newer_remote_stamp() {
-        let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
-        let remote = make_doc(2, vec![(make_item(1, 50.0), 2000)]);
-        let local = vec![make_item(1, 30.0)];
-        let stamps = stamps_of(
-            &base,
-            &local_state(local.clone(), 1000),
-            &mut HashMap::new(),
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = SyncConfig {
+            enabled: true,
+            endpoint: format!("http://{}/", listener.local_addr().unwrap()),
+            token: "secret".into(),
+        };
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let read = socket.read(&mut request).await.unwrap();
+            let body = r#"{"ok":true,"seq":3,"reset":false,"entries":[{"key":"watch:0:9","value":{"entry":{"id":9,"name":"","slug":"","provider":0,"provider_name":"","language":"","media_type":"Movie","alternative_names":[],"year":null,"score":null,"image_url":null,"description":null},"current_time":1,"duration":2,"season":null,"episode":null},"at":5,"device":"tv"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&request[..read]).into_owned()
+        });
+        let mut replica = Replica::new("mac");
+        replica.record_watch(&[], &[item(1, 5.0)], 1_000);
+        let changes = replica.changes();
+        let body = serde_json::to_string(&replica.request(&config.token, &changes)).unwrap();
+        let response = exchange(&Client::new(), &config, body).await.unwrap();
+        replica.apply(&changes, response).unwrap();
+        let request = server.await.unwrap();
+        assert!(request.contains("content-type: text/plain;charset=utf-8"));
+        assert!(request.contains(r#""token":"secret""#));
+        assert!(request.contains(r#""key":"watch:0:1""#));
+        assert_eq!(
+            replica
+                .watch()
+                .iter()
+                .map(|i| i.entry.id)
+                .collect::<Vec<_>>(),
+            [1, 9]
         );
-        let (m, _) = merge_watch(&base, &local, &stamps, &remote);
-        assert_eq!(m.len(), 1);
-        assert!((m[0].current_time - 50.0).abs() < 0.01);
     }
 
     #[test]
-    fn merge_local_delete_wins_when_remote_unchanged() {
-        let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
-        let remote = make_doc(2, vec![(make_item(1, 10.0), 5)]);
-        let (m, s) = merge_watch(&base, &[], &HashMap::new(), &remote);
-        assert_eq!(m, []);
-        assert_eq!(s, HashMap::new());
+    fn fresh_replicas_get_distinct_devices() {
+        assert_ne!(Replica::fresh(), Replica::fresh());
     }
 
     #[test]
-    fn merge_remote_delete_wins_when_local_unchanged() {
-        let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
-        let remote = make_doc(2, vec![]);
-        let local = vec![make_item(1, 10.0)];
-        let stamps = stamps_of(&base, &local_state(local.clone(), 900), &mut HashMap::new());
-        let (m, _) = merge_watch(&base, &local, &stamps, &remote);
-        assert_eq!(m, []);
+    fn replica_round_trips_through_json() {
+        let mut replica = Replica::new("tv");
+        replica.record_watch(&[], &[item(1, 5.0)], 1_000);
+        let json = serde_json::to_string(&replica).unwrap();
+        assert_eq!(serde_json::from_str::<Replica>(&json).unwrap(), replica);
     }
 
-    #[test]
-    fn merge_remote_update_survives_local_delete() {
-        let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
-        let remote = make_doc(2, vec![(make_item(1, 60.0), 8)]);
-        let (m, _) = merge_watch(&base, &[], &HashMap::new(), &remote);
-        assert_eq!(m.len(), 1);
-        assert!((m[0].current_time - 60.0).abs() < 0.01);
-    }
+    #[cfg(target_os = "macos")]
+    mod server {
+        use super::*;
+        use std::process::Command;
 
-    #[test]
-    fn merge_local_update_survives_remote_delete() {
-        let base = make_doc(1, vec![(make_item(1, 10.0), 5)]);
-        let remote = make_doc(2, vec![]);
-        let local = vec![make_item(1, 60.0)];
-        let stamps = stamps_of(&base, &local_state(local.clone(), 900), &mut HashMap::new());
-        let (m, _) = merge_watch(&base, &local, &stamps, &remote);
-        assert_eq!(m.len(), 1);
-        assert!((m[0].current_time - 60.0).abs() < 0.01);
-    }
+        const SCRIPT: &str = include_str!("../assets/js/google_apps_script.gs");
+        const DAY: u64 = 24 * 60 * 60 * 1000;
 
-    #[test]
-    fn merge_keeps_additions_from_both_sides() {
-        let base = make_doc(1, vec![]);
-        let remote = make_doc(2, vec![(make_item(2, 20.0), 6)]);
-        let local = vec![make_item(1, 10.0)];
-        let stamps: HashMap<String, u64> = [("0:1".to_string(), 3u64)].into();
-        let (m, _) = merge_watch(&base, &local, &stamps, &remote);
-        assert_eq!(m.len(), 2);
-        assert_eq!(m[0].entry.id, 2);
-        assert_eq!(m[1].entry.id, 1);
-    }
+        struct Server {
+            content: String,
+            now: u64,
+            readable: bool,
+        }
 
-    #[test]
-    fn merge_sorts_most_recent_first() {
-        let base = make_doc(1, vec![]);
-        let remote = make_doc(2, vec![(make_item(3, 3.0), 5)]);
-        let local = vec![make_item(1, 1.0), make_item(2, 2.0)];
-        let stamps: HashMap<String, u64> =
-            [("0:1".to_string(), 3u64), ("0:2".to_string(), 7u64)].into();
-        let (m, _) = merge_watch(&base, &local, &stamps, &remote);
-        let ids: Vec<u64> = m.iter().map(|i| i.entry.id).collect();
-        assert_eq!(ids, vec![2, 3, 1]);
-    }
-
-    #[test]
-    fn merge_caps_item_count() {
-        let base = make_doc(1, vec![]);
-        let remote = make_doc(2, vec![]);
-        let local: Vec<WatchItem> = (0..150).map(|i| make_item(i, 1.0)).collect();
-        let stamps: HashMap<String, u64> = local
-            .iter()
-            .enumerate()
-            .map(|(pos, i)| (item_key(i), 10_000 - pos as u64))
-            .collect();
-        let (m, s) = merge_watch(&base, &local, &stamps, &remote);
-        assert_eq!(m.len(), MAX_ITEMS);
-        assert_eq!(s.len(), MAX_ITEMS);
-        assert_eq!(m[0].entry.id, 0);
-    }
-
-    #[test]
-    fn lenient_deserialization_drops_bad_items() {
-        let json = r#"{
-            "rev": 3,
-            "watch": [
-                {"entry": {"id": null}, "current_time": 1.0},
-                {
-                    "entry": {
-                        "id": 7, "name": "Ok", "slug": "", "provider": 0,
-                        "provider_name": "StreamingCommunity", "language": "it",
-                        "media_type": "Movie", "alternative_names": [],
-                        "year": null, "score": null, "image_url": null, "description": null
-                    },
-                    "current_time": 5.0, "duration": 10.0, "season": null, "episode": null
+        impl Server {
+            fn new(content: Value) -> Self {
+                Self {
+                    content: content.to_string(),
+                    now: 1_000_000,
+                    readable: true,
                 }
-            ],
-            "stamps": {"0:7": 9}
-        }"#;
-        let doc: SyncDoc = serde_json::from_str(json).unwrap();
-        assert_eq!(doc.rev, 3);
-        assert_eq!(doc.watch.len(), 1);
-        assert_eq!(doc.watch[0].entry.id, 7);
-    }
+            }
 
-    fn prefs(lang: &str) -> PlayerPrefs {
-        PlayerPrefs {
-            audio_lang: lang.into(),
-            subtitle_lang: String::new(),
-            subtitles_on: false,
-            speed: 1.0,
+            fn post(&mut self, body: &str) -> Response {
+                let harness = format!(
+                    r#"{SCRIPT}
+                    var store = {{ content: {content}, props: {{ TOKEN: "token", FILE_ID: "f" }} }};
+                    var PropertiesService = {{ getScriptProperties: () => ({{
+                      getProperty: (k) => store.props[k] || null,
+                      setProperty: (k, v) => {{ store.props[k] = v; }},
+                    }}) }};
+                    var DriveApp = {{ getFileById: () => ({{
+                      isTrashed: () => false,
+                      getBlob: () => ({{ getDataAsString: () => {{
+                        if (!{readable}) throw new Error("Drive unavailable");
+                        return store.content;
+                      }} }}),
+                      setContent: (c) => {{ store.content = c; }},
+                    }}) }};
+                    var LockService = {{ getScriptLock: () => ({{ tryLock: () => true, releaseLock: () => {{}} }}) }};
+                    var ContentService = {{ MimeType: {{ JSON: "json" }}, createTextOutput: (s) => ({{ setMimeType: () => s }}) }};
+                    Date.now = () => {now};
+                    let response;
+                    try {{
+                      response = JSON.parse(doPost({{ postData: {{ contents: {body} }} }}));
+                    }} catch (e) {{
+                      response = {{ ok: false, error: String(e) }};
+                    }}
+                    JSON.stringify({{ response, content: store.content }});"#,
+                    content = serde_json::to_string(&self.content).unwrap(),
+                    now = self.now,
+                    readable = self.readable,
+                    body = serde_json::to_string(body).unwrap(),
+                );
+                let output = Command::new("osascript")
+                    .args(["-l", "JavaScript", "-e", &harness])
+                    .output()
+                    .unwrap();
+                let result: Value = serde_json::from_slice(&output.stdout)
+                    .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&output.stderr)));
+                self.content = result["content"].as_str().unwrap().to_owned();
+                serde_json::from_value(result["response"].clone()).unwrap()
+            }
+
+            fn sync(&mut self, replica: &mut Replica) {
+                let changes = replica.changes();
+                let body = serde_json::to_string(&replica.request("token", &changes)).unwrap();
+                replica.apply(&changes, self.post(&body)).unwrap();
+            }
         }
-    }
 
-    fn prefs_doc(p: Option<PlayerPrefs>, stamp: u64) -> SyncDoc {
-        SyncDoc {
-            rev: 1,
-            prefs_updated_at: stamp,
-            watch: Vec::new(),
-            stamps: HashMap::new(),
-            prefs: p,
+        #[test]
+        fn legacy_documents_migrate_on_first_sync() {
+            let legacy = json!({
+                "rev": 4, "updated_at": 50,
+                "watch": [item(1, 10.0), item(2, 20.0)],
+                "stamps": { "0:1": 40 },
+                "prefs": { "audio_lang": "ita" }, "prefs_updated_at": 30
+            });
+            let mut server = Server::new(legacy);
+            let mut tv = Replica::new("tv");
+            server.sync(&mut tv);
+            assert_eq!(ids(&tv.watch()), [2, 1]);
+            assert_eq!(tv.prefs().unwrap().audio_lang, "ita");
+            assert_eq!(
+                serde_json::from_str::<Value>(&server.content).unwrap()["v"],
+                2
+            );
         }
-    }
 
-    #[test]
-    fn prefs_local_only_change_wins() {
-        let base = prefs_doc(Some(prefs("it")), 5);
-        let remote = prefs_doc(Some(prefs("it")), 5);
-        let (p, ts) = merge_prefs(&base, &prefs("en"), 9, &remote);
-        assert_eq!(p.audio_lang, "en");
-        assert_eq!(ts, 9);
-    }
+        #[test]
+        fn devices_converge_on_the_latest_write() {
+            let mut server = Server::new(Value::Null);
+            let (mut tv, mut mac) = (Replica::new("tv"), Replica::new("mac"));
+            tv.record_watch(&[], &[item(1, 10.0)], 1_000);
+            mac.record_watch(&[], &[item(1, 50.0), item(2, 5.0)], 2_000);
+            server.sync(&mut tv);
+            server.sync(&mut mac);
+            server.sync(&mut tv);
+            assert_eq!(tv.watch(), mac.watch());
+            assert_eq!(tv.watch()[0].current_time, 50.0);
+            assert!(!tv.is_dirty() && !mac.is_dirty());
+        }
 
-    #[test]
-    fn prefs_remote_only_change_wins() {
-        let base = prefs_doc(Some(prefs("it")), 5);
-        let remote = prefs_doc(Some(prefs("es")), 8);
-        let (p, ts) = merge_prefs(&base, &prefs("it"), 5, &remote);
-        assert_eq!(p.audio_lang, "es");
-        assert_eq!(ts, 8);
-    }
+        #[test]
+        fn deletions_beat_older_updates() {
+            let mut server = Server::new(Value::Null);
+            let (mut tv, mut mac) = (Replica::new("tv"), Replica::new("mac"));
+            mac.record_watch(&[], &[item(1, 10.0)], 1_000);
+            server.sync(&mut mac);
+            server.sync(&mut tv);
+            tv.record_watch(&tv.watch(), &[item(1, 30.0)], 2_000);
+            mac.record_watch(&mac.watch(), &[], 3_000);
+            server.sync(&mut mac);
+            server.sync(&mut tv);
+            assert!(tv.watch().is_empty());
+        }
 
-    #[test]
-    fn prefs_conflict_newer_remote_wins() {
-        let base = prefs_doc(Some(prefs("it")), 5);
-        let remote = prefs_doc(Some(prefs("es")), 20);
-        let (p, _) = merge_prefs(&base, &prefs("en"), 10, &remote);
-        assert_eq!(p.audio_lang, "es");
-    }
+        #[test]
+        fn future_timestamps_are_clamped() {
+            let mut server = Server::new(Value::Null);
+            let (mut tv, mut mac) = (Replica::new("tv"), Replica::new("mac"));
+            tv.record_watch(&[], &[item(1, 10.0)], server.now + DAY);
+            server.sync(&mut tv);
+            server.now += 120_000;
+            mac.record_watch(&[], &[item(1, 90.0)], server.now);
+            server.sync(&mut mac);
+            server.sync(&mut tv);
+            assert_eq!(tv.watch()[0].current_time, 90.0);
+        }
 
-    #[test]
-    fn prefs_conflict_newer_local_wins() {
-        let base = prefs_doc(Some(prefs("it")), 5);
-        let remote = prefs_doc(Some(prefs("es")), 8);
-        let (p, ts) = merge_prefs(&base, &prefs("en"), 30, &remote);
-        assert_eq!(p.audio_lang, "en");
-        assert_eq!(ts, 30);
-    }
+        #[test]
+        fn pruned_tombstones_reset_stale_replicas() {
+            let mut server = Server::new(Value::Null);
+            let (mut tv, mut mac, mut web) =
+                (Replica::new("tv"), Replica::new("mac"), Replica::new("web"));
+            mac.record_watch(&[], &[item(1, 10.0)], server.now);
+            server.sync(&mut mac);
+            server.sync(&mut tv);
+            mac.record_watch(&mac.watch(), &[], server.now);
+            server.sync(&mut mac);
+            server.now += 91 * DAY;
+            server.sync(&mut web);
+            server.sync(&mut tv);
+            assert!(tv.watch().is_empty());
+            assert!(!server.content.contains("watch:0:1"));
+        }
 
-    #[test]
-    fn prefs_no_changes_keep_local() {
-        let base = prefs_doc(Some(prefs("it")), 5);
-        let remote = prefs_doc(Some(prefs("it")), 5);
-        let (p, ts) = merge_prefs(&base, &prefs("it"), 5, &remote);
-        assert_eq!(p.audio_lang, "it");
-        assert_eq!(ts, 5);
-    }
+        #[test]
+        fn unreadable_storage_is_never_overwritten() {
+            let mut server = Server::new(Value::Null);
+            let (mut tv, mut mac) = (Replica::new("tv"), Replica::new("mac"));
+            mac.record_watch(&[], &[item(1, 10.0)], 1_000);
+            server.sync(&mut mac);
+            let stored = server.content.clone();
+            server.readable = false;
+            tv.record_watch(&[], &[item(2, 5.0)], 2_000);
+            let changes = tv.changes();
+            let body = serde_json::to_string(&tv.request("token", &changes)).unwrap();
+            assert!(tv.apply(&changes, server.post(&body)).is_err());
+            assert_eq!(server.content, stored);
+            assert!(tv.is_dirty());
+        }
 
-    #[test]
-    fn prefs_fresh_base_defaults_lose_to_remote() {
-        let base = prefs_doc(None, 0);
-        let remote = prefs_doc(Some(prefs("es")), 8);
-        let fresh = SyncDoc {
-            rev: 0,
-            ..prefs_doc(None, 0)
-        };
-        let stamp = local_prefs_stamp(&fresh, &local_state(vec![], 0));
-        let (p, ts) = merge_prefs(&base, &PlayerPrefs::default(), stamp, &remote);
-        assert_eq!(p.audio_lang, "es");
-        assert_eq!(ts, 8);
+        #[test]
+        fn requests_without_the_token_are_rejected() {
+            let mut server = Server::new(Value::Null);
+            let mut tv = Replica::new("tv");
+            let body = serde_json::to_string(&tv.request("wrong", &[])).unwrap();
+            assert_eq!(
+                tv.apply(&[], server.post(&body)),
+                Err("unauthorized".into())
+            );
+        }
     }
 }

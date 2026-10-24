@@ -1,4 +1,7 @@
 const FILE_NAME = 'streamvault_state.json';
+const MAX_CHANGES = 500;
+const MAX_SKEW_MS = 60 * 1000;
+const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
 function token_() {
   return PropertiesService.getScriptProperties().getProperty('TOKEN');
@@ -10,15 +13,8 @@ function out_(obj) {
   );
 }
 
-function emptyDoc_() {
-  return {
-    rev: 0,
-    updated_at: 0,
-    prefs_updated_at: 0,
-    watch: [],
-    stamps: {},
-    prefs: null,
-  };
+function emptyState_() {
+  return { v: 2, seq: 0, floor: 0, entries: {} };
 }
 
 function file_() {
@@ -40,31 +36,97 @@ function file_() {
   }
   const f = DriveApp.createFile(
     FILE_NAME,
-    JSON.stringify(emptyDoc_()),
+    JSON.stringify(emptyState_()),
     'application/json'
   );
   props.setProperty('FILE_ID', f.getId());
   return f;
 }
 
-function readDoc_(f) {
+function migrate_(legacy) {
+  const state = emptyState_();
+  const put = (key, value, at) => {
+    state.entries[key] = { value, at, device: 'legacy', seq: ++state.seq };
+  };
+  const stamps = legacy.stamps || {};
+  for (const item of Array.isArray(legacy.watch) ? legacy.watch : []) {
+    if (!item || !item.entry) continue;
+    const id = `${item.entry.provider}:${item.entry.id}`;
+    put(
+      `watch:${id}`,
+      item,
+      Number(stamps[id]) || Number(legacy.updated_at) || 0
+    );
+  }
+  if (legacy.prefs)
+    put('prefs', legacy.prefs, Number(legacy.prefs_updated_at) || 0);
+  return state;
+}
+
+function readState_(f) {
+  const text = f.getBlob().getDataAsString();
+  let doc;
   try {
-    const doc = JSON.parse(f.getBlob().getDataAsString());
-    return doc && typeof doc.rev === 'number' ? doc : emptyDoc_();
+    doc = JSON.parse(text);
   } catch (_) {
-    return emptyDoc_();
+    return { state: emptyState_(), migrated: true };
   }
+  if (doc && doc.v === 2) return { state: doc, migrated: false };
+  return { state: migrate_(doc || {}), migrated: true };
 }
 
-function writeDoc_(f, doc) {
-  f.setContent(JSON.stringify(doc));
+function wins_(a, b) {
+  return a.at > b.at || (a.at === b.at && a.device > b.device);
 }
 
-function doGet(e) {
-  if (!e || !e.parameter || !token_() || e.parameter.token !== token_()) {
-    return out_({ ok: false, error: 'unauthorized' });
+function sync_(state, body, now) {
+  const device = String(body.device || '');
+  const changes = Array.isArray(body.changes)
+    ? body.changes.slice(0, MAX_CHANGES)
+    : [];
+  const touched = new Set();
+  let changed = false;
+  for (const change of changes) {
+    if (
+      !change ||
+      typeof change.key !== 'string' ||
+      !Number.isFinite(change.at)
+    )
+      continue;
+    touched.add(change.key);
+    const next = {
+      value: change.value === undefined ? null : change.value,
+      at: Math.min(change.at, now + MAX_SKEW_MS),
+      device,
+    };
+    const current = state.entries[change.key];
+    if (current && !wins_(next, current)) continue;
+    next.seq = ++state.seq;
+    state.entries[change.key] = next;
+    changed = true;
   }
-  return out_({ ok: true, doc: readDoc_(file_()) });
+  for (const [key, entry] of Object.entries(state.entries)) {
+    if (
+      entry.value === null &&
+      now - entry.at > TOMBSTONE_TTL_MS &&
+      !touched.has(key)
+    ) {
+      state.floor = Math.max(state.floor, entry.seq);
+      delete state.entries[key];
+      changed = true;
+    }
+  }
+  const since = Number(body.since) || 0;
+  const reset = since < state.floor || since > state.seq;
+  const entries = Object.entries(state.entries)
+    .filter(([key, entry]) => reset || entry.seq > since || touched.has(key))
+    .map(([key, entry]) => ({
+      key,
+      value: entry.value,
+      at: entry.at,
+      device: entry.device,
+    }));
+  return { changed, response: { ok: true, seq: state.seq, reset, entries } };
 }
 
 function doPost(e) {
@@ -83,26 +145,10 @@ function doPost(e) {
   }
   try {
     const f = file_();
-    const doc = readDoc_(f);
-    if (Number(body.base_rev) !== doc.rev) {
-      return out_({ ok: false, conflict: true, doc: doc });
-    }
-    const next = {
-      rev: doc.rev + 1,
-      updated_at: Date.now(),
-      prefs_updated_at:
-        typeof body.prefs_updated_at === 'number'
-          ? body.prefs_updated_at
-          : doc.prefs_updated_at,
-      watch: Array.isArray(body.watch) ? body.watch : doc.watch,
-      stamps:
-        body.stamps && typeof body.stamps === 'object'
-          ? body.stamps
-          : doc.stamps || {},
-      prefs: body.prefs || doc.prefs,
-    };
-    writeDoc_(f, next);
-    return out_({ ok: true, doc: next });
+    const { state, migrated } = readState_(f);
+    const { changed, response } = sync_(state, body, Date.now());
+    if (changed || migrated) f.setContent(JSON.stringify(state));
+    return out_(response);
   } finally {
     lock.releaseLock();
   }

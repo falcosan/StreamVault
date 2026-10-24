@@ -1,17 +1,18 @@
 use super::{
-    Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl, domain,
-    fetch_json, fetch_text, items, send, vixcloud_playlist,
+    Episode, Http, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl,
+    domain, fetch_json, fetch_text, items, send, vixcloud_playlist,
 };
 use async_trait::async_trait;
 use percent_encoding::percent_decode_str;
+use reqwest::RequestBuilder;
 use reqwest::header::{COOKIE, HeaderMap, ORIGIN, REFERER, SET_COOKIE};
-use reqwest::{Client, RequestBuilder};
 use scraper::{Html, Selector};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::Mutex;
+use web_time::Instant;
 
 const AUTH_TTL: Duration = Duration::from_secs(300);
 const EPISODE_PAGE: u64 = 120;
@@ -23,13 +24,13 @@ struct Auth {
 }
 
 pub struct AnimeUnity {
-    client: Client,
+    client: Http,
     base: String,
     auth: Mutex<Option<(Auth, Instant)>>,
 }
 
 impl AnimeUnity {
-    pub fn new(client: Client) -> Self {
+    pub fn new(client: Http) -> Self {
         Self {
             client,
             base: domain("animeunity"),
@@ -114,6 +115,10 @@ fn parse_record(record: &Value) -> Option<MediaEntry> {
             .map(String::from)
             .or_else(|| record["score"].as_f64().map(|s| format!("{s:.1}"))),
         image_url: record["imageurl"].as_str().map(String::from),
+        backdrop_url: record["cover"]
+            .as_str()
+            .filter(|c| !c.is_empty())
+            .map(String::from),
         description: record["plot"]
             .as_str()
             .filter(|p| !p.is_empty())
@@ -141,6 +146,7 @@ fn parse_episode(index: usize, ep: &Value) -> Option<Episode> {
         number,
         duration: None,
         image_url: ep["imageurl"].as_str().map(String::from),
+        description: None,
     })
 }
 
@@ -167,7 +173,7 @@ fn extract_stream(html: &str) -> Option<String> {
         .or_else(|| vixcloud_playlist(scripts.first()?))
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Provider for AnimeUnity {
     fn name(&self) -> &'static str {
         "AnimeUnity"
@@ -267,10 +273,7 @@ impl Provider for AnimeUnity {
         let url = extract_stream(&html).ok_or_else(|| {
             ProviderError::StreamExtraction("Could not extract stream URL".into())
         })?;
-        Ok(StreamUrl {
-            url,
-            headers: Vec::new(),
-        })
+        Ok(StreamUrl::new(url))
     }
 }
 
@@ -302,7 +305,8 @@ mod tests {
         let record = json!({
             "id": 9, "slug": "naruto", "episodes_count": 220, "type": "TV",
             "title_eng": "Naruto", "title": "NARUTO", "title_it": "",
-            "date": "2002-10-03", "score": 8.04, "imageurl": "https://img/n.jpg", "plot": "Ninja"
+            "date": "2002-10-03", "score": 8.04, "imageurl": "https://img/n.jpg", "plot": "Ninja",
+            "cover": "https://img/cover.jpg"
         });
         let entry = parse_record(&record).unwrap();
         assert_eq!(entry.name, "Naruto");
@@ -314,6 +318,7 @@ mod tests {
         assert_eq!(entry.language, "ja");
         assert_eq!(entry.image_url.as_deref(), Some("https://img/n.jpg"));
         assert_eq!(entry.description.as_deref(), Some("Ninja"));
+        assert_eq!(entry.backdrop_url.as_deref(), Some("https://img/cover.jpg"));
     }
 
     #[test]

@@ -1,9 +1,8 @@
 use super::{
-    Episode, MediaEntry, Provider, ProviderError, ProviderResult, StreamUrl, fetch_json, items,
-    stable_hash,
+    Episode, Http, MediaEntry, Provider, ProviderError, ProviderResult, StreamUrl, fetch_json,
+    items, stable_hash,
 };
 use async_trait::async_trait;
-use reqwest::Client;
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashSet};
 
@@ -11,7 +10,7 @@ const BASE: &str = "https://public.aurora.enhanced.live";
 const SHOW_BLOCKS: [&str; 2] = ["sonicShowBlock", "sonicPlaylistBlock"];
 
 pub struct Aurora {
-    client: Client,
+    client: Http,
     env: &'static str,
     name: &'static str,
 }
@@ -47,7 +46,7 @@ struct Video {
 }
 
 impl Aurora {
-    pub fn new(client: Client, env: &'static str, name: &'static str) -> Self {
+    pub fn new(client: Http, env: &'static str, name: &'static str) -> Self {
         Self { client, env, name }
     }
 
@@ -134,6 +133,7 @@ fn parse_videos(entry: &MediaEntry, json: &Value) -> ProviderResult<Vec<Video>> 
                         .find_map(|k| item[k]["src"].as_str())
                         .or_else(|| item["image"]["url"].as_str())
                         .map(String::from),
+                    description: None,
                 },
                 realm: if item["channel"].is_null() {
                     Realm::It
@@ -167,7 +167,7 @@ fn episode_number(item: &Value) -> Option<u32> {
         .ok()
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Provider for Aurora {
     fn name(&self) -> &'static str {
         self.name
@@ -240,10 +240,7 @@ fn playback_url(playback: &Value) -> ProviderResult<StreamUrl> {
     let url = playback["data"]["attributes"]["streaming"][0]["url"]
         .as_str()
         .ok_or_else(|| ProviderError::StreamExtraction("No streaming URL in response".into()))?;
-    Ok(StreamUrl {
-        url: url.to_owned(),
-        headers: Vec::new(),
-    })
+    Ok(StreamUrl::new(url))
 }
 
 #[cfg(test)]
@@ -252,7 +249,14 @@ mod tests {
     use crate::providers::MediaType;
 
     fn aurora() -> Aurora {
-        Aurora::new(Client::new(), "nove", "Nove")
+        Aurora::new(
+            Http::new(
+                reqwest::Client::builder(),
+                std::time::Duration::from_secs(1),
+            ),
+            "nove",
+            "Nove",
+        )
     }
 
     #[test]

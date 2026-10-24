@@ -1,0 +1,20 @@
+* {
+  transition: none !important;
+}
+
+.back-button,
+#control-fullscreen {
+  display: none;
+}
+
+.season-chips {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  margin: -6px -4px;
+  padding: 6px 4px;
+}
+
+.btn-accent:not(:focus-visible) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.14);
+}

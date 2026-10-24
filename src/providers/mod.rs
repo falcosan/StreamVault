@@ -6,12 +6,15 @@ mod streaming_community;
 
 pub use models::*;
 
+use crate::time::sleep;
 use animeunity::AnimeUnity;
 use async_trait::async_trait;
 use aurora::Aurora;
+use dioxus::logger::tracing::warn;
+use futures::future::join_all;
 use raiplay::RaiPlay;
 use regex::Regex;
-use reqwest::{Client, ClientBuilder, RequestBuilder, Response, Url};
+use reqwest::{Client, ClientBuilder, IntoUrl, RequestBuilder, Response, Url};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -19,7 +22,6 @@ use std::future::Future;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use streaming_community::StreamingCommunity;
-use tokio::task::JoinSet;
 
 const ATTEMPTS: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_millis(400);
@@ -59,8 +61,8 @@ impl From<serde_json::Error> for ProviderError {
 
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
-#[async_trait]
-pub trait Provider: Send + Sync {
+#[async_trait(?Send)]
+pub trait Provider {
     fn name(&self) -> &'static str;
     async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>>;
     async fn seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<u32>>;
@@ -84,10 +86,11 @@ pub struct Providers(Arc<[Arc<dyn Provider>]>);
 
 impl Providers {
     pub fn new(timeout: Duration) -> Self {
-        let shared = build(client(timeout));
+        let shared = Http::new(Client::builder(), timeout);
         let list: Vec<Arc<dyn Provider>> = vec![
-            Arc::new(StreamingCommunity::new(build(
-                client(timeout).cookie_store(true),
+            Arc::new(StreamingCommunity::new(Http::new(
+                with_cookies(Client::builder()),
+                timeout,
             ))),
             Arc::new(RaiPlay::new(shared.clone())),
             Arc::new(Aurora::new(shared.clone(), "nove", "Nove")),
@@ -158,30 +161,22 @@ impl Providers {
     async fn gather<F, Fut>(&self, action: &'static str, call: F) -> Vec<MediaEntry>
     where
         F: Fn(Arc<dyn Provider>) -> Fut,
-        Fut: Future<Output = ProviderResult<Vec<MediaEntry>>> + Send + 'static,
+        Fut: Future<Output = ProviderResult<Vec<MediaEntry>>>,
     {
-        let mut tasks = JoinSet::new();
-        for (index, provider) in self.0.iter().enumerate() {
+        let requests = self.0.iter().enumerate().map(|(index, provider)| {
             let name = provider.name();
             let request = call(provider.clone());
-            tasks.spawn(async move {
+            async move {
                 match request.await {
                     Ok(entries) => tag(index, name, entries).collect(),
                     Err(e) => {
-                        eprintln!("[StreamVault] {name} {action} failed: {e}");
+                        warn!("{name} {action} failed: {e}");
                         Vec::new()
                     }
                 }
-            });
-        }
-        let mut entries = Vec::new();
-        while let Some(result) = tasks.join_next().await {
-            match result {
-                Ok(batch) => entries.extend(batch),
-                Err(e) => eprintln!("[StreamVault] {action} task failed: {e}"),
             }
-        }
-        entries
+        });
+        join_all(requests).await.into_iter().flatten().collect()
     }
 }
 
@@ -193,12 +188,38 @@ fn tag(index: usize, name: &str, entries: Vec<MediaEntry>) -> impl Iterator<Item
     })
 }
 
-fn client(timeout: Duration) -> ClientBuilder {
-    Client::builder().user_agent(USER_AGENT).timeout(timeout)
+#[derive(Clone)]
+struct Http {
+    client: Client,
+    timeout: Duration,
 }
 
-fn build(builder: ClientBuilder) -> Client {
-    builder.build().expect("HTTP client must initialize")
+impl Http {
+    fn new(builder: ClientBuilder, timeout: Duration) -> Self {
+        let client = builder
+            .user_agent(USER_AGENT)
+            .build()
+            .expect("HTTP client must initialize");
+        Self { client, timeout }
+    }
+
+    fn get(&self, url: impl IntoUrl) -> RequestBuilder {
+        self.client.get(url).timeout(self.timeout)
+    }
+
+    fn post(&self, url: impl IntoUrl) -> RequestBuilder {
+        self.client.post(url).timeout(self.timeout)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn with_cookies(builder: ClientBuilder) -> ClientBuilder {
+    builder.cookie_store(true)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn with_cookies(builder: ClientBuilder) -> ClientBuilder {
+    builder
 }
 
 async fn fetch_json(request: RequestBuilder) -> ProviderResult<Value> {
@@ -219,7 +240,7 @@ async fn send(request: RequestBuilder) -> ProviderResult<Response> {
         if !response.status().is_server_error() {
             return Ok(response.error_for_status()?);
         }
-        tokio::time::sleep(delay).await;
+        sleep(delay).await;
         delay *= 2;
     }
     Ok(request.send().await?.error_for_status()?)
@@ -317,7 +338,7 @@ mod tests {
         }
     }
 
-    #[async_trait]
+    #[async_trait(?Send)]
     impl Provider for Fake {
         fn name(&self) -> &'static str {
             self.name

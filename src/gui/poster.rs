@@ -68,6 +68,7 @@ pub(super) fn PosterCard(entry: MediaEntry) -> Element {
         button {
             class: "poster-card",
             style: "{background}",
+            "data-focus": "entry-{entry.provider}-{entry.id}",
             onclick: move |_| app.open(target.clone()),
             span { class: "poster-provider", "{entry.provider_name}" }
             if let Some(score) = score {

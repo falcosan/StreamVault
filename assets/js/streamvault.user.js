@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StreamVault Sync
 // @namespace    https://github.com/falcosan/StreamVault
-// @version      1.0.0
+// @version      2.0.0
 // @description  Continue watching, progress and player preferences synced with StreamVault
 // @include      /^https:\/\/(www\.)?streamingcommunity[^/]*\//
 // @include      /^https:\/\/(www\.)?(vixcloud|vixsrc)[^/]*\//
@@ -80,111 +80,109 @@
     }
   }
 
-  const api = {
-    async pull() {
-      const res = await http(
-        "GET",
-        `${ENDPOINT}?token=${encodeURIComponent(TOKEN)}`,
-      );
-      if (!res.ok) throw new Error(res.error || "pull failed");
-      return res.doc;
+  const STORE_KEY = "sv:replica";
+  const MAX_WATCH = 100;
+  const PREFS_DEFAULTS = {
+    audio_lang: "",
+    subtitle_lang: "",
+    subtitles_on: false,
+    speed: 1,
+  };
+
+  const wins = (a, b) => a.at > b.at || (a.at === b.at && a.device > b.device);
+  const watchKey = (provider, id) => `watch:${provider}:${id}`;
+
+  const store = {
+    inflight: null,
+    ready: null,
+    load() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(STORE_KEY));
+        if (saved && saved.device) return saved;
+      } catch (_) {}
+      return {
+        device: crypto.randomUUID(),
+        since: 0,
+        entries: {},
+        pending: {},
+      };
     },
-    push(doc, watch, stamps) {
-      return http(
+    save(replica) {
+      try {
+        localStorage.setItem(STORE_KEY, JSON.stringify(replica));
+      } catch (_) {}
+    },
+    watch() {
+      return Object.values(this.load().entries)
+        .filter((r) => r.key.startsWith("watch:") && r.value && r.value.entry)
+        .sort((a, b) => b.at - a.at || (a.key < b.key ? -1 : 1))
+        .slice(0, MAX_WATCH)
+        .map((r) => r.value);
+    },
+    prefs() {
+      return this.load().entries.prefs?.value || null;
+    },
+    write(key, value) {
+      const replica = this.load();
+      const current = replica.entries[key];
+      const at = Math.max(Date.now(), current ? current.at + 1 : 0);
+      replica.entries[key] = { key, value, at, device: replica.device };
+      replica.pending[key] = { key, value, at };
+      this.save(replica);
+      return this.sync();
+    },
+    sync() {
+      if (this.inflight) {
+        return this.inflight.catch(() => {}).then(() => this.sync());
+      }
+      const before = this.load();
+      const sent = Object.values(before.pending);
+      this.inflight = http(
         "POST",
         ENDPOINT,
         JSON.stringify({
           token: TOKEN,
-          base_rev: doc.rev,
-          watch,
-          stamps,
-          prefs: doc.prefs,
-          prefs_updated_at: doc.prefs_updated_at,
+          device: before.device,
+          since: before.since,
+          changes: sent,
         }),
-      );
+      )
+        .then((res) => {
+          if (!res.ok) throw new Error(res.error || "sync failed");
+          const replica = this.load();
+          const processed = (change) =>
+            sent.some((s) => s.key === change.key && s.at === change.at);
+          if (res.reset) {
+            for (const key of Object.keys(replica.entries)) {
+              if (!replica.pending[key]) delete replica.entries[key];
+            }
+          }
+          for (const record of res.entries) {
+            const change = replica.pending[record.key];
+            if (change) {
+              const mine = { at: change.at, device: replica.device };
+              if (!processed(change) && wins(mine, record)) continue;
+              delete replica.pending[record.key];
+            }
+            replica.entries[record.key] = record;
+          }
+          replica.since = res.seq;
+          this.save(replica);
+        })
+        .finally(() => {
+          this.inflight = null;
+        });
+      return this.inflight;
     },
   };
 
-  const state = { doc: null };
-
-  function setDoc(doc) {
-    if (!doc || (state.doc && doc.rev < state.doc.rev && doc.rev > 1)) {
-      return state.doc;
-    }
-    state.doc = doc;
-    try {
-      localStorage.setItem("sv:doc", JSON.stringify(doc));
-    } catch (_) {}
-    return doc;
-  }
-
-  function readCache() {
-    try {
-      const raw = localStorage.getItem("sv:doc");
-      return raw ? JSON.parse(raw) : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  async function ensureDoc(force) {
-    if (!state.doc || force) setDoc(await api.pull());
-    return state.doc;
-  }
-
-  async function mutatePrefs(prefs, changed) {
-    const keys = changed && changed.length ? changed : Object.keys(prefs);
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const doc = await ensureDoc(attempt > 0);
-      const merged = {
-        audio_lang: "",
-        subtitle_lang: "",
-        subtitles_on: false,
-        speed: 1,
-        ...(doc.prefs || {}),
-      };
-      keys.forEach((k) => {
-        if (k in prefs) merged[k] = prefs[k];
-      });
-      const res = await http(
-        "POST",
-        ENDPOINT,
-        JSON.stringify({
-          token: TOKEN,
-          base_rev: doc.rev,
-          watch: doc.watch || [],
-          stamps: doc.stamps || {},
-          prefs: merged,
-          prefs_updated_at: Date.now(),
-        }),
-      );
-      if (res.ok) return setDoc(res.doc);
-      if (res.conflict) {
-        setDoc(res.doc);
-        continue;
-      }
-      throw new Error(res.error || "push failed");
-    }
-    return state.doc;
-  }
-
-  async function mutateWatch(mutator) {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const doc = await ensureDoc(attempt > 0);
-      const watch = JSON.parse(JSON.stringify(doc.watch || []));
-      const stamps = JSON.parse(JSON.stringify(doc.stamps || {}));
-      if (!mutator(watch, stamps)) return doc;
-      const res = await api.push(doc, watch, stamps);
-      if (res.ok) {
-        return setDoc(res.doc);
-      }
-      if (res.conflict) {
-        setDoc(res.doc);
-        continue;
-      }
-      throw new Error(res.error || "push failed");
-    }
-    return state.doc;
+  function mutatePrefs(prefs, changed) {
+    const keys = changed.length ? changed : Object.keys(prefs);
+    const merged = { ...PREFS_DEFAULTS, ...(store.prefs() || {}) };
+    keys.forEach((k) => {
+      if (k in prefs) merged[k] = prefs[k];
+    });
+    return store.write("prefs", merged);
   }
 
   function runEmbed() {
@@ -474,53 +472,44 @@
   }
 
   function upsertProgress(ctx, current, duration) {
-    return mutateWatch((watch, stamps) => {
-      const key = `${PROVIDER}:${ctx.mediaId}`;
-      const idx = watch.findIndex(
-        (i) => i.entry.provider === PROVIDER && i.entry.id === ctx.mediaId,
-      );
-      const existing = idx >= 0 ? watch[idx] : null;
-      if (!existing && !ctx.hasTitle) return false;
-      const mediaType = existing ? existing.entry.media_type : ctx.mediaType;
-      const finished = duration > 0 && duration - current <= 20;
-      if (finished && mediaType === "Movie") {
-        if (!existing) return false;
-        watch.splice(idx, 1);
-        delete stamps[key];
-        return true;
-      }
-      const item = {
-        entry: existing
-          ? ctx.imageUrl && !existing.entry.image_url
-            ? { ...existing.entry, image_url: ctx.imageUrl }
-            : existing.entry
-          : {
-              id: ctx.mediaId,
-              name: ctx.name,
-              slug: ctx.slug,
-              provider: PROVIDER,
-              provider_name: PROVIDER_NAME,
-              language: ctx.lang,
-              media_type: ctx.mediaType,
-              alternative_names: [],
-              year: ctx.year,
-              score: ctx.score,
-              image_url: ctx.imageUrl,
-              description: null,
-            },
-        current_time: current,
-        duration,
-        season: ctx.season ?? existing?.season ?? null,
-        episode: pickEpisode(
-          ctx.episode,
-          existing && mediaType === "Series" ? existing.episode : null,
-        ),
-      };
-      if (idx >= 0) watch.splice(idx, 1);
-      watch.unshift(item);
-      stamps[key] = Date.now();
-      return true;
-    });
+    const key = watchKey(PROVIDER, ctx.mediaId);
+    const existing = store
+      .watch()
+      .find((i) => i.entry.provider === PROVIDER && i.entry.id === ctx.mediaId);
+    if (!existing && !ctx.hasTitle) return store.sync();
+    const mediaType = existing ? existing.entry.media_type : ctx.mediaType;
+    const finished = duration > 0 && duration - current <= 20;
+    if (finished && mediaType === "Movie") {
+      return existing ? store.write(key, null) : store.sync();
+    }
+    const item = {
+      entry: existing
+        ? ctx.imageUrl && !existing.entry.image_url
+          ? { ...existing.entry, image_url: ctx.imageUrl }
+          : existing.entry
+        : {
+            id: ctx.mediaId,
+            name: ctx.name,
+            slug: ctx.slug,
+            provider: PROVIDER,
+            provider_name: PROVIDER_NAME,
+            language: ctx.lang,
+            media_type: ctx.mediaType,
+            alternative_names: [],
+            year: ctx.year,
+            score: ctx.score,
+            image_url: ctx.imageUrl,
+            description: null,
+          },
+      current_time: current,
+      duration,
+      season: ctx.season ?? existing?.season ?? null,
+      episode: pickEpisode(
+        ctx.episode,
+        existing && mediaType === "Series" ? existing.episode : null,
+      ),
+    };
+    return store.write(key, item);
   }
 
   const CSS = `
@@ -555,17 +544,9 @@
 
   function removeItem(item, cardEl) {
     cardEl.remove();
-    mutateWatch((watch, stamps) => {
-      const idx = watch.findIndex(
-        (i) =>
-          i.entry.provider === item.entry.provider &&
-          i.entry.id === item.entry.id,
-      );
-      if (idx < 0) return false;
-      watch.splice(idx, 1);
-      delete stamps[`${item.entry.provider}:${item.entry.id}`];
-      return true;
-    }).catch(() => {});
+    store
+      .write(watchKey(item.entry.provider, item.entry.id), null)
+      .catch(() => {});
   }
 
   function attachOverlays(cardEl, item) {
@@ -701,10 +682,8 @@
   let lastRendered = "";
   let lastMode = "";
 
-  function renderRow(doc) {
-    const items = (doc?.watch || [])
-      .filter((i) => i && i.entry && typeof i.entry === "object")
-      .slice(0, 20);
+  function renderRow(watch) {
+    const items = watch.slice(0, 20);
     const sig = JSON.stringify(
       items.map((i) => [
         i.entry.provider,
@@ -820,10 +799,12 @@
     async function sendCtx(target) {
       if (!ctx) return;
       try {
-        const doc = await ensureDoc(false);
-        const item = (doc.watch || []).find(
-          (i) => i.entry.provider === PROVIDER && i.entry.id === ctx.mediaId,
-        );
+        await store.ready;
+        const item = store
+          .watch()
+          .find(
+            (i) => i.entry.provider === PROVIDER && i.entry.id === ctx.mediaId,
+          );
         const sameEpisode =
           (!ctx.episode && !item?.episode) ||
           (ctx.episode && item?.episode && item.episode.id === ctx.episode.id);
@@ -832,7 +813,7 @@
             type: "sv:ctx",
             key: ctxKey(ctx),
             resume: item && sameEpisode ? item.current_time : 0,
-            prefs: doc.prefs,
+            prefs: store.prefs(),
           },
           "*",
         );
@@ -970,10 +951,10 @@
       ctx = watchContext();
       ensureCtxProps();
       if (!ctx && isHome()) {
-        const cached = readCache();
-        if (cached) renderRow(cached);
-        ensureDoc(true)
-          .then(renderRow)
+        renderRow(store.watch());
+        store
+          .sync()
+          .then(() => renderRow(store.watch()))
           .catch(() => {});
       } else {
         document.getElementById("sv-row")?.remove();
@@ -982,10 +963,11 @@
     }
 
     if (location.hash === "#svdebug") {
-      ensureDoc(true)
-        .then((doc) =>
+      store
+        .sync()
+        .then(() =>
           alert(
-            `StreamVault Sync active\nEndpoint OK, rev ${doc.rev}, ${(doc.watch || []).length} titles`,
+            `StreamVault Sync active\nEndpoint OK, seq ${store.load().since}, ${store.watch().length} titles`,
           ),
         )
         .catch((err) =>
@@ -1056,17 +1038,17 @@
         return;
       }
       if (!isHome()) return;
-      const doc = state.doc || readCache();
-      if (!doc) return;
-      if (!(doc.watch || []).length) {
+      const watch = store.watch();
+      if (!watch.length) {
         document.getElementById("sv-row")?.remove();
         return;
       }
       if (lastMode === "fallback" && findTemplate()) lastRendered = "";
-      renderRow(doc);
+      renderRow(watch);
     }, 800);
 
     lastUrl = location.href;
+    store.ready = store.sync().catch(() => {});
     refresh();
   }
 

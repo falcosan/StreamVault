@@ -1,12 +1,11 @@
 use super::{
-    Episode, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl, fetch_json,
-    items, non_blank, send, stable_hash,
+    Episode, Http, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl,
+    fetch_json, items, non_blank, send, stable_hash,
 };
 use async_trait::async_trait;
-use reqwest::Client;
+use futures::future::join_all;
 use serde_json::{Value, json};
 use std::collections::HashSet;
-use tokio::task::JoinSet;
 
 const BASE: &str = "https://www.raiplay.it";
 const SEARCH: &str = "https://www.raiplay.it/atomatic/raiplay-search-service/api/v1/msearch";
@@ -15,11 +14,11 @@ const SEARCH_LIMIT: usize = 15;
 const IMAGE_KEYS: [&str; 4] = ["landscape", "portrait_logo", "portrait", "square"];
 
 pub struct RaiPlay {
-    client: Client,
+    client: Http,
 }
 
 impl RaiPlay {
-    pub fn new(client: Client) -> Self {
+    pub fn new(client: Http) -> Self {
         Self { client }
     }
 
@@ -65,14 +64,11 @@ impl RaiPlay {
         let url = relinker["video"][0]
             .as_str()
             .ok_or_else(|| ProviderError::StreamExtraction("No video in relinker".into()))?;
-        Ok(StreamUrl {
-            url: url.to_owned(),
-            headers: Vec::new(),
-        })
+        Ok(StreamUrl::new(url))
     }
 }
 
-async fn enrich(client: Client, entry: MediaEntry) -> MediaEntry {
+async fn enrich(client: Http, entry: MediaEntry) -> MediaEntry {
     match fetch_json(client.get(program_url(&entry.slug))).await {
         Ok(json) => enriched(entry, &json["program_info"]),
         Err(_) => entry,
@@ -84,6 +80,12 @@ fn enriched(entry: MediaEntry, info: &Value) -> MediaEntry {
         description: entry
             .description
             .or_else(|| info["description"].as_str().and_then(non_blank)),
+        backdrop_url: entry.backdrop_url.or_else(|| {
+            info["images"]["landscape"]
+                .as_str()
+                .filter(|p| !p.is_empty())
+                .map(absolute)
+        }),
         year: entry.year.or_else(|| {
             info["year"]
                 .as_str()
@@ -171,13 +173,14 @@ fn parse_cards(slug: &str, json: &Value) -> Vec<(Episode, String)> {
                     .to_owned(),
                 duration: ["duration_in_minutes", "duration"]
                     .iter()
-                    .find_map(|k| card[k].as_str()?.parse().ok()),
+                    .find_map(|k| card[k].as_str()?.split_whitespace().next()?.parse().ok()),
                 image_url: IMAGE_KEYS
                     .iter()
                     .find_map(|k| card["images"][k].as_str())
                     .or_else(|| text(&["immagine", "image"]))
                     .filter(|i| !i.is_empty())
                     .map(absolute),
+                description: text(&["description"]).and_then(non_blank),
             };
             (episode, link.to_owned())
         })
@@ -204,7 +207,7 @@ fn json_url(page: &str) -> String {
     with_json(page.strip_suffix(".html").unwrap_or(page))
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Provider for RaiPlay {
     fn name(&self) -> &'static str {
         "RaiPlay"
@@ -218,15 +221,12 @@ impl Provider for RaiPlay {
         });
         let json = fetch_json(self.client.post(SEARCH).json(&body)).await?;
         let mut seen = HashSet::new();
-        let mut tasks = JoinSet::new();
-        for entry in items(&json["agg"]["titoli"]["cards"])
+        let entries = items(&json["agg"]["titoli"]["cards"])
             .take(SEARCH_LIMIT)
             .filter_map(parse_card)
             .filter(|e| seen.insert(e.id))
-        {
-            tasks.spawn(enrich(self.client.clone(), entry));
-        }
-        Ok(tasks.join_all().await)
+            .map(|entry| enrich(self.client.clone(), entry));
+        Ok(join_all(entries).await)
     }
 
     async fn seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<u32>> {
@@ -298,9 +298,14 @@ mod tests {
             year: Some("2020".into()),
             ..Default::default()
         };
-        let info = json!({ "description": " Plot ", "year": "1999", "layout": "single" });
+        let info = json!({ "description": " Plot ", "year": "1999", "layout": "single",
+                           "images": { "landscape": "/dl/img/l.jpg" } });
         let entry = enriched(entry, &info);
         assert_eq!(entry.description.as_deref(), Some("Plot"));
+        assert_eq!(
+            entry.backdrop_url.as_deref(),
+            Some("https://www.raiplay.it/dl/img/l.jpg")
+        );
         assert_eq!(entry.year.as_deref(), Some("2020"));
         assert_eq!(entry.media_type, MediaType::Movie);
         assert_eq!(
@@ -326,8 +331,9 @@ mod tests {
     #[test]
     fn parse_cards_reads_nested_seasons() {
         let json = json!({ "seasons": [{ "episodes": [{ "cards": [
-            { "episode": "4", "episode_title": "Quattro", "duration_in_minutes": "50",
-              "weblink": "/video/a.html", "images": { "portrait": "/img/p.jpg" } },
+            { "episode": "4", "episode_title": "Quattro", "duration_in_minutes": "50 min",
+              "weblink": "/video/a.html", "images": { "portrait": "/img/p.jpg" },
+              "description": " Montalbano indaga. " },
             { "name": "Senza numero", "duration": "12", "url": "https://x/b.html" }
         ]}]}]});
         let cards = parse_cards("/programmi/x.json", &json);
@@ -342,6 +348,7 @@ mod tests {
             first.image_url.as_deref(),
             Some("https://www.raiplay.it/img/p.jpg")
         );
+        assert_eq!(first.description.as_deref(), Some("Montalbano indaga."));
         assert_eq!(link, "/video/a.html");
         assert_eq!((cards[1].0.number, cards[1].0.duration), (2, Some(12)));
         assert_eq!(cards[1].1, "https://x/b.html");
