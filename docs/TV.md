@@ -61,13 +61,15 @@ before installing.
 scripts/deploy-tv.sh
 ```
 
-It:
+or, without a clone, `curl -fsSL https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/deploy-tv.sh | bash`,
+which unpacks the latest `main` into `~/Library/Caches/StreamVault/source`
+(keeping its `target/` between runs) and runs it from there. It:
 
 - scans the local network (up to 1022 addresses per interface) and the Android
   devices already connected to `adb`, lists the TVs it finds and asks which one
   when there is more than one; `TV=<address>` picks one without asking;
-- installs what is missing into `~/Library/Caches/StreamVault`: Rust with the
-  `wasm32-unknown-unknown` target, `dx` 0.7.10, a JDK; for Android the SDK
+- installs what is missing: the Command Line Tools; into
+  `~/Library/Caches/StreamVault` Rust with the `wasm32-unknown-unknown` target, `dx` 0.7.10, a JDK; for Android the SDK
   build tools (into `ANDROID_HOME`, default `~/Library/Android/sdk`); for
   Samsung Tizen Studio (about 3 GB, into `TIZEN_HOME`, default
   `~/tizen-studio`);

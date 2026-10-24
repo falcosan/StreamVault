@@ -1,94 +1,77 @@
 <p align="center">
-  <img src="assets/img/raster/logo_raster_small.png" alt="StreamVault Logo" width="120" />
+  <img src="assets/img/raster/logo_raster_small.png" alt="StreamVault" width="120" />
 </p>
 
 <h1 align="center">StreamVault</h1>
 
 <p align="center">
-  Native macOS app to browse and download streaming content, built with Rust + <a href="https://dioxuslabs.com/">Dioxus</a>.
+  <strong>Your streaming catalogue, on your Mac and on your TV.</strong><br />
+  Browse, watch and download in one native app, then pick up on the big screen right where you left off.
+</p>
+
+<p align="center">
+  <img alt="macOS" src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" />
+  <img alt="Samsung TV" src="https://img.shields.io/badge/Samsung_TV-1428A0?logo=samsung&logoColor=white" />
+  <img alt="Android TV" src="https://img.shields.io/badge/Android_TV-3DDC84?logo=android&logoColor=white" />
+  <img alt="Fire TV" src="https://img.shields.io/badge/Fire_TV-FF9900" />
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-Dioxus-B7410E?logo=rust&logoColor=white" />
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue" /></a>
 </p>
 
 ---
 
-## Features
+## Install in two commands
 
-- Multi-provider search and catalog browsing
-- Show details, seasons, and episodes
-- Download streams with [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE)
-- Post-process with [FFmpeg](https://ffmpeg.org/)
-- JSON configuration for paths, download behavior, tracks, and requests
-- In-app update flow (rebuilds from source)
-
-## Requirements
-
-- **macOS** (the app uses a native WebView via Dioxus Desktop)
-- **Rust** toolchain
-- **FFmpeg**
-- **N_m3u8DL-RE**
-
-## Installation
-
-### Quick Install
-
-Run a single command to install `StreamVault.app`:
+**Mac**
 
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/package.sh" | bash
 ```
 
-### Build from Source
+`StreamVault.app` appears in the current folder, ready to drag into Applications.
 
-Run in development:
-
-```bash
-cargo run
-```
-
-Build release:
+**TV**
 
 ```bash
-cargo build --release
+curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/deploy-tv.sh" | bash
 ```
 
-Package `.app` bundle:
+Run it on a Mac on the same network as the TV. It finds the TVs, asks which one if there are several, installs every tool it needs and puts StreamVault on the TV. When the TV needs something only you can do, such as switching on Developer Mode, it tells you exactly what and carries on by itself.
+
+No Rust, SDK or Java to set up beforehand: the scripts fetch what is missing. Run either command again to update.
+
+## Why StreamVault
+
+- **Everything in one place.** StreamingCommunity, RaiPlay and more in a single catalogue and a single search.
+- **Built for the remote.** Every screen works with the D-pad; seeking follows your thumb instantly, audio and subtitles are one press away.
+- **Continue Watching everywhere.** Progress and track choices follow you across Mac, TV and browser, stored in your own Google Drive.
+- **Downloads on the Mac.** Save movies and episodes with the tracks you want, merged into MP4 by [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) and [FFmpeg](https://ffmpeg.org/).
+- **The TV stands alone.** Catalogue, playback and sync run on the TV itself: no server, and no Mac once it is installed.
+- **Native and light.** One Rust codebase built with [Dioxus](https://dioxuslabs.com/) for every screen; the Mac app updates itself.
+
+## Supported TVs
+
+| TV                    | Works on                                              |
+| --------------------- | ----------------------------------------------------- |
+| Samsung (Tizen)       | Tizen 8 or later: 2024 models, and older ones updated |
+| Android TV, Google TV | Android 5 or later with an up-to-date System WebView  |
+| Fire TV               | Fire OS models (not the newer Vega OS)                |
+
+LG webOS, Hisense VIDAA, Philips Titan OS and Roku cannot run it: [docs/TV.md](docs/TV.md) explains why, along with the remote controls and how the TV build works.
+
+## Sync
+
+Optional and private: a small Google Apps Script keeps one JSON file in your Drive, protected by your own token. Put its address and token in `sync.json` on the Mac and every device you install from it stays in step. Setup takes four steps: [docs/CONFIGURATION.md](docs/CONFIGURATION.md#sync).
+
+## Build from source
 
 ```bash
-./scripts/package.sh
+cargo run                  # run the Mac app
+./scripts/package.sh       # build dist/StreamVault.app
+./scripts/deploy-tv.sh     # build and install on a TV
 ```
 
-Output: `dist/StreamVault.app`
-
-## Configuration
-
-Config is stored in JSON. On first launch, StreamVault creates a default config automatically.
-
-| Data                                                    | With iCloud Drive                                 | Without iCloud Drive                        |
-| ------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------- |
-| **Settings** (`config.json`, `sync.json`)               | `iCloud Drive/Contents/Video/StreamVault`         | `~/Library/Application Support/StreamVault` |
-| **State** (watch progress, player prefs, sync replica)  | `~/Library/Application Support/StreamVault/state` | same                                        |
-| **Downloads** (`root_path`)                             | `iCloud Drive/Contents/Video/StreamVault`         | `~`                                         |
-
-State is per device and never stored in iCloud Drive; enable `sync.json` to share it across devices. Downloads are assembled in `~/Library/Caches/StreamVault` and only the finished file is moved into place.
-
-Main sections:
-
-| Section      | Key Options                                                                                     |
-| ------------ | ----------------------------------------------------------------------------------------------- |
-| **output**   | `root_path`, `movie_folder_name`, `serie_folder_name`, `map_episode_name`                       |
-| **download** | `thread_count` (default: 8), `retry_count`, `concurrent_download`, `max_speed`, track selection |
-| **process**  | `merge_audio`, `merge_subtitle`, `extension` (default: mp4)                                     |
-| **requests** | `timeout` (default: 30s)                                                                        |
-
-### Sync
-
-Continue Watching and player preferences sync between the macOS app, the TV app and the browser userscript (`assets/js/streamvault.user.js`) through a Google Apps Script web app (`assets/js/google_apps_script.gs`) that stores one JSON file in your Drive.
-
-1. Create an Apps Script project, paste `google_apps_script.gs`, set the script property `TOKEN` to a random secret and deploy it as a web app (execute as you, access: anyone).
-2. macOS: `sync.json` → `{ "enabled": true, "endpoint": "<web app URL>", "token": "<TOKEN>" }`.
-3. TV: `scripts/deploy-tv.sh` builds with the endpoint and token from `sync.json` (see `docs/TV.md`).
-4. Userscript: set `ENDPOINT` and `TOKEN` at the top of the script.
-
-Every value (one per title, plus the preferences) is a last-writer-wins record with a timestamp; deletions are tombstones. Devices push only their pending changes and pull what changed since their last sync, and the script resolves conflicts, so all devices converge. A document written by an earlier version is migrated on first use.
+Settings, download options and file locations: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## License
 

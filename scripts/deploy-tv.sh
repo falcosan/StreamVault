@@ -14,6 +14,15 @@ readonly SAMSUNG_LOGIN="https://account.samsung.com/mobile/account/check.do?serv
 readonly SAMSUNG_API=https://svdca.samsungqbe.com/apis/v3
 readonly SCAN_MASK=0xfffffc00
 readonly BACKGROUND=151515
+readonly SOURCE=https://github.com/falcosan/StreamVault/archive/refs/heads/main.tar.gz
+
+cache="$HOME/Library/Caches/StreamVault"
+if [[ -z "${BASH_SOURCE[0]:-}" || "$(basename "${BASH_SOURCE[0]:-bash}")" == bash ]]; then
+  mkdir -p "$cache/source"
+  find "$cache/source" -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +
+  curl -fsSL "$SOURCE" | tar xz -C "$cache/source" --strip-components 1
+  exec bash "$cache/source/scripts/deploy-tv.sh" "$@" </dev/tty
+fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 resources="$root/resources/tv"
@@ -21,7 +30,6 @@ logo="$root/assets/img/vector/logo.svg"
 public="$root/target/dx/streamvault/release/web/public"
 out="$root/target/tv"
 log="$out/deploy.log"
-cache="$HOME/Library/Caches/StreamVault"
 tizen_home="${TIZEN_HOME:-$HOME/tizen-studio}"
 android_home="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
@@ -111,6 +119,15 @@ choose() {
 }
 
 rust_tools() {
+  if ! xcrun --find cc &>/dev/null; then
+    say "Installing the Command Line Tools…"
+    local placeholder=/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress package
+    touch "$placeholder"
+    package="$(softwareupdate --list 2>/dev/null | grep -o 'Command Line Tools[^*]*' | sort -V | tail -n1 | xargs)" || true
+    [[ -n "$package" ]] || { rm -f "$placeholder"; die "Command Line Tools package not found."; }
+    run softwareupdate --install "$package" --agree-to-license
+    rm -f "$placeholder"
+  fi
   [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
   if ! command -v rustup &>/dev/null; then
     export RUSTUP_HOME="$cache/rustup" CARGO_HOME="$cache/cargo" PATH="$cache/cargo/bin:$PATH"
