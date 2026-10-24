@@ -87,6 +87,7 @@ pub struct Status {
     pub duration: f64,
     pub paused: bool,
     pub waiting: bool,
+    pub fullscreen: bool,
 }
 
 #[derive(Serialize)]
@@ -378,14 +379,15 @@ mod tests {
     #[test]
     fn events_parse_the_player_script_messages() {
         let parse = |value| serde_json::from_value::<Event>(value).unwrap();
-        let status = json!({"type": "status", "time": 5.5, "duration": 60, "paused": false, "waiting": true});
+        let status = json!({"type": "status", "time": 5.5, "duration": 60, "paused": false, "waiting": true, "fullscreen": true});
         assert!(matches!(
             parse(status),
             Event::Status(Status {
                 time: 5.5,
                 duration: 60.0,
                 paused: false,
-                waiting: true
+                waiting: true,
+                fullscreen: true
             })
         ));
         let tracks = json!({"type": "tracks", "audio": [{"language": "ita", "label": "Italian"}], "audio_index": 0, "subtitles": [], "subtitle_index": -1});

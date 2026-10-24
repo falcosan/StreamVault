@@ -95,6 +95,7 @@ function attach(video, url, start, prefs, send) {
       duration: Number.isFinite(video.duration) ? video.duration : 0,
       paused: video.paused,
       waiting: buffering(video, started),
+      fullscreen: Boolean(document.fullscreenElement),
     });
   const tracks = () =>
     send({
@@ -126,9 +127,11 @@ function attach(video, url, start, prefs, send) {
   };
   for (const [name, listener] of Object.entries(listeners))
     video.addEventListener(name, listener);
+  document.addEventListener("fullscreenchange", status);
   const unlisten = () => {
     for (const [name, listener] of Object.entries(listeners))
       video.removeEventListener(name, listener);
+    document.removeEventListener("fullscreenchange", status);
   };
   const session = (stop) => ({
     video,

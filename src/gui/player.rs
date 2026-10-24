@@ -4,6 +4,7 @@ use crate::player::{Menu, OSD_SECONDS, SEEK_SECONDS, Tracks, clock};
 use dioxus::prelude::*;
 
 const FULLSCREEN_ICON: &str = include_str!("../../assets/img/vector/fullscreen.svg");
+const FULLSCREEN_EXIT_ICON: &str = include_str!("../../assets/img/vector/fullscreen-exit.svg");
 
 #[component]
 pub fn PlayerView() -> Element {
@@ -142,9 +143,12 @@ pub fn PlayerView() -> Element {
                         button {
                             id: "control-fullscreen",
                             class: "player-control icon",
-                            aria_label: "Fullscreen",
+                            aria_label: if status.fullscreen { "Exit fullscreen" } else { "Fullscreen" },
                             onclick: move |_| player.fullscreen(),
-                            span { class: "control-icon", dangerous_inner_html: FULLSCREEN_ICON }
+                            span {
+                                class: "control-icon",
+                                dangerous_inner_html: if status.fullscreen { FULLSCREEN_EXIT_ICON } else { FULLSCREEN_ICON },
+                            }
                         }
                     }
                 }

@@ -249,7 +249,7 @@ input {
   font-size: 13px;
 }
 
-.error-bar > span {
+.error-bar>span {
   flex: 1;
 }
 
@@ -634,13 +634,11 @@ input {
   inset: 0;
   z-index: -1;
   background:
-    linear-gradient(
-      90deg,
+    linear-gradient(90deg,
       var(--bg) 0%,
       rgba(21, 21, 21, 0.88) 32%,
       rgba(21, 21, 21, 0.25) 68%,
-      rgba(21, 21, 21, 0) 100%
-    ),
+      rgba(21, 21, 21, 0) 100%),
     linear-gradient(0deg, var(--bg) 0%, rgba(21, 21, 21, 0) 55%);
 }
 
@@ -660,7 +658,7 @@ input {
   opacity: 0.55;
 }
 
-.hero > .back-button {
+.hero>.back-button {
   position: absolute;
   top: 16px;
   left: 16px;
@@ -720,7 +718,7 @@ input {
   color: var(--text2);
 }
 
-.hero-fact + .hero-fact::before {
+.hero-fact+.hero-fact::before {
   content: "\00B7";
   margin-right: 10px;
   color: var(--text3);
@@ -788,8 +786,8 @@ input {
   height: 4px;
 }
 
-.resume-bar > div,
-.episode-progress > div {
+.resume-bar>div,
+.episode-progress>div {
   height: 100%;
   background: var(--accent);
 }
@@ -1138,11 +1136,9 @@ input {
   border-radius: 4px;
   -webkit-appearance: none;
   appearance: none;
-  background: linear-gradient(
-    to right,
-    var(--accent) var(--progress),
-    rgba(255, 255, 255, 0.25) var(--progress)
-  );
+  background: linear-gradient(to right,
+      var(--accent) var(--progress),
+      rgba(255, 255, 255, 0.25) var(--progress));
   cursor: pointer;
 }
 
@@ -1203,7 +1199,8 @@ input {
   height: 100%;
 }
 
-.player-control.next {
+.player-control.next,
+#control-fullscreen:not(.next + *) {
   margin-left: auto;
 }
 
