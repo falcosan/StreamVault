@@ -1,10 +1,12 @@
 # StreamVault TV
 
-Samsung Tizen TV build of StreamVault: the same crate as the macOS app,
-compiled to WASM with the `tv` feature and packaged as a signed `.wgt`. It runs
-entirely on the TV: the providers fetch catalogue, search results, episodes and
-streams straight from the sites, and sync talks directly to the Apps Script
-endpoint. Nothing needs to run on the Mac.
+TV build of StreamVault: the same crate as the macOS app, compiled to WASM with
+the `tv` feature. One web bundle serves every TV: Samsung (Tizen) installs it
+as a signed `.wgt`, Android TV, Google TV and Fire TV as an `.apk` that hosts it
+in the system WebView. It runs entirely on the TV: the providers fetch
+catalogue, search results, episodes and streams straight from the sites, and
+sync talks directly to the Apps Script endpoint. Nothing needs to run on the
+Mac.
 
 ## Layout
 
@@ -17,52 +19,95 @@ own module.
   (`remote.rs`), IndexedDB storage (`storage.rs`).
 - `assets/` — shared stylesheet and player; `style/tv.css` holds the TV-only
   overrides, `js/hls.min.js` and `js/storage.js` are loaded only by the TV.
-- `index.html` — boot page: 960×540 layout viewport (scaled ×2 by the TV) and
-  the dark background shown while the WASM loads.
-- `resources/tv/` — Tizen manifest (`config.xml`) and launcher icon.
-- `scripts/deploy-tv.sh` — builds, signs, installs and launches the app.
+- `index.html` — boot page: 960×540 layout viewport (scaled to the screen by
+  the TV) and the dark background shown while the WASM loads.
+- `resources/tv/` — Tizen manifest (`tizen/config.xml`) and the Android host
+  (`android/AndroidManifest.xml`, `android/MainActivity.java`). The launcher
+  icon and the Android banner are rasterised from `assets/img/vector/logo.svg`
+  at build time.
+- `scripts/deploy-tv.sh` — finds the TV, installs what the build needs, then
+  builds, signs, installs and launches the app.
 
-The TV webview does not apply CORS to an installed widget, so the providers
-can call the sites directly. What a browser still forbids also applies here:
-requests cannot set `Cookie`, `Referer` or `User-Agent`, and responses do not
-expose `Set-Cookie`. StreamingCommunity, RaiPlay and Aurora work without them;
-AnimeUnity's login flow needs them (and its search currently fails on macOS as
-well).
+Tizen does not apply CORS to an installed widget, so the providers call the
+sites directly. On Android the page is served from
+`https://appassets.androidplatform.net` and `MainActivity` performs every
+cross-site request natively, answering CORS itself; a small script added to
+`index.html` hands request bodies to it, since the WebView does not expose
+them. What a browser still forbids also applies on both: requests cannot set
+`Cookie`, `Referer` or `User-Agent`, and responses do not expose `Set-Cookie`.
+StreamingCommunity, RaiPlay and Aurora work without them; AnimeUnity's login
+flow needs them (and its search currently fails on macOS as well).
+
+## TVs
+
+| TV                                  | Installs          | Needs on the TV, once                                                    |
+| ----------------------------------- | ----------------- | ------------------------------------------------------------------------ |
+| Samsung (Tizen)                     | `.wgt` over `sdb` | Developer Mode pointed at the Mac; Samsung sign-in for the certificate   |
+| Android TV, Google TV               | `.apk` over `adb` | Developer options with USB, network or wireless debugging; allow the Mac |
+| Fire TV (Fire OS)                   | `.apk` over `adb` | Developer options with ADB debugging; allow the Mac                      |
+| LG (webOS)                          | no                | installed apps cannot load module scripts or make cross-site requests    |
+| Hisense (VIDAA), Philips (Titan OS) | no                | no installs outside the vendor store                                     |
+| Roku                                | no                | runs only BrightScript channels, no web engine                           |
+
+The WASM uses reference types (`wasm-bindgen` keeps JS values in an `externref`
+table), so the TV's web engine must be Chromium 96 or later: Samsung models
+running Tizen 8 or later (2024 on, and earlier ones updated to it); on Android
+the system WebView, which the Play Store keeps updated and the script checks
+before installing.
 
 ## Build and install
-
-Requires `dx` 0.7, the `wasm32-unknown-unknown` target, the Tizen Studio CLI
-with the `streamvault-samsung` signing profile and the TV in Developer Mode.
 
 ```sh
 scripts/deploy-tv.sh
 ```
 
-With no arguments it:
+It:
 
+- scans the local network (up to 1022 addresses per interface) and the Android
+  devices already connected to `adb`, lists the TVs it finds and asks which one
+  when there is more than one; `TV=<address>` picks one without asking;
+- installs what is missing into `~/Library/Caches/StreamVault`: Rust with the
+  `wasm32-unknown-unknown` target, `dx` 0.7.10, a JDK; for Android the SDK
+  build tools (into `ANDROID_HOME`, default `~/Library/Android/sdk`); for
+  Samsung Tizen Studio (about 3 GB, into `TIZEN_HOME`, default
+  `~/tizen-studio`);
+- waits, with instructions, until the TV is ready: Developer Mode on Samsung,
+  debugging allowed on Android (it asks for the pairing code when the TV shows
+  one);
 - enables sync with the endpoint and token of the macOS `sync.json` when that
   file exists and is enabled (see the root README); otherwise the TV keeps its
   state locally;
-- uses the TV already connected to `sdb`, or finds it on the LAN by its MAC
-  address and connects;
-- builds and signs `target/tv/StreamVault.wgt`, then installs and launches it.
+- builds and signs `target/tv/StreamVault.wgt` (with the active certificate
+  profile) or `target/tv/StreamVault.apk` (with `~/.android/debug.keystore`,
+  created if missing, so updates keep the app data), both with the version of
+  `Cargo.toml`, then installs and launches it.
+
+Samsung TVs only install apps signed with a Samsung certificate issued to a
+Samsung account for that TV's device id. The script uses the profile
+`streamvault-<device id>`, else the active one; when there is none or the TV
+rejects it, it creates the certificate as Certificate Manager does: it opens
+the Samsung sign-in in the browser, takes the answer on `localhost:4794`, reads
+the device id over `sdb`, sends the author and distributor requests to
+Samsung, stores the result in `~/SamsungCertificate/streamvault-<device id>`,
+registers the profile, allows the TV to install with it and retries. Build
+output goes to `target/tv/deploy.log`.
 
 The sync settings are compiled into the WASM, so run it again when `sync.json`
-changes. `STREAMVAULT_SYNC_URL`, `STREAMVAULT_SYNC_TOKEN`, `TV_IP`, `TV_MAC`,
-`TIZEN`, `SDB` and `PROFILE` override the defaults.
+changes. `STREAMVAULT_SYNC_URL`, `STREAMVAULT_SYNC_TOKEN`, `TV`, `ANDROID_HOME`
+and `TIZEN_HOME` override the defaults.
 
 ## Remote
 
-| Key | Browsing | Player |
-|---|---|---|
-| Arrows | move focus | Left/Right on the progress bar seek 10 s; Down to the buttons, Up back to the bar |
-| OK | open the focused item | play/pause on the progress bar, otherwise press the focused button |
-| Return | back; exits on Home | close the track menu, otherwise stop |
-| Play/Pause, Play, Pause | | play/pause |
-| Rewind, Fast forward | | seek 30 s |
-| Stop | | stop |
+| Key                     | Browsing              | Player                                                                            |
+| ----------------------- | --------------------- | --------------------------------------------------------------------------------- |
+| Arrows                  | move focus            | Left/Right on the progress bar seek 10 s; Down to the buttons, Up back to the bar |
+| OK                      | open the focused item | play/pause on the progress bar, otherwise press the focused button                |
+| Return / Back           | back; exits on Home   | close the track menu, otherwise stop                                              |
+| Play/Pause, Play, Pause |                       | play/pause                                                                        |
+| Rewind, Fast forward    |                       | seek 30 s                                                                         |
+| Stop                    |                       | stop                                                                              |
 
-Search: OK on the magnifier opens the TV keyboard, *Done* searches, *Cancel*
+Search: OK on the magnifier opens the TV keyboard, _Done_ searches, _Cancel_
 or Return closes it.
 
 Player: the progress bar is focused when the controls appear; below it are

@@ -258,6 +258,8 @@ pub fn restore(key: Option<String>) {
 pub fn exit() {
     if let Ok(application) = current_application() {
         let _ = application.exit();
+    } else if let Some(window) = web_sys::window() {
+        let _ = window.close();
     }
 }
 

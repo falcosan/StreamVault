@@ -1,4 +1,4 @@
-# StreamVault for Samsung Tizen TV — Engineering Log
+# StreamVault for Samsung Tizen and Android TV — Engineering Log
 
 A complete, reproducible account of porting StreamVault (a Rust/Dioxus desktop
 application) to a Samsung Crystal UHD **UE50CU8072UXXH** running **Tizen 9.0**
@@ -20,7 +20,7 @@ Ship a TV-native build of StreamVault that:
 
 The desktop app is a Rust crate built on **Dioxus 0.7** (`dioxus-desktop`,
 `wry`/`tao`). The key realisation that made this tractable: Dioxus compiles the
-*same* RSX component tree to a **web (WASM)** target. A Tizen "web app" is just
+_same_ RSX component tree to a **web (WASM)** target. A Tizen "web app" is just
 an HTML/JS/WASM bundle wrapped in a signed `.wgt` package. So the desktop UI can
 be re-rendered inside the TV's webview with no rewrite — only a change of
 platform feature (`dioxus-desktop` → `dioxus-web`) and a networked data source.
@@ -41,13 +41,14 @@ StreamVault/            one crate, one device feature per build
 │   ├── sync.rs         replica + sync loop against the Apps Script endpoint
 │   ├── desktop/        macOS only: window, files, downloads, local media,
 │   │                   self-update, Downloads view
-│   └── tv/             Tizen only: remote focus engine, IndexedDB storage,
+│   └── tv/             TVs only: remote focus engine, IndexedDB storage,
 │                       remote key handling
 ├── assets/             shared by every device: style.css (+ tv.css 10-foot
 │                       overlay), player.js, storage.js, hls.js, SVG icons
-├── resources/          packaging: macos/ (Info.plist, icon), tv/ (config.xml, icon)
-├── scripts/            package.sh (macOS app), deploy-tv.sh (build, sign,
-│                       install, launch on the TV)
+├── resources/          packaging: macos/ (Info.plist, icon), tv/
+│                       (tizen/config.xml, android/ manifest + WebView host)
+├── scripts/            package.sh (macOS app), deploy-tv.sh (find the TV,
+│                       install the tools, build, sign, install, launch)
 └── index.html          boot page of the web build (viewport 960, dark background)
 ```
 
@@ -105,7 +106,7 @@ Certificate Manager and Device Manager apps.
 ```
 
 > **Gotcha.** Without `--accept-license` the `cert-add-on` dependency aborts
-> with *"required license agreement due to dependencies"* and installs nothing.
+> with _"required license agreement due to dependencies"_ and installs nothing.
 
 This adds the **TV-SAMSUNG** platform (`platforms/tizen-10.0/tv-samsung`) and the
 Samsung certificate generator (`KeyCertGeneratorApi.jar`).
@@ -157,9 +158,9 @@ A Samsung TV accepts only packages signed with a developer **author** +
 that specific TV's device id. Created in **Certificate Manager** as profile
 `streamvault-samsung`:
 
-| Certificate | Issued by | Notes |
-|---|---|---|
-| author | Samsung VD Author CA | identity; expires 2027/10/23 |
+| Certificate | Issued by                    | Notes                           |
+| ----------- | ---------------------------- | ------------------------------- |
+| author      | Samsung VD Author CA         | identity; expires 2027/10/23    |
 | distributor | VD DEVELOPER Public CA Class | DUID-locked; expires 2027/10/23 |
 
 Inspecting the distributor certificate (modern OpenSSL needs `-legacy` for the
@@ -176,7 +177,7 @@ Key points that matter later:
 
 - `deviceid=7XCI7KNS2VUXI` — the raw device id this TV reports; the certificate
   is useless on any other set.
-- `packageid=` is **empty** for a *Public* distributor certificate. Empty means
+- `packageid=` is **empty** for a _Public_ distributor certificate. Empty means
   "any package id is acceptable", which is why a 10-character constraint (not a
   specific value) is what ultimately governs install — see §8.
 
@@ -276,17 +277,19 @@ resident instance serving the previous build, §10.6), `background-support` is
 disabled so playback pauses when the TV goes Home, the context menu is off, and
 the unused `unlimitedstorage` / `application.launch` privileges are dropped.
 
-Icon was rasterised from the vector logo with the native tool:
+The build stamps the `version` attribute with the one in `Cargo.toml`, the
+version every device reports, and rasterises the icon from the vector logo
+with the native tool, so the app logo stays its only source:
 
 ```bash
 sips -s format png --resampleHeightWidth 512 512 assets/img/vector/logo.svg \
-     --out resources/tv/icon.png
+     --out <stage>/icon.png
 ```
 
 Package + sign:
 
 ```bash
-# stages dx output + resources/tv/{config.xml,icon.png}, then signs
+# stages dx output + resources/tv/tizen/config.xml + the icon, then signs
 scripts/deploy-tv.sh   # → target/tv/StreamVault.wgt, then installs it
 ```
 
@@ -323,7 +326,7 @@ curl -s http://<tv>:8001/api/v2/ | python3 -m json.tool
 So Developer Mode was on and pointed at the right host. A raw TCP probe showed
 port **26101 accepted the connection but never answered the protocol
 handshake** (`host:version` got no reply) — the listener was up but the session
-layer was dead. The capability banner, once a connection *did* succeed, confirms
+layer was dead. The capability banner, once a connection _did_ succeed, confirms
 this is a secure-protocol daemon:
 
 ```
@@ -376,7 +379,7 @@ Connection succeeded instantly. The problem was never the TV.
   Developer Mode on the TV resets the key-authorisation whitelist, so the host's
   key has to be re-accepted after a toggle.
 - **The daemon's enablement flag is read at boot.** Changing Developer Mode and
-  then *re-opening the dialog* can re-arm the broken state; the reliable recovery
+  then _re-opening the dialog_ can re-arm the broken state; the reliable recovery
   is: set it once, cold-boot, and connect without touching the dialog again
   (corroborated by Apps2Samsung issue #751).
 - **DHCP lease rotation.** Across reboots the TV's IP moved (…71 → …69 → …66).
@@ -387,7 +390,7 @@ Connection succeeded instantly. The problem was never the TV.
 
 ---
 
-## 8. Problem #2 — `tizen install` → *Load archive info fail*
+## 8. Problem #2 — `tizen install` → _Load archive info fail_
 
 ### 8.1 Symptom
 
@@ -399,7 +402,7 @@ app_id[STREAMVLTsv.StreamVault] install failed[118, -4],
 
 Identical failure whether driven through `tizen install` or the lower-level
 package tool. Changing `config.xml` (profile name, `required_version`, adding
-`<author>`, privileges) made **no** difference. "Load archive info" fails *before*
+`<author>`, privileges) made **no** difference. "Load archive info" fails _before_
 content is laid down — it is a manifest/packaging gate, not a runtime problem.
 
 ### 8.2 The decisive isolation test
@@ -425,10 +428,10 @@ the signing pipeline is correct. The defect was purely in **our** package.
 
 Diffing the two manifests, the operative difference was the identifier:
 
-| | package id | length | installs? |
-|---|---|---|---|
-| reference | `xvvl3S1bvH` | **10** | yes |
-| StreamVault (orig) | `STREAMVLTsv` | 11 | no |
+|                    | package id    | length | installs? |
+| ------------------ | ------------- | ------ | --------- |
+| reference          | `xvvl3S1bvH`  | **10** | yes       |
+| StreamVault (orig) | `STREAMVLTsv` | 11     | no        |
 
 Tizen requires the **package id to be exactly 10 alphanumeric characters**. An
 11-character id is rejected at archive-info time with the misleading
@@ -539,14 +542,14 @@ with an empty `key` string**, so a handler that matched on `event.key ==
 "Enter"` silently did nothing. Keys are mapped code-first, name second (for
 desktop-browser testing):
 
-| Remote button | keyCode | Browsing | Player |
-|---|---|---|---|
-| Up / Down / Left / Right | 38 / 40 / 37 / 39 | spatial focus move | seek 10 s on the progress bar, otherwise move between controls |
-| OK | 13 | click focused element | play/pause on the progress bar, otherwise press the focused button |
-| Return | 10009 | history back, exit on Home | close the track menu, otherwise stop |
-| Play/Pause, Play, Pause, Stop | 10252 / 415 / 19 / 413 | | transport |
-| Rewind / Fast forward | 412 / 417 | | seek 30 s |
-| IME Done / Cancel | 65376 / 65385 | submit / close search keyboard | |
+| Remote button                 | keyCode                | Browsing                       | Player                                                             |
+| ----------------------------- | ---------------------- | ------------------------------ | ------------------------------------------------------------------ |
+| Up / Down / Left / Right      | 38 / 40 / 37 / 39      | spatial focus move             | seek 10 s on the progress bar, otherwise move between controls     |
+| OK                            | 13                     | click focused element          | play/pause on the progress bar, otherwise press the focused button |
+| Return                        | 10009                  | history back, exit on Home     | close the track menu, otherwise stop                               |
+| Play/Pause, Play, Pause, Stop | 10252 / 415 / 19 / 413 |                                | transport                                                          |
+| Rewind / Fast forward         | 412 / 417              |                                | seek 30 s                                                          |
+| IME Done / Cancel             | 65376 / 65385          | submit / close search keyboard |                                                                    |
 
 ### 10.3 Spatial focus engine
 
@@ -563,7 +566,7 @@ ranking is pure Rust with unit tests (`remote.rs`).
 Focus survives screen changes: navigating stores the focused element's
 `data-focus` key in the history, Return restores it, and a `MutationObserver`
 gives focus to the first `[data-focus]` element whenever nothing is focused
-(first poster at start-up, *Play* on a details page, first result after a search).
+(first poster at start-up, _Play_ on a details page, first result after a search).
 
 ### 10.4 Scroll the focus into view
 
@@ -591,7 +594,7 @@ focused row, so Right at the end of a row no longer jumps to the search button.
 `prelaunch.support=true` kept the web app **resident** between opens, so
 re-opening the tile could show the previous build. The flag is now removed and
 `deploy-tv.sh` kills the running instance (`was_kill`) before installing and
-launches with `was_execute`. This was *not* why the remote failed (§10.7).
+launches with `was_execute`. This was _not_ why the remote failed (§10.7).
 
 ### 10.7 What actually broke — found with DevTools on the TV
 
@@ -602,7 +605,7 @@ take screenshots and dispatch real key events. That showed two code defects:
 1. **Clicks never changed the screen.** `App` called `AppState::new()` on every
    render and passed the result to `use_context_provider(|| state)`. The
    provider kept the first state, but `App` read its `screen` from a freshly
-   created one (always `Home`). The navbar highlighted *Downloads* while the
+   created one (always `Home`). The navbar highlighted _Downloads_ while the
    content stayed on Home. Fix: `use_context_provider(AppState::new)`.
 2. **Focus bounced back to the header.** `tv.css` added `position: relative`
    on `:focus`. The Continue Watching button is `position: absolute; inset: 0`,
@@ -677,14 +680,14 @@ frame times + long tasks while sending Down every 120 ms) measured **15 fps, p90
 posters are 200×300 WebP of ~10 KB, so neither layer count nor images were the
 cause. Isolating one variable at a time, from the same start position:
 
-| Variant | fps | p90 |
-|---|---|---|
-| smooth scroll + focus transition (original) | 15 | 133 ms |
-| instant scroll only | 24 | 133 ms |
-| no focus transition only | 15 | 133 ms |
-| instant scroll + transform-only transition | 24 | 133 ms |
+| Variant                                                  | fps    | p90       |
+| -------------------------------------------------------- | ------ | --------- |
+| smooth scroll + focus transition (original)              | 15     | 133 ms    |
+| instant scroll only                                      | 24     | 133 ms    |
+| no focus transition only                                 | 15     | 133 ms    |
+| instant scroll + transform-only transition               | 24     | 133 ms    |
 | **instant scroll, no transitions (blurred shadow kept)** | **58** | **17 ms** |
-| smooth scroll, any focus variant | 15 | 133 ms |
+| smooth scroll, any focus variant                         | 15     | 133 ms    |
 
 The fix is instant `scrollIntoView` plus `* { transition: none !important }`
 (the desktop stylesheet also animates cards). Verified after the change: 57–60
@@ -761,41 +764,154 @@ userscript at the same time. The old document is migrated on first use.
 
 ---
 
-## 13. Gotchas & lessons — quick reference
+## 13. Android TV, Google TV, Fire TV and the autonomous deploy
 
-| # | Symptom | Root cause | Fix |
-|---|---|---|---|
-| 1 | `cargo install dioxus-cli` fails | missing `pkg-config`; `openssl@3` unlinked | `brew install pkgconf openssl@3 && brew link openssl@3 --force` |
-| 2 | install fails, final log line unhelpful | real error is in the build-script stderr | capture full log, don't `tail -5` |
-| 3 | `sdb connect … failed` though Dev Mode on | multiple competing sdb servers on host | kill all sdb + Device Manager; keep exactly one |
-| 4 | sdbd "dead" after Developer-Mode toggle | enable flag read at boot; dialog re-arms it | set once, cold-boot, connect without reopening |
-| 5 | TV unreachable after reboot | DHCP moved its IP | resolve by MAC via `arp -a` |
-| 6 | `install failed[-4] Load archive info fail` | package id ≠ 10 chars | use a 10-char alphanumeric package id |
-| 7 | couldn't tell if cert/firmware at fault | — | re-sign a known-good reference `.wgt`, install it |
-| 8 | TV can't reach the dev service | macOS app firewall blocks inbound | allow the binary via `socketfilterfw` (service later removed, §9) |
-| 9 | OK button does nothing | OK = `keyCode 13`, empty `key` string | match on keyCode, not `key` name |
-| 10 | D-pad down "freezes" | `focus()` doesn't auto-scroll | `scroll_into_view` after every focus move |
-| 11 | rebuild looks identical on TV | resident app (`prelaunch.support`) | flag removed; `was_kill` before install |
-| 12 | `.wgt` bloated / stale bundles | `dx` keeps old content-hashed assets | stage packaging from a clean directory |
-| 13 | OK "does nothing", screen never changes | `AppState::new()` called on every render | `use_context_provider(AppState::new)` |
-| 14 | focus jumps back to the header | `position: relative` on `:focus` collapses absolute buttons | focus styles change visuals only |
-| 15 | HLS stalls / `MEDIA_ERR_SRC_NOT_SUPPORTED` | native player can't handle these playlists | hls.js over MSE (vendored) |
-| 16 | Continue Watching lost after a kill | `localStorage` flushed only on clean exit | IndexedDB with `durability: "strict"` |
-| 17 | `tizen run` NullPointerException | CLI vs `appcmd_support:disabled` | `sdb shell 0 was_execute <app-id>` |
-| 18 | every `sdb shell` hangs mid-session | wedged sdb channel | `sdb kill-server`, `start-server`, `connect` |
-| 19 | grid scrolling at 15 fps | smooth scroll + animated focus re-raster every frame | instant scroll, no transitions |
-| 20 | wrong subtitles after audio change | hls.js re-selects forced subtitles | re-apply the chosen subtitle track |
-| 21 | every dialog freezes after Return | `if let Some(x) = *signal.peek()` keeps the read guard alive through the block; writing the signal inside panics (`AlreadyBorrowed`) and a wasm panic stops the app | copy the value out of the signal before branching |
-| 22 | TV useless without the Mac | providers ran in a LAN service | run the providers in the TV app; the widget is exempt from CORS (§9) |
-| 23 | Continue Watching empty after a quick relaunch | the closing process still holds the IndexedDB lock | retry `indexedDB.open` for up to 5 s |
-| 24 | bar lags behind the remote, stream re-buffers on every press | each press seeked the video and the bar waited for its status | scrub in Rust at once, seek once 0.6 s after the last press |
-| 25 | spinner stuck after seeking while paused | `waiting` was cleared only by `playing` | buffering = first load, or playing and seeking / short of data |
+The same web bundle runs on Android in a WebView, wrapped by one Java class
+(`resources/tv/android/MainActivity.java`) and built without Gradle: `aapt2`
+links the manifest, icon and banner (both rasterised from the logo SVG with
+`sips`, the banner padded to 320×180) and the
+bundle as assets, `javac` + `d8` compile the activity (D8 backports `Map.of`
+and `String.join` down to API 21), `zipalign` and `apksigner` finish it with
+`~/.android/debug.keystore`, so every build updates the previous one in place.
+Verified on Android TV emulators (Android 16 / WebView 143 and Android 12 /
+WebView 91) driven with `adb shell input keyevent`.
+
+### 13.1 Serving the bundle
+
+`fetch()` refuses `file://` URLs whatever the WebView settings, and the
+bundle loads its WASM with `fetch`. The page is therefore served from
+`https://appassets.androidplatform.net` (the origin reserved for this by
+`WebViewAssetLoader`) by `shouldInterceptRequest`, with explicit MIME types
+(`application/wasm` keeps streaming compilation). IndexedDB works on that
+origin and survives `adb install -r`.
+
+### 13.2 CORS
+
+Unlike a Tizen widget, the page is subject to CORS, and the sites send no
+CORS headers. A probe page showed that `shouldInterceptRequest` receives every
+CORS-mode request (`Origin` header), preflights included, and that an
+intercepted response carrying `Access-Control-Allow-Origin` satisfies both
+`fetch` and XHR. So the activity answers preflights itself and performs the
+requests natively (`HttpURLConnection`, redirects followed by hand, 303 and
+POST-on-301/302 turning into GET as `fetch` does), returning the response
+with CORS headers. The WebView never exposes request bodies, so a script
+inserted into `index.html` before the app wraps `fetch`: a request with a body
+hands it (base64) to the activity through a `@JavascriptInterface` and sends a
+one-time id header instead. Verified from DevTools on a debuggable build:
+JSON and binary bodies, 302 and 307 redirects, 404 status, custom response
+headers, DNS failure (rejects like `fetch`) and `AbortSignal` timeouts.
+
+### 13.3 Remote and lifecycle
+
+D-pad, OK and the media keys arrive as the same DOM keys as on Tizen. Back
+does not: from Android 13 with target SDK 36 it never reaches the page or
+`onBackPressed`, and the default callback moves the task to the background.
+An `OnBackInvokedCallback` (and `onBackPressed` below API 33) dispatches a
+cancelable `GoBack` key to the page instead; when the page does not cancel it
+(not loaded yet, or a WebView too old to run it) the activity finishes, so
+Back always leaves a blank app. On Home the app calls `window.close()`
+(Tizen's `application.exit()` is absent), which the WebView reports through
+`onCloseWindow`, where the activity finishes. The page is hidden when the
+activity stops, so playback pauses like on Tizen.
+
+### 13.4 Web engine floor
+
+`wasm-bindgen` keeps JS values in an `externref` table, so the WASM needs
+reference types (Chromium 96). On WebView 91 the page stays blank. Building
+with `-C target-cpu=mvp` does not help on stable Rust: the prebuilt `std`
+still marks the module as using reference types and `wasm-bindgen` then fails
+(`failed to find __wbindgen_externref_table_dealloc`). The deploy script reads
+the TV's WebView version (`dumpsys webviewupdate`) and says when it must be
+updated from the Play Store.
+
+### 13.5 Finding the TV and installing everything
+
+`deploy-tv.sh` pings every address of the local networks (at most a /22 per
+interface) so the ARP table lists the live hosts, then probes those in
+parallel: Samsung's control API (port 8001, `OS: Tizen`), ADB (5555) or the
+Android TV remote service (6466), Roku's ECP (8060), LG's SSAP (3000 + 3001)
+and Hisense's MQTT (36669). Android devices already on `adb` (USB, emulators)
+are listed too. One TV is used directly; with several, it asks.
+
+Missing tools are installed without questions: Rust and `dx` (the release
+binary, avoiding the OpenSSL build of §3.3) and a Temurin JDK into
+`~/Library/Caches/StreamVault`, the Android command-line tools and packages
+into `ANDROID_HOME`, Tizen Studio as in §3.1 with only `cert-add-on` and
+`TV-SAMSUNG-Extension-Tools` (3.0 GB instead of 4.1: `TV-SAMSUNG-Public`
+only adds the TV emulator; the certificate tools are identical and the CLI
+signs with the same profile). Each path was run from an empty `HOME`. What only the owner can do is waited for, with instructions: Developer
+Mode on Samsung (checked through port 8001, then `sdb`), debugging allowed on
+Android (pairing code read from the terminal for wireless debugging), and the
+Samsung account sign-in for a new TV's certificate.
+
+The certificate is created the way Certificate Manager does it (its constants
+and the files it left in `~/SamsungCertificate` match; TizenBrew Installer
+automates the same flow): the browser opens Samsung's sign-in for the Tizen
+SDK (`serviceID=v285zxnl3h`, redirect to `localhost:4794/signin/callback`),
+which posts `code` = JSON with `access_token`, `userId` and `inputEmailID`;
+`sdb shell 0 getduid` gives the device id; two 2048-bit keys and SHA-512 CSRs
+(author `CN=StreamVault`; distributor `CN=TizenSDK`, the e-mail and the SAN
+URIs `URN:tizen:packageid=` and `URN:tizen:deviceid=<DUID>`) go to
+`svdca.samsungqbe.com/apis/v3/authors` and `/distributors` (`platform=VD`,
+`privilege_level=Public`, `developer_type=Individual`); the distributor answer
+is the device profile with the certificate inside. PKCS#12 files with
+Samsung's CA from the Certificate Manager plugin (LibreSSL's defaults, which
+the CLI's Java 8 reads) become profile `streamvault-<DUID>`, and the device
+profile is pushed to `/home/owner/share/tmp/sdk_tools/`, as *Permit to install
+applications* does. The script tries the per-TV profile, then the active one,
+and creates a new one only when there is none or the TV rejects it. Checked
+with a local CA standing in for Samsung (profile registered, `.wgt` signed,
+the user's `profiles.xml` restored byte for byte); the real sign-in and
+issuance need the account owner.
+
+LG webOS, VIDAA, Titan OS and Roku are reported and skipped: installed webOS
+apps cannot load module scripts from `file://` or make cross-site requests
+(LG's answer is a hosted app, which would need a server), VIDAA and Titan OS
+have no installs outside their stores, and Roku has no web engine.
 
 ---
 
-## 14. Current status
+## 14. Gotchas & lessons — quick reference
+
+| #   | Symptom                                                      | Root cause                                                                                                                                                          | Fix                                                                         |
+| --- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| 1   | `cargo install dioxus-cli` fails                             | missing `pkg-config`; `openssl@3` unlinked                                                                                                                          | `brew install pkgconf openssl@3 && brew link openssl@3 --force`             |
+| 2   | install fails, final log line unhelpful                      | real error is in the build-script stderr                                                                                                                            | capture full log, don't `tail -5`                                           |
+| 3   | `sdb connect … failed` though Dev Mode on                    | multiple competing sdb servers on host                                                                                                                              | kill all sdb + Device Manager; keep exactly one                             |
+| 4   | sdbd "dead" after Developer-Mode toggle                      | enable flag read at boot; dialog re-arms it                                                                                                                         | set once, cold-boot, connect without reopening                              |
+| 5   | TV unreachable after reboot                                  | DHCP moved its IP                                                                                                                                                   | resolve by MAC via `arp -a`                                                 |
+| 6   | `install failed[-4] Load archive info fail`                  | package id ≠ 10 chars                                                                                                                                               | use a 10-char alphanumeric package id                                       |
+| 7   | couldn't tell if cert/firmware at fault                      | —                                                                                                                                                                   | re-sign a known-good reference `.wgt`, install it                           |
+| 8   | TV can't reach the dev service                               | macOS app firewall blocks inbound                                                                                                                                   | allow the binary via `socketfilterfw` (service later removed, §9)           |
+| 9   | OK button does nothing                                       | OK = `keyCode 13`, empty `key` string                                                                                                                               | match on keyCode, not `key` name                                            |
+| 10  | D-pad down "freezes"                                         | `focus()` doesn't auto-scroll                                                                                                                                       | `scroll_into_view` after every focus move                                   |
+| 11  | rebuild looks identical on TV                                | resident app (`prelaunch.support`)                                                                                                                                  | flag removed; `was_kill` before install                                     |
+| 12  | `.wgt` bloated / stale bundles                               | `dx` keeps old content-hashed assets                                                                                                                                | stage packaging from a clean directory                                      |
+| 13  | OK "does nothing", screen never changes                      | `AppState::new()` called on every render                                                                                                                            | `use_context_provider(AppState::new)`                                       |
+| 14  | focus jumps back to the header                               | `position: relative` on `:focus` collapses absolute buttons                                                                                                         | focus styles change visuals only                                            |
+| 15  | HLS stalls / `MEDIA_ERR_SRC_NOT_SUPPORTED`                   | native player can't handle these playlists                                                                                                                          | hls.js over MSE (vendored)                                                  |
+| 16  | Continue Watching lost after a kill                          | `localStorage` flushed only on clean exit                                                                                                                           | IndexedDB with `durability: "strict"`                                       |
+| 17  | `tizen run` NullPointerException                             | CLI vs `appcmd_support:disabled`                                                                                                                                    | `sdb shell 0 was_execute <app-id>`                                          |
+| 18  | every `sdb shell` hangs mid-session                          | wedged sdb channel                                                                                                                                                  | `sdb kill-server`, `start-server`, `connect`                                |
+| 19  | grid scrolling at 15 fps                                     | smooth scroll + animated focus re-raster every frame                                                                                                                | instant scroll, no transitions                                              |
+| 20  | wrong subtitles after audio change                           | hls.js re-selects forced subtitles                                                                                                                                  | re-apply the chosen subtitle track                                          |
+| 21  | every dialog freezes after Return                            | `if let Some(x) = *signal.peek()` keeps the read guard alive through the block; writing the signal inside panics (`AlreadyBorrowed`) and a wasm panic stops the app | copy the value out of the signal before branching                           |
+| 22  | TV useless without the Mac                                   | providers ran in a LAN service                                                                                                                                      | run the providers in the TV app; the widget is exempt from CORS (§9)        |
+| 23  | Continue Watching empty after a quick relaunch               | the closing process still holds the IndexedDB lock                                                                                                                  | retry `indexedDB.open` for up to 5 s                                        |
+| 24  | bar lags behind the remote, stream re-buffers on every press | each press seeked the video and the bar waited for its status                                                                                                       | scrub in Rust at once, seek once 0.6 s after the last press                 |
+| 25  | spinner stuck after seeking while paused                     | `waiting` was cleared only by `playing`                                                                                                                             | buffering = first load, or playing and seeking / short of data              |
+| 26  | Android: WASM never loads from `file://`                     | `fetch` rejects the `file` scheme                                                                                                                                   | serve the bundle from `https://appassets.androidplatform.net`               |
+| 27  | Android: every provider request fails                        | CORS applies to the WebView page                                                                                                                                    | answer preflights and forward requests natively in `shouldInterceptRequest` |
+| 28  | Android: POST bodies missing                                 | the WebView does not expose them                                                                                                                                    | `fetch` wrapper hands the body to the activity, sends an id header          |
+| 29  | Android: Back leaves the app                                 | Android 13+ back dispatch bypasses keys                                                                                                                             | `OnBackInvokedCallback` → `GoBack` key; Home calls `window.close()`         |
+| 30  | `$version…` unbound in the script                            | bash 3.2 reads the UTF-8 ellipsis into the name                                                                                                                     | write `${version}…`                                                         |
+
+---
+
+## 15. Current status
 
 **Done**
+
 - Tizen Studio 6.1 + TV extensions, headless, ~925 MB.
 - `streamvault-samsung` certificate profile (author + distributor, DUID-locked).
 - One crate for every device: shared app state, views, player, providers,
@@ -805,12 +921,18 @@ userscript at the same time. The old document is migrated on first use.
   Hub**, and the whole flow works with the remote, verified on the TV over
   DevTools: Home (Continue Watching + catalogue with infinite paging), search
   with the TV keyboard, movie and series details (seasons, episodes), playback
-  with seek / pause / *Next episode*, resume from Continue Watching, Return
+  with seek / pause / _Next episode_, resume from Continue Watching, Return
   history with focus restore, exit from Home, error state with Retry.
 - Grid navigation at 60 fps; audio/subtitle selection; Continue Watching and
   preferences synced with macOS and the userscript (§12).
+- Android TV, Google TV and Fire TV build from the same bundle; catalogue,
+  search, details, HLS playback, remote, Back/exit and persistence verified
+  on Android TV emulators (§13).
+- `scripts/deploy-tv.sh` finds the TV, installs every missing tool and waits
+  for the TV-side steps (§13.5).
 
 **Open**
+
 - AnimeUnity search (HTTP 405) and Aurora playback (HTTP 403) fail in the shared
   provider code, so the desktop app is affected too. On the TV, AnimeUnity's
   cookie-based login also cannot work under browser header rules (§9.1).
@@ -819,7 +941,7 @@ userscript at the same time. The old document is migrated on first use.
 
 ---
 
-## 15. Reproducible command reference
+## 16. Reproducible command reference
 
 ```bash
 # ── toolchain ───────────────────────────────────────────────────────────────
@@ -834,8 +956,12 @@ pkill -9 -f sdb; pkill -9 -f device-manager
 TV=$(arp -a | grep -i e0:3:6b:70:4e:bd | grep -oE '([0-9]+\.){3}[0-9]+' | head -1)
 sdb start-server && sdb connect "$TV:26101" && sdb devices
 
-# ── build, sign, install and launch (sync settings from sync.json) ─────────
-scripts/deploy-tv.sh
+# ── find the TV, install the tools, build, sign, install and launch ────────
+scripts/deploy-tv.sh                 # asks when several TVs are found
+TV=192.168.68.66 scripts/deploy-tv.sh
+
+# ── Android: debug the page (debuggable builds only) ────────────────────────
+adb forward tcp:9222 localabstract:webview_devtools_remote_$(adb shell pidof local.streamvault)
 
 # ── debug on the TV (Chrome DevTools protocol) ──────────────────────────────
 sdb shell 0 was_kill AR6J1YmstG.StreamVault
@@ -844,6 +970,7 @@ sdb forward tcp:<port> tcp:<port>             # then http://127.0.0.1:<port>/jso
 ```
 
 ### Key facts
+
 - **Device:** UE50CU8072UXXH · Tizen 9.0 · armv7l · device id `7XCI7KNS2VUXI`
 - **sdb port:** 26101 · **control API:** 8001 (`/api/v2/`)
 - **Package id:** `AR6J1YmstG` (exactly 10 chars — non-negotiable)
