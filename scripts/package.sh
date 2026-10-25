@@ -6,14 +6,10 @@ main() {
   [[ "$(uname -s)" == Darwin ]] || { printf '\n  macOS required\n' >&2; exit 1; }
 
   local -r bar_width=30 steps=6
-  local -r required_cmds=(curl unzip tar)
+  local -r cache="$HOME/Library/Caches/StreamVault"
   local current=0 completed=false caller_dir="$PWD"
   local remote_install=false
-  local app="" dep_cache="" tmpdir_sv="" rust_home=""
-
-  for cmd in "${required_cmds[@]}"; do
-    command -v "$cmd" &>/dev/null || { printf '\n  %s is required\n' "$cmd" >&2; exit 1; }
-  done
+  local app=""
 
   progress() {
     current=$((current + 1))
@@ -27,23 +23,21 @@ main() {
     [[ "${completed:-}" == true ]] && return 0
     printf "\n  Interrupted, cleaning up…\n" >&2
     rm -f "/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress" &>/dev/null || :
-    rm -rf "${app:+$app}" "${dep_cache:+$dep_cache}" "${tmpdir_sv:+$tmpdir_sv}" "${rust_home:+$rust_home}" &>/dev/null || :
+    rm -rf "${app:+$app}" &>/dev/null || :
   }
 
-  trap cleanup EXIT INT TERM HUP PIPE
+  trap cleanup EXIT
 
   local p
-  if [[ -z "${BASH_SOURCE[0]:-}" || "$(basename "${BASH_SOURCE[0]:-bash}")" == bash ]]; then
+  if [[ ! -f "${BASH_SOURCE[0]:-}" ]]; then
     remote_install=true
-    tmpdir_sv="$(mktemp -d)" || { printf '\n  Failed to create temp directory\n' >&2; exit 1; }
+    p="$cache/source"
     progress
+    mkdir -p "$p"
+    find "$p" -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +
     curl -fsSL "https://github.com/falcosan/StreamVault/archive/refs/heads/main.tar.gz" \
-      -o "$tmpdir_sv/repo.tar.gz" \
+      | tar xzm -C "$p" --strip-components 1 \
       || { printf '\n  Failed to download repository\n' >&2; exit 1; }
-    tar xzf "$tmpdir_sv/repo.tar.gz" -C "$tmpdir_sv" 2>/dev/null \
-      || { printf '\n  Failed to extract repository\n' >&2; exit 1; }
-    rm -f "$tmpdir_sv/repo.tar.gz"
-    p="$tmpdir_sv/StreamVault-main"
   else
     p="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     progress
@@ -52,8 +46,8 @@ main() {
   [[ -d "$p" ]] || { printf '\n  Project directory not found\n' >&2; exit 1; }
 
   app="$p/dist/StreamVault.app"
-  dep_cache="$p/.dep-cache"
 
+  local -r dep_cache="$cache/deps"
   local -r contents="$app/Contents"
   local -r bin_dir="$contents/Resources/bin"
 
@@ -63,18 +57,15 @@ main() {
 
   progress
   if ! cargo --version &>/dev/null; then
-    if command -v rustup &>/dev/null; then
-      rustup toolchain install stable --profile minimal </dev/null &>/dev/null \
-        || { printf '\n  Rust toolchain installation failed\n' >&2; exit 1; }
-      export RUSTUP_TOOLCHAIN=stable
+    export RUSTUP_HOME="$cache/rustup" CARGO_HOME="$cache/cargo" RUSTUP_INIT_SKIP_PATH_CHECK=yes PATH="$cache/cargo/bin:$PATH"
+    if cargo --version &>/dev/null; then
+      rustup update stable --no-self-update </dev/null &>/dev/null \
+        || { printf '\n  Rust update failed\n' >&2; exit 1; }
     else
-      rust_home="$(mktemp -d)" || { printf '\n  Failed to create temp directory\n' >&2; exit 1; }
-      export RUSTUP_HOME="$rust_home/rustup" CARGO_HOME="$rust_home/cargo" RUSTUP_INIT_SKIP_PATH_CHECK=yes
-      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$rust_home/rustup-init" \
+      curl --proto '=https' --tlsv1.2 -sSf --create-dirs https://sh.rustup.rs -o "$cache/rustup-init.sh" \
         || { printf '\n  Rust installation failed\n' >&2; exit 1; }
-      sh "$rust_home/rustup-init" -y --no-modify-path --profile minimal --default-toolchain stable --quiet </dev/null \
+      sh "$cache/rustup-init.sh" -y --no-modify-path --profile minimal --default-toolchain stable --quiet </dev/null \
         || { printf '\n  Rust installation failed\n' >&2; exit 1; }
-      export PATH="$CARGO_HOME/bin:$PATH"
     fi
   fi
 
@@ -104,11 +95,15 @@ main() {
     || { printf '\n  cargo build failed\n' >&2; exit 1; }
 
   rm -rf "$app" "$dep_cache/f" "$dep_cache/n"
-  install -d "$contents/MacOS" "$bin_dir" "$dep_cache/f" "$dep_cache/n" "$contents/Resources"
+  install -d "$contents/MacOS" "$bin_dir" "$dep_cache/f" "$dep_cache/n"
 
   cp target/release/streamvault "$contents/MacOS/"
-  [[ -f resources/macos/Info.plist ]] && cp resources/macos/Info.plist "$contents/"
-  [[ -f resources/macos/AppIcon.icns ]] && cp resources/macos/AppIcon.icns "$contents/Resources/"
+  local version
+  version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+  cp resources/macos/Info.plist "$contents/"
+  plutil -replace CFBundleShortVersionString -string "$version" "$contents/Info.plist"
+  plutil -replace CFBundleVersion -string "$version" "$contents/Info.plist"
+  cp resources/macos/AppIcon.icns "$contents/Resources/"
 
   local narch ffmpeg_url
   case "$(uname -m)" in
@@ -117,7 +112,7 @@ main() {
   esac
 
   local -r nurl="https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.5.1-beta/N_m3u8DL-RE_v0.5.1-beta_osx-${narch}_20251029.tar.gz"
-  local -r ffmpeg_zip="$dep_cache/f_${narch}.zip" ntar="$dep_cache/n_${narch}.tgz"
+  local -r ffmpeg_zip="$dep_cache/${ffmpeg_url##*/}" ntar="$dep_cache/${nurl##*/}"
 
   progress
 
@@ -154,7 +149,7 @@ main() {
     xattr -cr "$bin" &>/dev/null || :
     codesign --force --sign - "$bin" &>/dev/null || :
   done
-  codesign --force --deep --sign - "$app" &>/dev/null || :
+  codesign --force --sign - "$app" &>/dev/null || :
   xattr -cr "$app" &>/dev/null || :
 
   if [[ "$remote_install" == true ]]; then
@@ -164,7 +159,6 @@ main() {
 
   completed=true
   trap - EXIT
-  rm -rf "${tmpdir_sv:+$tmpdir_sv}" "${rust_home:+$rust_home}" &>/dev/null || :
   progress
 }
 

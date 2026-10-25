@@ -43,8 +43,8 @@ StreamVault/            one crate, one device feature per build
 │   │                   self-update, Downloads view
 │   └── tv/             TVs only: remote focus engine, IndexedDB storage,
 │                       remote key handling
-├── assets/             shared by every device: style.css (+ tv.css 10-foot
-│                       overlay), player.js, storage.js, hls.js, SVG icons
+├── assets/             style.css and player.js for every device; tv.css
+│                       (10-foot overlay), storage.js and hls.js for the TV
 ├── resources/          packaging: macos/ (Info.plist, icon), tv/
 │                       (tizen/config.xml, android/ manifest + WebView host)
 ├── scripts/            package.sh (macOS app), deploy-tv.sh (find the TV,
@@ -247,23 +247,21 @@ the macOS `sync.json`.
 <?xml version="1.0" encoding="UTF-8"?>
 <widget xmlns:tizen="http://tizen.org/ns/widgets"
         xmlns="http://www.w3.org/ns/widgets"
-        id="https://streamvault.local/sv" version="1.0.34" viewmodes="maximized">
+        id="https://streamvault.local/sv" viewmodes="maximized">
   <access origin="*" subdomains="true"></access>
   <tizen:app-control>
     <tizen:src name="index.html" reload="disable"/>
     <tizen:operation name="http://samsung.com/appcontrol/operation/eden_resume"/>
   </tizen:app-control>
-  <tizen:application id="AR6J1YmstG.StreamVault" package="AR6J1YmstG" required_version="3.0"/>
+  <tizen:application id="AR6J1YmstG.StreamVault" package="AR6J1YmstG" required_version="8.0"/>
   <author href="https://streamvault.local">StreamVault</author>
   <content src="index.html"/>
   <feature name="http://tizen.org/feature/screen.size.all"/>
-  <feature name="http://tizen.org/feature/web.service"/>
   <icon src="icon.png"/>
   <tizen:metadata key="http://samsung.com/tv/metadata/html5.4k.support" value="true"/>
   <tizen:metadata key="http://samsung.com/tv/metadata/use.uwe" value="true"/>
   <name>StreamVault</name>
   <tizen:privilege name="http://tizen.org/privilege/internet"/>
-  <tizen:privilege name="http://developer.samsung.com/privilege/network.public"/>
   <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
   <tizen:profile name="tv-samsung"/>
   <tizen:setting screen-orientation="landscape" context-menu="disable"
@@ -275,11 +273,15 @@ the macOS `sync.json`.
 Changes from the first working manifest: `prelaunch.support` is gone (it kept a
 resident instance serving the previous build, §10.6), `background-support` is
 disabled so playback pauses when the TV goes Home, the context menu is off, and
-the unused `unlimitedstorage` / `application.launch` privileges are dropped.
+the unused `unlimitedstorage` / `application.launch` privileges are dropped,
+as are `web.service` (there is no `<tizen:service>`) and `network.public`
+(nothing calls `webapis`). `required_version` is 8.0: the WASM needs
+Chromium 96 (§13.4), which Samsung ships from Tizen 8.
 
-The build stamps the `version` attribute with the one in `Cargo.toml`, the
-version every device reports, and rasterises the icon from the vector logo
-with the native tool, so the app logo stays its only source:
+The build adds the `version` attribute from `Cargo.toml`, the only place the
+version is written, as the macOS and Android packages do, and rasterises the
+icon from the vector logo with the native tool, so the app logo stays its only
+source:
 
 ```bash
 sips -s format png --resampleHeightWidth 512 512 assets/img/vector/logo.svg \
@@ -294,7 +296,7 @@ scripts/deploy-tv.sh   # → target/tv/StreamVault.wgt, then installs it
 ```
 
 This produces `author-signature.xml` + `signature1.xml` inside the `.wgt` and
-leaves a ~300 KB signed package.
+leaves a ~1.4 MB signed package.
 
 ---
 
@@ -458,8 +460,8 @@ final `config.xml` (§6):
 - `<tizen:app-control>` with the Samsung `eden_resume` operation (correct
   resume/launch semantics on the TV home).
 - `<tizen:profile name="tv-samsung"/>` (not the generic `tv`).
-- `<feature screen.size.all>` + `<feature web.service>`.
-- `prelaunch.support`, `html5.4k.support`, `use.uwe` metadata.
+- `<feature screen.size.all>`.
+- `html5.4k.support` and `use.uwe` metadata (`prelaunch.support` was tried and dropped, §10.6).
 
 ### 8.5 Takeaways
 
@@ -489,7 +491,7 @@ answered 200, and Aurora accepted an `Authorization` header. The Tizen web
 runtime does not apply CORS to an installed widget. Browser rules on headers
 still apply: requests cannot set `Cookie`, `Referer` or `User-Agent`, and
 responses do not expose `Set-Cookie`. StreamingCommunity, RaiPlay and Aurora
-do not need them; AnimeUnity's login flow does (its search fails on macOS too).
+do not need them; AnimeUnity's login flow does, so it works on macOS only.
 
 ### 9.2 Making the providers build for WASM
 
@@ -499,7 +501,9 @@ do not need them; AnimeUnity's login flow does (its search fails on macOS too).
   on WASM; AnimeUnity's auth cache uses `web_time::Instant` (std's panics on
   `wasm32-unknown-unknown`).
 - A small `Http` wrapper applies the request timeout per request, because WASM
-  `reqwest` has no client-level timeout; the cookie store is native-only.
+  `reqwest` has no client-level timeout. All providers share one client without
+  a cookie store: StreamingCommunity serves its catalogue, search, title pages
+  and player without cookies.
 - `#[async_trait(?Send)]`: fetch futures are not `Send`, and nothing needed
   `Send` once the axum service was gone.
 
@@ -579,9 +583,12 @@ scrolling was measured and dropped (§12.1).
 
 At 3 m, a 3 px outline is invisible. Cards get a 3 px accent ring (6 px on the
 TV after the ×2 viewport scale), a 6 % lift and a shadow; buttons and rows
-invert to the accent colour. The rules use `:focus-visible` in the shared
+invert to the accent colour, and primary buttons, already accent, get the
+ring. The rules use `:focus-visible` in the shared
 stylesheet: the TV's programmatic focus matches it, a mouse click on macOS does
-not, so keyboard users on the desktop get the same feedback.
+not, so keyboard users on the desktop get the same feedback. The Continue
+Watching card uses `:focus-within`, because a selector list containing `:has()`
+is dropped whole by Chromium before 105.
 Focus changes are not animated (`transition: none`, §12.1).
 On the TV only the focused element is ever filled with the accent colour
 (`tv.css`): primary buttons are neutral until focused, the active season is a
@@ -702,8 +709,8 @@ The player controls (Down from the progress bar) are Play/Pause, Audio,
 Subtitles and Next episode; Audio and Subtitles open a menu of the stream's
 tracks. The progress bar is the default focus and grows a scrubber thumb when
 focused, so every focusable element in the player has visible feedback. No
-emoji are used anywhere in the UI; icons are SVG files in
-`assets/img/vector/`. Selection is stored as `PlayerPrefs` and applied to every
+emoji are used anywhere in the UI; the icons are SVG files in
+`assets/img/vector/`, besides the score star and the menu check mark, which are text. Selection is stored as `PlayerPrefs` and applied to every
 title by `pick` in `player.js`; macOS uses the same player and the same menus,
 so both devices choose tracks identically. hls.js re-selects forced subtitles when the audio track
 changes; `player.js` re-applies the chosen subtitle track after every audio
@@ -744,6 +751,18 @@ replaced by a per-key last-writer-wins map:
   change the server has processed is resolved by the server's answer, so a
   clamped echo cannot win forever (a bug found by the conformance tests: JS
   serialises `10.0` as `10`, so comparing values could not detect the echo).
+- A replica keeps at most 100 titles live (older ones become tombstones) and
+  drops tombstones the server has acknowledged once they are older than the
+  script's 90 days. It sends at most 500 changes per request, the script's
+  limit, and keeps the rest pending for the next round. The script gives every
+  document a random `id` (a document stored without one gets it on first use)
+  and returns it with each answer. A replica remembers the last `id`; a
+  different one means the document was wiped: the replica marks everything it
+  holds as pending and restarts from sequence 0, so it uploads what it has and
+  pulls the whole new document. Comparing sequences missed a wipe whenever the
+  device's cursor was at or below the rebuilt document's sequence. An answer
+  without an `id` (an older script) only resets. The userscript's replica
+  follows the same rules.
 - macOS and TV run the same loop (`sync::run`): the replica is the store
   itself (a JSON file on macOS, IndexedDB on the TV), pushed within 10 s when
   dirty, pulled every 60 s and whenever the app becomes visible. On first run
@@ -751,8 +770,9 @@ replaced by a per-key last-writer-wins map:
   the replica and removes them. Userscript: the same replica in `localStorage`.
 - The server code is tested from Rust: `sync.rs` runs `google_apps_script.gs`
   under JavaScriptCore (`osascript`) and drives real replicas through it
-  (migration, convergence, deletions, clock skew, pruning, auth, and a Drive
-  read failure that must not overwrite the stored state).
+  (migration, convergence, deletions, clock skew, pruning, a wiped document,
+  the request limit, auth, and a Drive read failure or an unparseable file that
+  must not overwrite the stored state).
 - Verified end to end against a local server running the same `.gs`: a change
   from a simulated Mac reached the TV, the TV's progress and subtitle choice
   reached the server, and the userscript's store (run in Node) pulled both and
@@ -794,7 +814,7 @@ intercepted response carrying `Access-Control-Allow-Origin` satisfies both
 `fetch` and XHR. So the activity answers preflights itself and performs the
 requests natively (`HttpURLConnection`, redirects followed by hand, 303 and
 POST-on-301/302 turning into GET as `fetch` does), returning the response
-with CORS headers. The WebView never exposes request bodies, so a script
+with its own CORS headers in place of the site's. The WebView never exposes request bodies, so a script
 inserted into `index.html` before the app wraps `fetch`: a request with a body
 hands it (base64) to the activity through a `@JavascriptInterface` and sends a
 one-time id header instead. Verified from DevTools on a debuggable build:
@@ -809,10 +829,9 @@ does not: from Android 13 with target SDK 36 it never reaches the page or
 An `OnBackInvokedCallback` (and `onBackPressed` below API 33) dispatches a
 cancelable `GoBack` key to the page instead; when the page does not cancel it
 (not loaded yet, or a WebView too old to run it) the activity finishes, so
-Back always leaves a blank app. On Home the app calls `window.close()`
-(Tizen's `application.exit()` is absent), which the WebView reports through
-`onCloseWindow`, where the activity finishes. The page is hidden when the
-activity stops, so playback pauses like on Tizen.
+Back always leaves a blank app. On Home, where Tizen's `application.exit()` is
+absent, the page leaves the key uncancelled, so the activity finishes. The page
+is hidden when the activity stops, so playback pauses like on Tizen.
 
 ### 13.4 Web engine floor
 
@@ -858,13 +877,15 @@ is the device profile with the certificate inside. PKCS#12 files with
 Samsung's CA from the Certificate Manager plugin (LibreSSL's defaults, which
 the CLI's Java 8 reads) become profile `streamvault-<DUID>`, and the device
 profile is pushed to `/home/owner/share/tmp/sdk_tools/`, as *Permit to install
-applications* does. The script tries the per-TV profile, then the active one,
-and creates a new one only when there is none or the TV rejects it. Checked
+applications* does. The script signs with the per-TV profile if it exists, else
+with the active one, and creates a per-TV certificate only when there is no
+profile or the TV rejects the active one's certificate. Checked
 with a local CA standing in for Samsung (profile registered, `.wgt` signed,
 the user's `profiles.xml` restored byte for byte); the real sign-in and
 issuance need the account owner.
 
-LG webOS, VIDAA, Titan OS and Roku are reported and skipped: installed webOS
+LG webOS, VIDAA and Roku are reported and skipped (Titan OS exposes nothing to
+probe for, and cannot run it either): installed webOS
 apps cannot load module scripts from `file://` or make cross-site requests
 (LG's answer is a hosted app, which would need a server), VIDAA and Titan OS
 have no installs outside their stores, and Roku has no web engine.
@@ -903,7 +924,7 @@ have no installs outside their stores, and Roku has no web engine.
 | 26  | Android: WASM never loads from `file://`                     | `fetch` rejects the `file` scheme                                                                                                                                   | serve the bundle from `https://appassets.androidplatform.net`               |
 | 27  | Android: every provider request fails                        | CORS applies to the WebView page                                                                                                                                    | answer preflights and forward requests natively in `shouldInterceptRequest` |
 | 28  | Android: POST bodies missing                                 | the WebView does not expose them                                                                                                                                    | `fetch` wrapper hands the body to the activity, sends an id header          |
-| 29  | Android: Back leaves the app                                 | Android 13+ back dispatch bypasses keys                                                                                                                             | `OnBackInvokedCallback` → `GoBack` key; Home calls `window.close()`         |
+| 29  | Android: Back leaves the app                                 | Android 13+ back dispatch bypasses keys                                                                                                                             | `OnBackInvokedCallback` → `GoBack` key; Home leaves it uncancelled          |
 | 30  | `$version…` unbound in the script                            | bash 3.2 reads the UTF-8 ellipsis into the name                                                                                                                     | write `${version}…`                                                         |
 
 ---
@@ -912,7 +933,7 @@ have no installs outside their stores, and Roku has no web engine.
 
 **Done**
 
-- Tizen Studio 6.1 + TV extensions, headless, ~925 MB.
+- Tizen Studio 6.1 + TV extensions, headless, ~3 GB.
 - `streamvault-samsung` certificate profile (author + distributor, DUID-locked).
 - One crate for every device: shared app state, views, player, providers,
   sync and assets; device modules only add what the device alone has.
@@ -933,11 +954,13 @@ have no installs outside their stores, and Roku has no web engine.
 
 **Open**
 
-- AnimeUnity search (HTTP 405) and Aurora playback (HTTP 403) fail in the shared
-  provider code, so the desktop app is affected too. On the TV, AnimeUnity's
-  cookie-based login also cannot work under browser header rules (§9.1).
+- On the TV, AnimeUnity's cookie-based login cannot work under browser header
+  rules (§9.1). Its search failed with HTTP 405 until `domains.json` followed the
+  site's move to `animeunity.co` (the old domain's 301 turned the POST into a GET).
+- Aurora accepts the realm token but answers 403 `access.denied.geoblocked`
+  outside Italy, and its homepages carry no `X-REALM-DPLAY` token, so videos of
+  that realm cannot play.
 - Downloads stay a desktop feature.
-- The deployed Apps Script still runs the old protocol until it is updated.
 
 ---
 
@@ -948,7 +971,7 @@ have no installs outside their stores, and Roku has no web engine.
 brew install pkgconf openssl@3 && brew link openssl@3 --force
 OPENSSL_DIR=/opt/homebrew/opt/openssl@3 \
   PKG_CONFIG_PATH=/opt/homebrew/opt/openssl@3/lib/pkgconfig \
-  cargo install dioxus-cli --locked
+  cargo install dioxus-cli --version 0.7.10 --locked
 rustup target add wasm32-unknown-unknown
 
 # ── one sdb client, connect by MAC-resolved IP ──────────────────────────────

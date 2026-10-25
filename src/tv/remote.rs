@@ -14,7 +14,7 @@ const MEDIA_KEYS: [&str; 6] = [
     "MediaRewind",
     "MediaFastForward",
 ];
-const FOCUSABLE: &str = "button:not([disabled]), input:not([disabled]):not([tabindex='-1']), [tabindex]:not([tabindex='-1'])";
+const FOCUSABLE: &str = "button:not([disabled]), input[type='range']:not([disabled])";
 const RESTORABLE: &str = "[data-focus]";
 const EDITABLE: &str = "input:not([type='range'])";
 
@@ -255,12 +255,10 @@ pub fn restore(key: Option<String>) {
     PENDING.set(key);
 }
 
-pub fn exit() {
-    if let Ok(application) = current_application() {
-        let _ = application.exit();
-    } else if let Some(window) = web_sys::window() {
-        let _ = window.close();
-    }
+pub fn exit() -> bool {
+    current_application()
+        .and_then(|application| application.exit())
+        .is_ok()
 }
 
 fn settle() {

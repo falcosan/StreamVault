@@ -1,9 +1,11 @@
 use super::{
     Episode, Http, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl,
-    fetch_json, items, non_blank, send, stable_hash,
+    fetch_json, items, non_blank, stable_hash, year,
 };
 use async_trait::async_trait;
+use dioxus::logger::tracing::warn;
 use futures::future::join_all;
+use reqwest::Url;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
@@ -52,46 +54,53 @@ impl RaiPlay {
             Some(item) => fetch_json(self.client.get(with_json(&absolute(item)))).await?,
             None => json,
         };
-        let cont = video["video"]["content_url"]
-            .as_str()
-            .ok_or_else(|| ProviderError::StreamExtraction("No content_url".into()))?
-            .split('=')
-            .nth(1)
-            .ok_or_else(|| ProviderError::StreamExtraction("No cont parameter".into()))?;
-        let relinker = self.client.get(format!("{RELINKER}?cont={cont}&output=62"));
-        let bytes = send(relinker).await?.bytes().await?;
-        let relinker: Value = serde_json::from_str(&String::from_utf8_lossy(&bytes))?;
-        let url = relinker["video"][0]
-            .as_str()
-            .ok_or_else(|| ProviderError::StreamExtraction("No video in relinker".into()))?;
-        Ok(StreamUrl::new(url))
+        let relinker = self
+            .client
+            .get(RELINKER)
+            .query(&[("cont", cont(&video)?.as_str()), ("output", "62")]);
+        relinked(&fetch_json(relinker).await?)
+    }
+
+    async fn enrich(&self, entry: MediaEntry) -> MediaEntry {
+        match fetch_json(self.client.get(program_url(&entry.slug))).await {
+            Ok(json) => enriched(entry, &json["program_info"]),
+            Err(e) => {
+                warn!("RaiPlay details for {} failed: {e}", entry.name);
+                entry
+            }
+        }
     }
 }
 
-async fn enrich(client: Http, entry: MediaEntry) -> MediaEntry {
-    match fetch_json(client.get(program_url(&entry.slug))).await {
-        Ok(json) => enriched(entry, &json["program_info"]),
-        Err(_) => entry,
-    }
+fn cont(video: &Value) -> ProviderResult<String> {
+    let url = video["video"]["content_url"]
+        .as_str()
+        .ok_or_else(|| ProviderError::StreamExtraction("No content_url".into()))?;
+    Url::parse(RELINKER)
+        .and_then(|relinker| relinker.join(url))
+        .ok()
+        .and_then(|url| {
+            url.query_pairs()
+                .find_map(|(key, value)| (key == "cont").then(|| value.into_owned()))
+        })
+        .ok_or_else(|| ProviderError::StreamExtraction("No cont parameter".into()))
+}
+
+fn relinked(relinker: &Value) -> ProviderResult<StreamUrl> {
+    let url = relinker["video"][0]
+        .as_str()
+        .ok_or_else(|| ProviderError::StreamExtraction("No video in relinker".into()))?;
+    Ok(StreamUrl::new(url))
 }
 
 fn enriched(entry: MediaEntry, info: &Value) -> MediaEntry {
     MediaEntry {
-        description: entry
-            .description
-            .or_else(|| info["description"].as_str().and_then(non_blank)),
-        backdrop_url: entry.backdrop_url.or_else(|| {
-            info["images"]["landscape"]
-                .as_str()
-                .filter(|p| !p.is_empty())
-                .map(absolute)
-        }),
-        year: entry.year.or_else(|| {
-            info["year"]
-                .as_str()
-                .filter(|y| !y.is_empty())
-                .map(String::from)
-        }),
+        description: info["description"].as_str().and_then(non_blank),
+        backdrop_url: info["images"]["landscape"]
+            .as_str()
+            .filter(|p| !p.is_empty())
+            .map(absolute),
+        year: info["year"].as_str().and_then(year).or(entry.year),
         media_type: match info["layout"].as_str() {
             Some("single") => MediaType::Movie,
             Some("multi") => MediaType::Series,
@@ -107,12 +116,11 @@ fn parse_card(v: &Value) -> Option<MediaEntry> {
     let image_url = v["immagine"].as_str().map(absolute);
     Some(MediaEntry {
         id: stable_hash(&slug),
-        year: image_url.as_deref().and_then(|img| {
-            img.rsplit('/')
-                .nth(3)
-                .filter(|y| y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()))
-                .map(String::from)
-        }),
+        year: image_url
+            .as_deref()
+            .and_then(|img| img.rsplit('/').nth(3))
+            .filter(|segment| segment.len() == 4)
+            .and_then(year),
         image_url,
         language: "it".into(),
         name,
@@ -125,25 +133,15 @@ fn parse_sets(json: &Value) -> Vec<(String, String)> {
     items(&json["blocks"])
         .filter(|b| b["type"] == "RaiPlay Multimedia Block")
         .filter(|b| {
-            !matches!(
-                b["name"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .as_str(),
-                "clip" | "extra"
-            )
+            let name = b["name"].as_str().unwrap_or_default();
+            !["clip", "extra"]
+                .iter()
+                .any(|skip| name.eq_ignore_ascii_case(skip))
         })
-        .flat_map(|b| {
-            let block = b["id"].as_str().unwrap_or_default();
-            items(&b["sets"])
-                .filter(|s| s["episode_size"]["number"].as_u64().unwrap_or(0) > 0)
-                .map(move |s| {
-                    (
-                        block.to_owned(),
-                        s["id"].as_str().unwrap_or_default().to_owned(),
-                    )
-                })
+        .filter_map(|b| Some((b["id"].as_str()?, items(&b["sets"]))))
+        .flat_map(|(block, sets)| {
+            sets.filter(|s| s["episode_size"]["number"].as_u64().unwrap_or(0) > 0)
+                .filter_map(move |s| Some((block.to_owned(), s["id"].as_str()?.to_owned())))
         })
         .collect()
 }
@@ -225,7 +223,7 @@ impl Provider for RaiPlay {
             .take(SEARCH_LIMIT)
             .filter_map(parse_card)
             .filter(|e| seen.insert(e.id))
-            .map(|entry| enrich(self.client.clone(), entry));
+            .map(|entry| self.enrich(entry));
         Ok(join_all(entries).await)
     }
 
@@ -290,10 +288,14 @@ mod tests {
         );
         assert_eq!(entry.media_type, MediaType::Series);
         assert!(parse_card(&json!({ "path_id": "/p", "titolo": "" })).is_none());
+        let sized = json!({
+            "path_id": "/p", "titolo": "P", "immagine": "/dl/img/20211/1200x675/03/a.jpg"
+        });
+        assert_eq!(parse_card(&sized).unwrap().year, None);
     }
 
     #[test]
-    fn enriched_fills_missing_fields_and_layout() {
+    fn enriched_fills_details_and_prefers_the_programme_year() {
         let entry = MediaEntry {
             year: Some("2020".into()),
             ..Default::default()
@@ -306,7 +308,12 @@ mod tests {
             entry.backdrop_url.as_deref(),
             Some("https://www.raiplay.it/dl/img/l.jpg")
         );
-        assert_eq!(entry.year.as_deref(), Some("2020"));
+        assert_eq!(entry.year.as_deref(), Some("1999"));
+        let undated = MediaEntry {
+            year: Some("2020".into()),
+            ..Default::default()
+        };
+        assert_eq!(enriched(undated, &json!({})).year.as_deref(), Some("2020"));
         assert_eq!(entry.media_type, MediaType::Movie);
         assert_eq!(
             enriched(MediaEntry::default(), &json!({})).media_type,
@@ -319,8 +326,13 @@ mod tests {
         let json = json!({ "blocks": [
             { "type": "RaiPlay Multimedia Block", "name": "Episodi", "id": "b1", "sets": [
                 { "id": "s1", "episode_size": { "number": 10 } },
-                { "id": "s0", "episode_size": { "number": 0 } }
+                { "id": "s0", "episode_size": { "number": 0 } },
+                { "episode_size": { "number": 4 } }
             ]},
+            { "type": "RaiPlay Multimedia Block", "name": "Stagioni",
+              "sets": [{ "id": "n", "episode_size": { "number": 3 } }] },
+            { "type": "RaiPlay Multimedia Block", "name": "EXTRA", "id": "b4",
+              "sets": [{ "id": "e", "episode_size": { "number": 3 } }] },
             { "type": "RaiPlay Multimedia Block", "name": "Clip", "id": "b2",
               "sets": [{ "id": "c", "episode_size": { "number": 3 } }] },
             { "type": "Other", "id": "b3", "sets": [{ "id": "o", "episode_size": { "number": 3 } }] }
@@ -360,6 +372,25 @@ mod tests {
         assert_eq!(cards[0].0.name, "Top");
         assert_eq!(cards[0].0.number, 1);
         assert_eq!(cards[0].1, "");
+    }
+
+    #[test]
+    fn cont_reads_the_relinker_parameter() {
+        let video = json!({ "video": { "content_url":
+            "https://mediapolisvod.rai.it/relinker/relinkerServlet.htm?cont=a%2Bb%3D%3D&p=1" } });
+        assert_eq!(cont(&video).unwrap(), "a+b==");
+        let relative = json!({ "video": { "content_url": "//mediapolisvod.rai.it/r.htm?cont=x" } });
+        assert_eq!(cont(&relative).unwrap(), "x");
+        let other = json!({ "video": { "content_url": "https://x/r.htm?id=1" } });
+        assert!(cont(&other).is_err());
+        assert!(cont(&json!({})).is_err());
+    }
+
+    #[test]
+    fn relinked_reads_the_first_video() {
+        let relinker = json!({ "video": ["https://cdn/master.m3u8"] });
+        assert_eq!(relinked(&relinker).unwrap().url, "https://cdn/master.m3u8");
+        assert!(relinked(&json!({ "video": [] })).is_err());
     }
 
     #[test]

@@ -10,7 +10,7 @@ mod views;
 use crate::app::{AppState, Playback, Screen};
 use crate::providers::{Episode, MediaEntry};
 use crate::sync::SyncConfig;
-use config::{AppConfig, config_dir, read_json};
+use config::{AppConfig, config_dir};
 use dioxus::core::{Task, spawn_forever};
 use dioxus::desktop::{
     Config, LogicalSize, WindowBuilder, tao, use_asset_handler, use_wry_event_handler,
@@ -21,10 +21,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 pub use storage::{load_replica, save_replica};
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 pub use views::{DownloadsView, EntryActions, NavTools};
 
 pub const NAV: &[(Screen, &str)] = &[(Screen::Downloads, "Downloads")];
+const MAX_DOWNLOADS: usize = 2;
+static DOWNLOAD_SLOTS: Semaphore = Semaphore::const_new(MAX_DOWNLOADS);
 
 pub fn launch(app: fn() -> Element) {
     dioxus::LaunchBuilder::desktop()
@@ -40,7 +43,7 @@ pub fn launch(app: fn() -> Element) {
 }
 
 pub fn sync_config() -> SyncConfig {
-    read_json(&config_dir().join("sync.json")).unwrap_or_default()
+    storage::load(&config_dir().join("sync.json"))
 }
 
 pub fn focus_key() -> Option<String> {
@@ -56,11 +59,11 @@ pub fn Head() -> Element {
 
 #[derive(Clone, Copy)]
 pub struct Device {
-    pub downloads: Signal<Vec<Download>>,
+    downloads: Signal<Vec<Download>>,
     tasks: Signal<HashMap<Uuid, Task>>,
     config: CopyValue<AppConfig>,
-    pub update_available: Signal<bool>,
-    pub updating: Signal<bool>,
+    update_available: Signal<bool>,
+    updating: Signal<bool>,
 }
 
 impl Device {
@@ -79,52 +82,69 @@ impl Device {
     }
 
     pub fn local(self, playback: Playback) -> Playback {
-        let file = download::local_file(
-            &self.config.read(),
-            &playback.entry,
-            playback.season,
-            playback.episode.as_ref(),
-        );
+        let (entry, season, episode) =
+            (&playback.entry, playback.season, playback.episode.as_ref());
+        let file = download::saved_file(&self.downloads.peek(), entry, season, episode)
+            .or_else(|| download::local_file(&self.config.read(), entry, season, episode));
         match file {
             Some(file) => with_file(playback, file),
             None => playback,
         }
     }
 
-    pub fn is_downloaded(
+    fn status(
         self,
         entry: &MediaEntry,
         season: Option<u32>,
         episode: Option<&Episode>,
-    ) -> bool {
-        self.downloads.read();
-        download::local_file(&self.config.read(), entry, season, episode).is_some()
+    ) -> Option<Status> {
+        let saved = download::status(&self.downloads.read(), entry, season, episode);
+        saved.or_else(|| {
+            download::local_file(&self.config.read(), entry, season, episode)
+                .map(|_| Status::Completed)
+        })
     }
 
-    pub fn download(
+    fn download(
         mut self,
         app: AppState,
         entry: &MediaEntry,
         season: Option<u32>,
         episode: Option<&Episode>,
     ) {
+        if self
+            .status(entry, season, episode)
+            .is_some_and(|s| s.is_active() || s == Status::Completed)
+        {
+            return;
+        }
         let download = Download::new(&self.config.read(), entry, season, episode);
-        self.downloads.push(download.clone());
-        storage::save_downloads(&self.downloads.peek());
-        app.navigate(Screen::Downloads);
+        let mut downloads = self.downloads.write();
+        downloads.retain(|d| !d.is_for(entry, season, episode));
+        downloads.push(download.clone());
+        storage::save_downloads(&downloads);
+        drop(downloads);
         self.fetch(app, download);
     }
 
-    pub fn play_download(self, app: AppState, download: Download) {
-        if !download.file.is_file() {
-            return app.report("File not found", download.file.display());
+    fn dismiss(mut self, id: Uuid) {
+        let Some(index) = self
+            .downloads
+            .peek()
+            .iter()
+            .position(|d| d.id == id && d.status != Status::Muxing)
+        else {
+            return;
+        };
+        let dismissed = self.downloads.write().remove(index);
+        storage::save_downloads(&self.downloads.peek());
+        if let Some(task) = self.tasks.write().remove(&id) {
+            task.cancel();
+            spawn_forever(async move { download::discard(&dismissed).await });
         }
-        app.prepare_details(&download.entry, None);
-        let playback = Playback::new(download.entry, download.season, download.episode, 0.0);
-        app.start(with_file(playback, download.file));
     }
 
-    pub fn delete_download(mut self, app: AppState, file: PathBuf) {
+    fn delete_download(mut self, app: AppState, file: PathBuf) {
         spawn_forever(async move {
             if let Err(e) = download::delete(&file).await {
                 return app.report("Cannot delete download", e);
@@ -135,24 +155,11 @@ impl Device {
         });
     }
 
-    pub fn reveal(self, app: AppState, file: PathBuf) {
-        spawn_forever(async move {
-            let revealed = tokio::process::Command::new("open")
-                .arg("-R")
-                .arg(&file)
-                .status()
-                .await
-                .is_ok_and(|s| s.success());
-            if !revealed {
-                app.report("Cannot show in Finder", file.display());
-            }
-        });
-    }
-
     fn fetch(mut self, app: AppState, download: Download) {
         let config = self.config.read().clone();
         let id = download.id;
         let task = spawn_forever(async move {
+            let _slot = DOWNLOAD_SLOTS.acquire().await;
             let report = move |status| self.set_status(id, status);
             let stream = app
                 .stream(&download.entry, download.season, download.episode.as_ref())
@@ -183,6 +190,9 @@ impl Device {
     fn set_status(mut self, id: Uuid, status: Status) {
         let finished = matches!(status, Status::Completed | Status::Failed(_));
         if let Some(download) = self.downloads.write().iter_mut().find(|d| d.id == id) {
+            if status == Status::Completed {
+                download.size = std::fs::metadata(&download.file).ok().map(|m| m.len());
+            }
             download.status = status;
         }
         if finished {
@@ -211,6 +221,29 @@ pub fn use_device(app: AppState) {
         tokio::spawn(async move {
             responder.respond(media::respond(file.as_deref(), range.as_deref()).await);
         });
+    });
+}
+
+fn play_download(app: AppState, download: Download) {
+    if !download.file.is_file() {
+        return app.report("File not found", download.file.display());
+    }
+    app.prepare_details(&download.entry, None);
+    let playback = Playback::new(download.entry, download.season, download.episode, 0.0);
+    app.start(with_file(playback, download.file));
+}
+
+fn reveal(app: AppState, file: PathBuf) {
+    spawn_forever(async move {
+        let revealed = tokio::process::Command::new("open")
+            .arg("-R")
+            .arg(&file)
+            .status()
+            .await
+            .is_ok_and(|s| s.success());
+        if !revealed {
+            app.report("Cannot show in Finder", file.display());
+        }
     });
 }
 

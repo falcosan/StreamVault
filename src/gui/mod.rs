@@ -2,7 +2,7 @@ mod details;
 mod home;
 mod navbar;
 mod player;
-mod poster;
+pub mod poster;
 mod search_view;
 
 pub use details::DetailsView;
@@ -14,10 +14,9 @@ pub use search_view::SearchView;
 use crate::app::AppState;
 use dioxus::prelude::*;
 
-pub const LOGO: &str = include_str!("../../assets/img/vector/logo.svg");
+const LOGO: &str = include_str!("../../assets/img/vector/logo.svg");
 pub const CLOSE_ICON: &str = include_str!("../../assets/img/vector/close.svg");
 pub const PLAY_ICON: &str = include_str!("../../assets/img/vector/play.svg");
-const PAUSE_ICON: &str = include_str!("../../assets/img/vector/pause.svg");
 const BACK_ICON: &str = include_str!("../../assets/img/vector/back.svg");
 
 #[component]

@@ -12,7 +12,7 @@ pub fn HomeView() -> Element {
 
     if catalog.is_empty() && *app.catalog.loading.read() {
         return rsx! {
-            div { class: "splash-screen",
+            div { class: "center-msg", role: "progressbar", aria_label: "Loading",
                 div { class: "splash-logo", dangerous_inner_html: LOGO }
             }
         };
@@ -52,7 +52,7 @@ pub fn HomeView() -> Element {
                 }
             }
             if *app.catalog.loading_more.read() {
-                div { class: "loading-msg", "Loading more..." }
+                div { class: "loading-msg", role: "status", "Loading more..." }
             }
         }
     }
@@ -67,10 +67,7 @@ fn ContinueCard(item: WatchItem) -> Element {
         .and_then(|ep| ep.image_url.as_deref())
         .or(item.entry.image_url.as_deref());
     let background = card_background(&item.entry.name, image);
-    let subtitle = match (item.season, &item.episode) {
-        (Some(season), Some(ep)) => Some(format!("S{season:02}E{:02} - {}", ep.number, ep.name)),
-        _ => None,
-    };
+    let subtitle = subtitle(&item);
     let progress = format!("{:.1}%", item.progress_pct());
     let name = item.entry.name.clone();
     let key = item.entry.key();
@@ -80,13 +77,13 @@ fn ContinueCard(item: WatchItem) -> Element {
                 class: "continue-open",
                 "data-focus": "watch-{key.0}-{key.1}",
                 onclick: move |_| app.resume(item.clone()),
-                div { class: "continue-overlay",
-                    div { class: "continue-name", "{name}" }
+                span { class: "continue-overlay",
+                    span { class: "continue-name", "{name}" }
                     if let Some(subtitle) = subtitle {
-                        div { class: "continue-episode", "{subtitle}" }
+                        span { class: "continue-episode", "{subtitle}" }
                     }
-                    div { class: "continue-progress",
-                        div { class: "continue-progress-bar", style: "width: {progress};" }
+                    span { class: "continue-progress",
+                        span { style: "width: {progress};" }
                     }
                 }
             }
@@ -97,5 +94,36 @@ fn ContinueCard(item: WatchItem) -> Element {
                 span { class: "close-icon", dangerous_inner_html: CLOSE_ICON }
             }
         }
+    }
+}
+
+fn subtitle(item: &WatchItem) -> Option<String> {
+    let (season, episode) = item.season.zip(item.episode.as_ref())?;
+    Some(episode.label(season))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::{Episode, MediaEntry};
+    use crate::watch::start_of;
+
+    #[test]
+    fn continue_cards_name_the_episode_without_a_dangling_separator() {
+        let entry = MediaEntry::default();
+        assert_eq!(
+            subtitle(&start_of(entry.clone(), 1, Episode::numbered(2, "Pilot"))).as_deref(),
+            Some("S01E02 - Pilot")
+        );
+        assert_eq!(
+            subtitle(&start_of(entry.clone(), 1, Episode::numbered(2, ""))).as_deref(),
+            Some("S01E02")
+        );
+        let movie = WatchItem {
+            season: None,
+            episode: None,
+            ..start_of(entry, 1, Episode::numbered(2, "Pilot"))
+        };
+        assert_eq!(subtitle(&movie), None);
     }
 }

@@ -1,6 +1,7 @@
-use super::config::AppConfig;
+use super::config::{AppConfig, missing_ok};
 use crate::app::Subtitle;
 use crate::providers::{Episode, MediaEntry, StreamUrl};
+use dioxus::logger::tracing::warn;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -25,12 +26,18 @@ pub enum Status {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Download {
     pub id: Uuid,
-    pub title: String,
     pub file: PathBuf,
     pub entry: MediaEntry,
     pub season: Option<u32>,
     pub episode: Option<Episode>,
     pub status: Status,
+    pub size: Option<u64>,
+}
+
+impl Status {
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Queued | Self::Downloading(_) | Self::Muxing)
+    }
 }
 
 impl Download {
@@ -40,16 +47,26 @@ impl Download {
         season: Option<u32>,
         episode: Option<&Episode>,
     ) -> Self {
-        let (title, file) = target(config, entry, season, episode);
         Self {
             id: Uuid::new_v4(),
-            title,
-            file,
+            file: target(config, entry, season, episode),
             entry: entry.clone(),
             season,
             episode: episode.cloned(),
             status: Status::Queued,
+            size: None,
         }
+    }
+
+    pub fn is_for(
+        &self,
+        entry: &MediaEntry,
+        season: Option<u32>,
+        episode: Option<&Episode>,
+    ) -> bool {
+        self.entry.key() == entry.key()
+            && self.season == season
+            && self.episode.as_ref().map(|e| e.number) == episode.map(|e| e.number)
     }
 
     pub fn restored(self) -> Option<Self> {
@@ -64,13 +81,46 @@ impl Download {
     }
 }
 
+pub fn status(
+    downloads: &[Download],
+    entry: &MediaEntry,
+    season: Option<u32>,
+    episode: Option<&Episode>,
+) -> Option<Status> {
+    latest(downloads, entry, season, episode).map(|d| d.status.clone())
+}
+
+pub fn saved_file(
+    downloads: &[Download],
+    entry: &MediaEntry,
+    season: Option<u32>,
+    episode: Option<&Episode>,
+) -> Option<PathBuf> {
+    latest(downloads, entry, season, episode)
+        .filter(|d| d.status == Status::Completed)
+        .map(|d| d.file.clone())
+}
+
+fn latest<'a>(
+    downloads: &'a [Download],
+    entry: &MediaEntry,
+    season: Option<u32>,
+    episode: Option<&Episode>,
+) -> Option<&'a Download> {
+    downloads
+        .iter()
+        .rev()
+        .find(|d| d.is_for(entry, season, episode))
+        .filter(|d| d.status != Status::Completed || d.file.is_file())
+}
+
 pub fn local_file(
     config: &AppConfig,
     entry: &MediaEntry,
     season: Option<u32>,
     episode: Option<&Episode>,
 ) -> Option<PathBuf> {
-    let (_, file) = target(config, entry, season, episode);
+    let file = target(config, entry, season, episode);
     file.is_file().then_some(file)
 }
 
@@ -113,7 +163,7 @@ fn target(
     entry: &MediaEntry,
     season: Option<u32>,
     episode: Option<&Episode>,
-) -> (String, PathBuf) {
+) -> PathBuf {
     let (title, dir) = if let (Some(season), Some(episode)) = (season, episode) {
         let title = config
             .output
@@ -132,12 +182,11 @@ fn target(
         let dir = config.movie_dir().join(sanitize_filename(&title));
         (title, dir)
     };
-    let file = dir.join(format!(
+    dir.join(format!(
         "{}.{}",
         sanitize_filename(&title),
         config.process.extension
-    ));
-    (title, file)
+    ))
 }
 
 pub async fn run(
@@ -149,7 +198,7 @@ pub async fn run(
     report(Status::Downloading(0));
     let work = work_dir(download.id);
     let result = fetch(config, download, stream, &work, &mut report).await;
-    let _ = tokio::fs::remove_dir_all(&work).await;
+    remove_leftovers(&work, &download.file).await;
     report(match result {
         Ok(()) => Status::Completed,
         Err(e) => Status::Failed(e),
@@ -170,9 +219,6 @@ async fn fetch(
     ) else {
         return Err(format!("Invalid output path: {}", download.file.display()));
     };
-    tokio::fs::create_dir_all(dir)
-        .await
-        .map_err(|e| format!("Cannot create output dir: {e}"))?;
     let tmp = work.join("tmp");
     tokio::fs::create_dir_all(&tmp)
         .await
@@ -223,6 +269,9 @@ async fn fetch(
     mux(&ffmpeg, &muxed, &media)
         .await
         .map_err(|e| format!("Mux failed: {e}"))?;
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|e| format!("Cannot create output dir: {e}"))?;
     save_subtitles(&subtitles, &download.file)
         .await
         .map_err(|e| format!("Cannot save subtitles: {e}"))?;
@@ -339,6 +388,9 @@ fn downloader(
     if !config.process.merge_audio {
         cmd.args(["--drop-audio", "all"]);
     }
+    if !config.process.merge_subtitle {
+        cmd.args(["--drop-subtitle", "all"]);
+    }
     for (key, value) in &stream.headers {
         cmd.arg("--header").arg(format!("{key}: {value}"));
     }
@@ -381,6 +433,23 @@ async fn mux(ffmpeg: &Path, output: &Path, media: &[PathBuf]) -> Result<(), Stri
     Err(format!("ffmpeg exited: {}\n{tail}", result.status))
 }
 
+pub async fn discard(download: &Download) {
+    remove_leftovers(&work_dir(download.id), &download.file).await;
+}
+
+async fn remove_leftovers(work: &Path, video: &Path) {
+    let partial = video.with_extension("part");
+    let removed = [
+        (work, tokio::fs::remove_dir_all(work).await),
+        (partial.as_path(), tokio::fs::remove_file(&partial).await),
+    ];
+    for (path, result) in removed {
+        if let Err(e) = missing_ok(result) {
+            warn!("{} remove error: {e}", path.display());
+        }
+    }
+}
+
 fn work_dir(id: Uuid) -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -389,11 +458,7 @@ fn work_dir(id: Uuid) -> PathBuf {
 }
 
 async fn reset_dir(dir: &Path) -> std::io::Result<()> {
-    if let Err(e) = tokio::fs::remove_dir_all(dir).await
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
-        return Err(e);
-    }
+    missing_ok(tokio::fs::remove_dir_all(dir).await)?;
     tokio::fs::create_dir_all(dir).await
 }
 
@@ -418,11 +483,7 @@ async fn scan_tracks(dir: &Path, with_subtitles: bool) -> (Vec<PathBuf>, Vec<Pat
 }
 
 pub async fn delete(video: &Path) -> std::io::Result<()> {
-    if let Err(e) = tokio::fs::remove_file(video).await
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
-        return Err(e);
-    }
+    missing_ok(tokio::fs::remove_file(video).await)?;
     remove_subtitles(video).await
 }
 
@@ -524,17 +585,6 @@ mod tests {
     use crate::desktop::test_support::scratch_dir;
     use std::os::unix::process::ExitStatusExt;
 
-    fn episode(number: u32, name: &str) -> Episode {
-        Episode {
-            id: 1,
-            number,
-            name: name.into(),
-            duration: None,
-            image_url: None,
-            description: None,
-        }
-    }
-
     #[test]
     fn movie_download_lives_in_its_own_folder() {
         let entry = MediaEntry {
@@ -543,7 +593,6 @@ mod tests {
             ..Default::default()
         };
         let download = Download::new(&AppConfig::default(), &entry, None, None);
-        assert_eq!(download.title, "Inception (2010)");
         assert!(
             download
                 .file
@@ -561,15 +610,19 @@ mod tests {
             name: "Breaking/Bad".into(),
             ..Default::default()
         };
-        let download = Download::new(&config, &show, Some(2), Some(&episode(5, "Mandala")));
-        assert_eq!(download.title, "Mandala S02E05");
+        let download = Download::new(
+            &config,
+            &show,
+            Some(2),
+            Some(&Episode::numbered(5, "Mandala")),
+        );
         assert!(
             download
                 .file
                 .ends_with("Medias/Serie/Breaking_Bad/S02/Mandala S02E05.mp4")
         );
         assert_eq!(download.season, Some(2));
-        assert_eq!(download.episode, Some(episode(5, "Mandala")));
+        assert_eq!(download.episode, Some(Episode::numbered(5, "Mandala")));
         config.output.map_episode_name =
             "%(show_name) - %(episode_name) S%(season)E%(episode)".into();
         config.process.extension = "mkv".into();
@@ -577,19 +630,13 @@ mod tests {
             name: "Lost".into(),
             ..Default::default()
         };
-        let named = Download::new(&config, &lost, Some(1), Some(&episode(3, "Tabula Rasa")));
-        assert_eq!(named.title, "Lost - Tabula Rasa S01E03");
-        assert!(named.file.ends_with("Lost - Tabula Rasa S01E03.mkv"));
-    }
-
-    #[test]
-    fn downloads_get_unique_ids() {
-        let entry = MediaEntry::default();
-        let config = AppConfig::default();
-        assert_ne!(
-            Download::new(&config, &entry, None, None).id,
-            Download::new(&config, &entry, None, None).id
+        let named = Download::new(
+            &config,
+            &lost,
+            Some(1),
+            Some(&Episode::numbered(3, "Tabula Rasa")),
         );
+        assert!(named.file.ends_with("Lost - Tabula Rasa S01E03.mkv"));
     }
 
     #[test]
@@ -621,6 +668,123 @@ mod tests {
     }
 
     #[test]
+    fn only_queued_running_and_muxing_downloads_are_active() {
+        for status in [Status::Queued, Status::Downloading(40), Status::Muxing] {
+            assert!(status.is_active());
+        }
+        for status in [Status::Completed, Status::Failed("boom".into())] {
+            assert!(!status.is_active());
+        }
+    }
+
+    #[test]
+    fn a_download_belongs_to_one_title_season_and_episode() {
+        let show = MediaEntry {
+            id: 7,
+            name: "Lost".into(),
+            ..Default::default()
+        };
+        let pilot = Episode::numbered(1, "Pilot");
+        let download = Download::new(&AppConfig::default(), &show, Some(1), Some(&pilot));
+        assert!(download.is_for(&show, Some(1), Some(&Episode::numbered(1, "Renamed"))));
+        assert!(!download.is_for(&show, Some(2), Some(&pilot)));
+        assert!(!download.is_for(&show, Some(1), Some(&Episode::numbered(2, "Tabula Rasa"))));
+        assert!(!download.is_for(&show, None, None));
+        let other = MediaEntry {
+            id: 8,
+            ..show.clone()
+        };
+        assert!(!download.is_for(&other, Some(1), Some(&pilot)));
+    }
+
+    #[test]
+    fn the_latest_download_of_a_title_gives_its_status() {
+        let dir = scratch_dir("status");
+        let show = MediaEntry {
+            id: 7,
+            ..Default::default()
+        };
+        let pilot = Episode::numbered(1, "Pilot");
+        let with = |status, file: &str| Download {
+            status,
+            file: dir.join(file),
+            ..Download::new(&AppConfig::default(), &show, Some(1), Some(&pilot))
+        };
+        let failed = with(Status::Failed("boom".into()), "a.mp4");
+        let retried = with(Status::Downloading(30), "a.mp4");
+        assert_eq!(
+            status(&[failed.clone(), retried], &show, Some(1), Some(&pilot)),
+            Some(Status::Downloading(30))
+        );
+        assert_eq!(
+            status(&[failed], &show, Some(1), Some(&pilot)),
+            Some(Status::Failed("boom".into()))
+        );
+        assert_eq!(status(&[], &show, Some(1), Some(&pilot)), None);
+        let done = with(Status::Completed, "done.mp4");
+        assert_eq!(
+            status(std::slice::from_ref(&done), &show, Some(1), Some(&pilot)),
+            None
+        );
+        std::fs::write(&done.file, "video").unwrap();
+        assert_eq!(
+            status(&[done], &show, Some(1), Some(&pilot)),
+            Some(Status::Completed)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn leftovers_are_the_work_dir_and_the_partial_file() {
+        let dir = scratch_dir("leftovers");
+        let (work, video) = (dir.join("work"), dir.join("Pilot.mp4"));
+        std::fs::create_dir_all(work.join("tracks")).unwrap();
+        std::fs::write(video.with_extension("part"), "half").unwrap();
+        remove_leftovers(&work, &video).await;
+        assert!(!work.exists());
+        assert!(!video.with_extension("part").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_saved_download_is_found_after_its_episode_is_renamed() {
+        let dir = scratch_dir("saved_file");
+        let show = MediaEntry {
+            id: 7,
+            ..Default::default()
+        };
+        let pilot = Episode::numbered(1, "Pilot");
+        let done = Download {
+            status: Status::Completed,
+            file: dir.join("Pilot S01E01.mp4"),
+            ..Download::new(&AppConfig::default(), &show, Some(1), Some(&pilot))
+        };
+        std::fs::write(&done.file, "video").unwrap();
+        let renamed = Episode::numbered(1, "The Pilot");
+        assert_eq!(
+            saved_file(std::slice::from_ref(&done), &show, Some(1), Some(&renamed)),
+            Some(done.file.clone())
+        );
+        let running = Download {
+            status: Status::Downloading(10),
+            ..done.clone()
+        };
+        assert_eq!(saved_file(&[running], &show, Some(1), Some(&pilot)), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn downloads_saved_by_older_versions_still_load() {
+        let download = Download::new(&AppConfig::default(), &MediaEntry::default(), None, None);
+        let mut json = serde_json::to_value(&download).unwrap();
+        let fields = json.as_object_mut().unwrap();
+        fields.remove("size");
+        fields.insert("title".into(), "Inception (2010)".into());
+        let loaded: Download = serde_json::from_value(json).unwrap();
+        assert_eq!(loaded, download);
+    }
+
+    #[test]
     fn download_round_trips_through_json() {
         let show = MediaEntry {
             name: "Lost".into(),
@@ -632,7 +796,7 @@ mod tests {
                 &AppConfig::default(),
                 &show,
                 Some(1),
-                Some(&episode(2, "Pilot")),
+                Some(&Episode::numbered(2, "Pilot")),
             )
         };
         let json = serde_json::to_string(&download).unwrap();
@@ -648,7 +812,7 @@ mod tests {
             name: "Lost".into(),
             ..Default::default()
         };
-        let pilot = episode(1, "Pilot");
+        let pilot = Episode::numbered(1, "Pilot");
         assert_eq!(local_file(&config, &show, Some(1), Some(&pilot)), None);
         let download = Download::new(&config, &show, Some(1), Some(&pilot));
         std::fs::create_dir_all(download.file.parent().unwrap()).unwrap();
@@ -707,6 +871,30 @@ mod tests {
             exit_message(exit, &[]),
             format!("N_m3u8DL-RE exited: {exit}")
         );
+    }
+
+    #[test]
+    fn tracks_left_out_of_the_merge_are_never_downloaded() {
+        let stream = StreamUrl {
+            url: "https://cdn.example/master.m3u8".into(),
+            headers: Vec::new(),
+        };
+        let args = |config: &AppConfig| {
+            let tracks = Path::new("tracks");
+            downloader(config, &stream, OsStr::new("Ep"), tracks, tracks, tracks)
+                .as_std()
+                .get_args()
+                .map(OsStr::to_string_lossy)
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let mut config = AppConfig::default();
+        assert!(!args(&config).contains("--drop-"));
+        config.process.merge_audio = false;
+        config.process.merge_subtitle = false;
+        let dropped = args(&config);
+        assert!(dropped.contains("--drop-audio all"));
+        assert!(dropped.contains("--drop-subtitle all"));
     }
 
     #[test]

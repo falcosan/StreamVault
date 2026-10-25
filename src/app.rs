@@ -10,7 +10,6 @@ use crate::sync::{self, Replica};
 use crate::time::now_ms;
 use crate::watch::{self, WatchItem};
 use dioxus::core::{Task, spawn_forever};
-use dioxus::logger::tracing::warn;
 use dioxus::prelude::*;
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -38,7 +37,7 @@ pub struct Subtitle {
     pub language: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub struct Playback {
     pub entry: MediaEntry,
     pub season: Option<u32>,
@@ -77,10 +76,7 @@ impl Playback {
     }
 
     pub fn title(&self) -> String {
-        match (self.season, &self.episode) {
-            (Some(season), Some(episode)) => self.entry.episode_title(season, episode),
-            _ => self.entry.display_title(),
-        }
+        self.entry.title(self.season, self.episode.as_ref())
     }
 
     fn at(&self, current_time: f64, duration: f64) -> WatchItem {
@@ -99,8 +95,8 @@ pub struct Catalog {
     pub items: Signal<Vec<MediaEntry>>,
     pub loading: Signal<bool>,
     pub loading_more: Signal<bool>,
-    done: Signal<bool>,
-    scroll: Signal<f64>,
+    done: CopyValue<bool>,
+    scroll: CopyValue<f64>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -108,7 +104,7 @@ pub struct Search {
     pub query: Signal<String>,
     pub results: Signal<Vec<MediaEntry>>,
     pub busy: Signal<bool>,
-    task: Signal<Option<Task>>,
+    task: CopyValue<Option<Task>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -118,20 +114,20 @@ pub struct Details {
     pub season: Signal<Option<u32>>,
     pub episodes: Signal<Vec<Episode>>,
     pub loading: Signal<bool>,
-    task: Signal<Option<Task>>,
+    task: CopyValue<Option<Task>>,
 }
 
 #[derive(Clone, Copy)]
 pub struct AppState {
     pub screen: Signal<Screen>,
-    history: Signal<Vec<(Screen, Option<String>)>>,
+    history: CopyValue<Vec<(Screen, Option<String>)>>,
     pub error: Signal<Option<String>>,
     pub catalog: Catalog,
     pub search: Search,
     pub details: Details,
     pub playback: Signal<Option<Playback>>,
     pub player: Player,
-    stream_task: Signal<Option<Task>>,
+    stream_task: CopyValue<Option<Task>>,
     pub watch: Signal<Vec<WatchItem>>,
     pub prefs: Signal<PlayerPrefs>,
     pub device: Device,
@@ -144,20 +140,20 @@ impl AppState {
         let device = Device::new();
         Self {
             screen: Signal::default(),
-            history: Signal::default(),
+            history: CopyValue::default(),
             error: Signal::default(),
             catalog: Catalog {
                 items: Signal::default(),
                 loading: Signal::new(true),
                 loading_more: Signal::default(),
-                done: Signal::default(),
-                scroll: Signal::default(),
+                done: CopyValue::default(),
+                scroll: CopyValue::default(),
             },
             search: Search::default(),
             details: Details::default(),
             playback: Signal::default(),
             player: Player::new(),
-            stream_task: Signal::default(),
+            stream_task: CopyValue::default(),
             watch: Signal::default(),
             prefs: Signal::default(),
             replica: CopyValue::new(Replica::default()),
@@ -173,9 +169,8 @@ impl AppState {
         }
         if from == Screen::Player {
             self.clear_playback();
-        } else {
-            self.history.push((from, platform::focus_key()));
         }
+        visit(&mut self.history.write(), (from, platform::focus_key()), to);
         self.error.set(None);
         self.screen.set(to);
     }
@@ -239,9 +234,8 @@ impl AppState {
                 .map(MediaEntry::key)
                 .collect();
             match self.providers().catalog_more(&mut seen).await {
-                Ok(Some(fresh)) => self.catalog.items.write().extend(fresh),
-                Ok(None) => self.catalog.done.set(true),
-                Err(e) => warn!("catalog page failed: {e}"),
+                Some(fresh) => self.catalog.items.write().extend(fresh),
+                None => self.catalog.done.set(true),
             }
             self.catalog.loading_more.set(false);
         });
@@ -333,10 +327,6 @@ impl AppState {
     }
 
     pub fn resume(self, item: WatchItem) {
-        self.update_watch(|items| {
-            watch::upsert(items, item.clone());
-            true
-        });
         let playback = self.device.local(Playback::new(
             item.entry,
             item.season,
@@ -358,8 +348,13 @@ impl AppState {
     }
 
     pub fn prepare_details(mut self, entry: &MediaEntry, season: Option<u32>) {
+        let loaded = self.details.entry.peek().as_ref() == Some(entry)
+            && !self.details.seasons.peek().is_empty()
+            && !self.details.episodes.peek().is_empty()
+            && *self.details.season.peek() == season;
         self.details.entry.set(Some(entry.clone()));
         match season {
+            Some(_) if loaded => {}
             Some(season) => self.load_seasons(entry.clone(), Some(season)),
             None => self.clear_episodes(),
         }
@@ -390,7 +385,7 @@ impl AppState {
             return false;
         };
         next_episode(&self.details.episodes.read(), current.number).is_some()
-            || self.details.seasons.read().iter().any(|s| s > season)
+            || watch::next_season(&self.details.seasons.read(), *season).is_some()
     }
 
     pub fn play_next(mut self) {
@@ -404,15 +399,7 @@ impl AppState {
         if let Some(next) = next {
             return self.play(playback.entry, Some(season), Some(next), 0.0);
         }
-        let next_season = self
-            .details
-            .seasons
-            .peek()
-            .iter()
-            .copied()
-            .filter(|s| *s > season)
-            .min();
-        let Some(next_season) = next_season else {
+        let Some(next_season) = watch::next_season(&self.details.seasons.peek(), season) else {
             return;
         };
         self.end_session();
@@ -427,8 +414,8 @@ impl AppState {
                 Ok(episodes) => episodes,
                 Err(e) => return self.report("Failed to load next season", e),
             };
-            let Some(first) = episodes.iter().min_by_key(|e| e.number).cloned() else {
-                return;
+            let Some(first) = watch::first_episode(&episodes).cloned() else {
+                return self.report("Failed to load next season", "no episodes");
             };
             self.details.episodes.set(episodes);
             self.details.season.set(Some(next_season));
@@ -442,19 +429,12 @@ impl AppState {
         });
     }
 
-    pub fn show_playing_details(mut self) {
+    pub fn show_playing_details(self) {
         let Some(playback) = self.playback.peek().clone() else {
             return;
         };
-        let reusable = self.details.entry.peek().as_ref() == Some(&playback.entry)
-            && !self.details.seasons.peek().is_empty()
-            && !self.details.episodes.peek().is_empty()
-            && (playback.season.is_none() || *self.details.season.peek() == playback.season);
-        self.details.entry.set(Some(playback.entry.clone()));
+        self.prepare_details(&playback.entry, playback.season);
         self.navigate(Screen::Details);
-        if !playback.entry.is_movie() && !reusable {
-            self.load_seasons(playback.entry, playback.season);
-        }
     }
 
     pub fn progress(self, time: f64, duration: f64) {
@@ -482,28 +462,27 @@ impl AppState {
             return;
         };
         spawn_forever(async move {
-            if let Err(e) = self.queue_next_season(item.entry, season).await {
-                warn!("next season lookup failed: {e}");
+            if let Err(e) = self.queue_next(item, season).await {
+                warn!("next episode lookup failed: {e}");
             }
         });
     }
 
-    async fn queue_next_season(self, entry: MediaEntry, season: u32) -> ProviderResult<()> {
-        let provider = self.provider(&entry)?;
-        let next = provider
-            .seasons(&entry)
-            .await?
-            .into_iter()
-            .filter(|s| *s > season)
-            .min();
-        let Some(next) = next else {
+    async fn queue_next(self, item: WatchItem, season: u32) -> ProviderResult<()> {
+        let entry = &item.entry;
+        let provider = self.provider(entry)?;
+        let episodes = provider.episodes(entry, season).await?;
+        if self.update_watch(|items| watch::finish(items, &item, &episodes)) {
+            return Ok(());
+        }
+        let Some(next) = watch::next_season(&provider.seasons(entry).await?, season) else {
             self.remove_watch(entry.key());
             return Ok(());
         };
-        let episodes = provider.episodes(&entry, next).await?;
-        if let Some(first) = episodes.into_iter().min_by_key(|e| e.number) {
+        let episodes = provider.episodes(entry, next).await?;
+        if let Some(first) = watch::first_episode(&episodes) {
             self.update_watch(|items| {
-                watch::upsert(items, watch::start_of(entry, next, first));
+                watch::upsert(items, watch::start_of(entry.clone(), next, first.clone()));
                 true
             });
         }
@@ -518,8 +497,7 @@ impl AppState {
     }
 
     pub fn change_prefs(mut self, prefs: PlayerPrefs) {
-        if *self.prefs.peek() != prefs {
-            self.replica.write().record_prefs(&prefs, now_ms());
+        if self.replica.write().record_prefs(&prefs, now_ms()) {
             self.publish();
         }
     }
@@ -568,11 +546,10 @@ impl AppState {
     }
 
     fn update_watch(mut self, change: impl FnOnce(&mut Vec<WatchItem>) -> bool) -> bool {
-        let before = self.watch.peek().clone();
-        let mut after = before.clone();
-        let changed = change(&mut after);
+        let mut items = self.watch.peek().clone();
+        let changed = change(&mut items);
         if changed {
-            self.replica.write().record_watch(&before, &after, now_ms());
+            self.replica.write().record_watch(&items, now_ms());
             self.publish();
         }
         changed
@@ -611,12 +588,22 @@ impl AppState {
     }
 }
 
-pub fn restart(mut slot: Signal<Option<Task>>, future: impl Future<Output = ()> + 'static) {
+fn visit(history: &mut Vec<(Screen, Option<String>)>, from: (Screen, Option<String>), to: Screen) {
+    if to == Screen::Home {
+        history.clear();
+    } else if from.0 != Screen::Player {
+        history.push(from);
+    } else if history.last().is_some_and(|(screen, _)| *screen == to) {
+        history.pop();
+    }
+}
+
+pub fn restart(mut slot: CopyValue<Option<Task>>, future: impl Future<Output = ()> + 'static) {
     cancel(slot);
     slot.set(Some(spawn_forever(future)));
 }
 
-pub fn cancel(mut slot: Signal<Option<Task>>) {
+pub fn cancel(mut slot: CopyValue<Option<Task>>) {
     if let Some(task) = slot.take() {
         task.cancel();
     }
@@ -633,12 +620,13 @@ pub fn App() -> Element {
     });
     use_future(move || app.load_catalog());
     use_effect(move || {
-        if *app.screen.read() == Screen::Home {
-            let top = *app.catalog.scroll.peek();
-            document::eval(&format!(
-                "document.querySelector('.content').scrollTop = {top};"
-            ));
-        }
+        let top = match *app.screen.read() {
+            Screen::Home => *app.catalog.scroll.peek(),
+            _ => 0.0,
+        };
+        document::eval(&format!(
+            "document.querySelector('.content').scrollTop = {top};"
+        ));
     });
 
     let screen = *app.screen.read();
@@ -705,16 +693,32 @@ mod tests {
         };
         let movie = Playback::new(entry.clone(), None, None, 0.0);
         assert_eq!(movie.title(), "Lost (2004)");
-        let pilot = Episode {
-            id: 1,
-            number: 2,
-            name: "Pilot".into(),
-            duration: None,
-            image_url: None,
-            description: None,
-        };
-        let episode = Playback::new(entry, Some(1), Some(pilot), 0.0);
+        let episode = Playback::new(entry, Some(1), Some(Episode::numbered(2, "Pilot")), 0.0);
         assert_eq!(episode.title(), "Lost S01E02 - Pilot");
+    }
+
+    #[test]
+    fn leaving_the_player_for_the_screen_below_it_does_not_stack_it_twice() {
+        let mut history = Vec::new();
+        visit(&mut history, (Screen::Home, None), Screen::Player);
+        visit(&mut history, (Screen::Player, None), Screen::Details);
+        assert_eq!(history, [(Screen::Home, None)]);
+        visit(
+            &mut history,
+            (Screen::Details, Some("play".into())),
+            Screen::Player,
+        );
+        visit(&mut history, (Screen::Player, None), Screen::Details);
+        assert_eq!(history, [(Screen::Home, None)]);
+    }
+
+    #[test]
+    fn going_home_starts_a_fresh_history() {
+        let mut history = Vec::new();
+        visit(&mut history, (Screen::Home, None), Screen::Search);
+        visit(&mut history, (Screen::Search, None), Screen::Details);
+        visit(&mut history, (Screen::Details, None), Screen::Home);
+        assert!(history.is_empty());
     }
 
     #[test]

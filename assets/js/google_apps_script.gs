@@ -14,7 +14,7 @@ function out_(obj) {
 }
 
 function emptyState_() {
-  return { v: 2, seq: 0, floor: 0, entries: {} };
+  return { v: 2, id: Utilities.getUuid(), seq: 0, floor: 0, entries: {} };
 }
 
 function file_() {
@@ -64,14 +64,12 @@ function migrate_(legacy) {
 }
 
 function readState_(f) {
-  const text = f.getBlob().getDataAsString();
-  let doc;
-  try {
-    doc = JSON.parse(text);
-  } catch (_) {
-    return { state: emptyState_(), migrated: true };
+  const doc = JSON.parse(f.getBlob().getDataAsString());
+  if (doc && doc.v === 2) {
+    if (doc.id) return { state: doc, migrated: false };
+    doc.id = Utilities.getUuid();
+    return { state: doc, migrated: true };
   }
-  if (doc && doc.v === 2) return { state: doc, migrated: false };
   return { state: migrate_(doc || {}), migrated: true };
 }
 
@@ -126,7 +124,10 @@ function sync_(state, body, now) {
       at: entry.at,
       device: entry.device,
     }));
-  return { changed, response: { ok: true, seq: state.seq, reset, entries } };
+  return {
+    changed,
+    response: { ok: true, id: state.id, seq: state.seq, reset, entries },
+  };
 }
 
 function doPost(e) {
@@ -136,7 +137,8 @@ function doPost(e) {
   } catch (_) {
     return out_({ ok: false, error: 'invalid body' });
   }
-  if (!token_() || body.token !== token_()) {
+  const token = token_();
+  if (!token || !body || body.token !== token) {
     return out_({ ok: false, error: 'unauthorized' });
   }
   const lock = LockService.getScriptLock();

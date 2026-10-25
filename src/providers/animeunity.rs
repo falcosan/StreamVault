@@ -1,26 +1,37 @@
 use super::{
     Episode, Http, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl,
-    domain, fetch_json, fetch_text, items, send, vixcloud_playlist,
+    domain, fetch_json, fetch_text, items, non_blank, send, uint, vixcloud_stream, year,
 };
 use async_trait::async_trait;
 use percent_encoding::percent_decode_str;
 use reqwest::RequestBuilder;
 use reqwest::header::{COOKIE, HeaderMap, ORIGIN, REFERER, SET_COOKIE};
-use scraper::{Html, Selector};
 use serde_json::{Value, json};
 use std::collections::HashSet;
-use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use web_time::Instant;
 
 const AUTH_TTL: Duration = Duration::from_secs(300);
-const EPISODE_PAGE: u64 = 120;
+const EPISODE_PAGE: u32 = 120;
 
 #[derive(Clone)]
 struct Auth {
+    cookie: String,
     xsrf: String,
-    session: String,
+}
+
+impl Auth {
+    fn new(headers: &HeaderMap) -> ProviderResult<Self> {
+        let xsrf = cookie(headers, "XSRF-TOKEN")
+            .filter(|x| !x.is_empty())
+            .ok_or_else(|| ProviderError::Parse("Failed to get XSRF token".into()))?;
+        let session = cookie(headers, "animeunity_session").unwrap_or_default();
+        Ok(Self {
+            cookie: format!("XSRF-TOKEN={xsrf}; animeunity_session={session}"),
+            xsrf: percent_decode_str(xsrf).decode_utf8_lossy().into_owned(),
+        })
+    }
 }
 
 pub struct AnimeUnity {
@@ -46,13 +57,7 @@ impl AnimeUnity {
             return Ok(auth.clone());
         }
         let response = send(self.client.get(&self.base)).await?;
-        let headers = response.headers();
-        let auth = Auth {
-            xsrf: cookie(headers, "XSRF-TOKEN")
-                .filter(|x| !x.is_empty())
-                .ok_or_else(|| ProviderError::Network("Failed to get XSRF token".into()))?,
-            session: cookie(headers, "animeunity_session").unwrap_or_default(),
-        };
+        let auth = Auth::new(response.headers())?;
         *cached = Some((auth.clone(), Instant::now()));
         Ok(auth)
     }
@@ -60,27 +65,20 @@ impl AnimeUnity {
     async fn authed(&self, request: RequestBuilder) -> ProviderResult<RequestBuilder> {
         let auth = self.auth().await?;
         Ok(request
-            .header(
-                COOKIE,
-                format!(
-                    "XSRF-TOKEN={}; animeunity_session={}",
-                    auth.xsrf, auth.session
-                ),
-            )
+            .header(COOKIE, auth.cookie)
             .header("x-xsrf-token", auth.xsrf)
             .header(ORIGIN, &self.base)
             .header(REFERER, format!("{}/", self.base)))
     }
 }
 
-fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     let value = headers
         .get_all(SET_COOKIE)
         .iter()
         .rev()
         .find_map(|h| h.to_str().ok()?.strip_prefix(name)?.strip_prefix('='))?;
-    let value = value.split_once(';').map_or(value, |(value, _)| value);
-    Some(percent_decode_str(value).decode_utf8_lossy().into_owned())
+    Some(value.split_once(';').map_or(value, |(value, _)| value))
 }
 
 fn parse_record(record: &Value) -> Option<MediaEntry> {
@@ -90,11 +88,7 @@ fn parse_record(record: &Value) -> Option<MediaEntry> {
     let name = titles.into_iter().flatten().next()?.to_owned();
     Some(MediaEntry {
         id,
-        slug: format!(
-            "{id}:{}:{}",
-            record["slug"].as_str().unwrap_or_default(),
-            record["episodes_count"].as_u64().unwrap_or(0)
-        ),
+        slug: record["slug"].as_str().unwrap_or_default().to_owned(),
         language: "ja".into(),
         media_type: match record["type"].as_str() {
             Some("Movie" | "Film") => MediaType::Movie,
@@ -106,44 +100,37 @@ fn parse_record(record: &Value) -> Option<MediaEntry> {
             .filter(|t| *t != name)
             .map(String::from)
             .collect(),
-        year: record["date"]
-            .as_str()
-            .and_then(|d| d.split('-').next())
-            .map(String::from),
+        year: record["date"].as_str().and_then(year),
         score: record["score"]
             .as_str()
             .map(String::from)
-            .or_else(|| record["score"].as_f64().map(|s| format!("{s:.1}"))),
+            .or_else(|| record["score"].as_f64().map(|s| s.to_string())),
         image_url: record["imageurl"].as_str().map(String::from),
         backdrop_url: record["cover"]
             .as_str()
             .filter(|c| !c.is_empty())
             .map(String::from),
-        description: record["plot"]
-            .as_str()
-            .filter(|p| !p.is_empty())
-            .map(String::from),
+        description: record["plot"].as_str().and_then(non_blank),
         name,
         ..Default::default()
     })
 }
 
-fn parse_slug(slug: &str) -> (u64, u64) {
-    let mut parts = slug.split(':');
-    let id = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
-    let count = parts.nth(1).and_then(|p| p.parse().ok()).unwrap_or(0);
-    (id, count)
+fn page_ranges(total: u32) -> impl Iterator<Item = (u32, u32)> {
+    (1..=total)
+        .step_by(EPISODE_PAGE as usize)
+        .map(move |start| (start, start.saturating_add(EPISODE_PAGE - 1).min(total)))
 }
 
-fn parse_episode(index: usize, ep: &Value) -> Option<Episode> {
-    let number = number(&ep["number"]).unwrap_or(u32::try_from(index + 1).ok()?);
+fn parse_episode(position: u32, ep: &Value) -> Option<Episode> {
     Some(Episode {
         id: ep["id"].as_u64()?,
+        number: number(&ep["number"]).unwrap_or(position),
         name: ["title", "title_it"]
             .iter()
             .find_map(|k| ep[k].as_str().filter(|t| !t.is_empty()))
-            .map_or_else(|| format!("Episode {number}"), String::from),
-        number,
+            .unwrap_or_default()
+            .to_owned(),
         duration: None,
         image_url: ep["imageurl"].as_str().map(String::from),
         description: None,
@@ -157,20 +144,6 @@ fn number(value: &Value) -> Option<u32> {
         _ => return None,
     };
     text.split('.').next()?.parse().ok()
-}
-
-fn extract_stream(html: &str) -> Option<String> {
-    static SCRIPTS: LazyLock<Selector> = LazyLock::new(|| Selector::parse("body script").unwrap());
-    let scripts: Vec<String> = Html::parse_document(html)
-        .select(&SCRIPTS)
-        .map(|s| s.text().collect())
-        .collect();
-    scripts
-        .get(1)
-        .and_then(|s| s.split(" = ").nth(1))
-        .map(|url| url.replace('\'', "").trim().to_owned())
-        .filter(|url| url.starts_with("http"))
-        .or_else(|| vixcloud_playlist(scripts.first()?))
 }
 
 #[async_trait(?Send)]
@@ -213,35 +186,32 @@ impl Provider for AnimeUnity {
     }
 
     async fn episodes(&self, entry: &MediaEntry, _season: u32) -> ProviderResult<Vec<Episode>> {
-        let (id, count) = parse_slug(&entry.slug);
-        let total = if count > 0 {
-            count
-        } else {
-            let info = self
-                .authed(self.client.get(format!("{}/info_api/{id}/", self.base)))
-                .await?;
-            fetch_json(info).await?["episodes_count"]
-                .as_u64()
-                .ok_or_else(|| ProviderError::Parse("No episodes_count".into()))?
-        };
-        let mut raw = Vec::new();
-        let mut start = 1;
-        while start <= total {
-            let end = (start + EPISODE_PAGE - 1).min(total);
-            let page = self
+        let id = entry.id;
+        let info = self
+            .authed(self.client.get(format!("{}/info_api/{id}/", self.base)))
+            .await?;
+        let total = uint(&fetch_json(info).await?["episodes_count"])
+            .ok_or_else(|| ProviderError::Parse("No episodes_count".into()))?;
+        let mut pages = Vec::new();
+        for (start, end) in page_ranges(total) {
+            let request = self
                 .authed(
                     self.client
                         .get(format!("{}/info_api/{id}/1", self.base))
                         .query(&[("start_range", start), ("end_range", end)]),
                 )
                 .await?;
-            raw.extend(items(&fetch_json(page).await?["episodes"]).cloned());
-            start = end + 1;
+            let page = fetch_json(request).await?;
+            if items(&page["episodes"]).next().is_none() {
+                break;
+            }
+            pages.push(page);
         }
-        let mut episodes: Vec<Episode> = raw
+        let mut episodes: Vec<Episode> = pages
             .iter()
-            .enumerate()
-            .filter_map(|(i, ep)| parse_episode(i, ep))
+            .flat_map(|page| items(&page["episodes"]))
+            .zip(1u32..)
+            .filter_map(|(ep, position)| parse_episode(position, ep))
             .collect();
         episodes.sort_by_key(|e| e.number);
         Ok(episodes)
@@ -269,11 +239,7 @@ impl Provider for AnimeUnity {
         if !embed.starts_with("http") {
             return Err(ProviderError::StreamExtraction("Empty embed URL".into()));
         }
-        let html = fetch_text(self.client.get(&embed)).await?;
-        let url = extract_stream(&html).ok_or_else(|| {
-            ProviderError::StreamExtraction("Could not extract stream URL".into())
-        })?;
-        Ok(StreamUrl::new(url))
+        vixcloud_stream(&fetch_text(self.client.get(&embed)).await?)
     }
 }
 
@@ -281,23 +247,43 @@ impl Provider for AnimeUnity {
 mod tests {
     use super::*;
 
-    #[test]
-    fn cookie_reads_last_matching_set_cookie_decoded() {
+    fn set_cookies(values: &[&str]) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        for value in [
+        for value in values {
+            headers.append(SET_COOKIE, value.parse().unwrap());
+        }
+        headers
+    }
+
+    #[test]
+    fn cookie_reads_last_matching_set_cookie_raw() {
+        let headers = set_cookies(&[
             "XSRF-TOKEN=old; path=/",
             "XSRF-TOKEN-OTHER=x",
             "animeunity_session=s%20id; httponly",
             "XSRF-TOKEN=eyJ%3D%3D; expires=Wed; path=/",
-        ] {
-            headers.append(SET_COOKIE, value.parse().unwrap());
-        }
-        assert_eq!(cookie(&headers, "XSRF-TOKEN").as_deref(), Some("eyJ=="));
-        assert_eq!(
-            cookie(&headers, "animeunity_session").as_deref(),
-            Some("s id")
-        );
+        ]);
+        assert_eq!(cookie(&headers, "XSRF-TOKEN"), Some("eyJ%3D%3D"));
+        assert_eq!(cookie(&headers, "animeunity_session"), Some("s%20id"));
         assert_eq!(cookie(&headers, "missing"), None);
+    }
+
+    #[test]
+    fn auth_sends_raw_cookies_and_a_decoded_xsrf_header() {
+        let auth = Auth::new(&set_cookies(&[
+            "XSRF-TOKEN=eyJ%2Bx%3D%3D; path=/",
+            "animeunity_session=s%3D; httponly",
+        ]))
+        .unwrap();
+        assert_eq!(
+            auth.cookie,
+            "XSRF-TOKEN=eyJ%2Bx%3D%3D; animeunity_session=s%3D"
+        );
+        assert_eq!(auth.xsrf, "eyJ+x==");
+        assert!(matches!(
+            Auth::new(&set_cookies(&["XSRF-TOKEN=; path=/"])),
+            Err(ProviderError::Parse(_))
+        ));
     }
 
     #[test]
@@ -305,16 +291,16 @@ mod tests {
         let record = json!({
             "id": 9, "slug": "naruto", "episodes_count": 220, "type": "TV",
             "title_eng": "Naruto", "title": "NARUTO", "title_it": "",
-            "date": "2002-10-03", "score": 8.04, "imageurl": "https://img/n.jpg", "plot": "Ninja",
+            "date": "2002-10-03", "score": 8.04, "imageurl": "https://img/n.jpg", "plot": " Ninja ",
             "cover": "https://img/cover.jpg"
         });
         let entry = parse_record(&record).unwrap();
         assert_eq!(entry.name, "Naruto");
         assert_eq!(entry.alternative_names, ["NARUTO"]);
-        assert_eq!(entry.slug, "9:naruto:220");
+        assert_eq!(entry.slug, "naruto");
         assert_eq!(entry.media_type, MediaType::Series);
         assert_eq!(entry.year.as_deref(), Some("2002"));
-        assert_eq!(entry.score.as_deref(), Some("8.0"));
+        assert_eq!(entry.score.as_deref(), Some("8.04"));
         assert_eq!(entry.language, "ja");
         assert_eq!(entry.image_url.as_deref(), Some("https://img/n.jpg"));
         assert_eq!(entry.description.as_deref(), Some("Ninja"));
@@ -328,27 +314,37 @@ mod tests {
                 .unwrap();
         assert_eq!(movie.media_type, MediaType::Movie);
         assert_eq!(movie.score.as_deref(), Some("7.9"));
-        assert_eq!(movie.slug, "1::0");
+        assert_eq!(movie.slug, "");
+        assert_eq!(movie.description, None);
         assert!(parse_record(&json!({ "id": 1, "title": "" })).is_none());
     }
 
     #[test]
-    fn parse_slug_reads_id_and_count() {
-        assert_eq!(parse_slug("9:naruto:220"), (9, 220));
-        assert_eq!(parse_slug("garbage"), (0, 0));
+    fn page_ranges_cover_the_episode_count() {
+        assert_eq!(page_ranges(0).count(), 0);
+        assert_eq!(page_ranges(5).collect::<Vec<_>>(), [(1, 5)]);
+        assert_eq!(
+            page_ranges(241).collect::<Vec<_>>(),
+            [(1, 120), (121, 240), (241, 241)]
+        );
+        assert_eq!(page_ranges(240).last(), Some((121, 240)));
+        assert_eq!(
+            page_ranges(u32::MAX).last(),
+            Some((u32::MAX - 14, u32::MAX))
+        );
     }
 
     #[test]
     fn parse_episode_handles_numeric_formats_and_missing_names() {
         let ep = parse_episode(
-            0,
+            1,
             &json!({ "id": 5, "number": "12.5", "title": null, "title_it": "Dodici" }),
         )
         .unwrap();
         assert_eq!((ep.id, ep.number, ep.name.as_str()), (5, 12, "Dodici"));
-        let ep = parse_episode(3, &json!({ "id": 6, "number": "OVA" })).unwrap();
-        assert_eq!((ep.number, ep.name.as_str()), (4, "Episode 4"));
-        assert!(parse_episode(0, &json!({ "number": 1 })).is_none());
+        let ep = parse_episode(4, &json!({ "id": 6, "number": "OVA" })).unwrap();
+        assert_eq!((ep.number, ep.name.as_str()), (4, ""));
+        assert!(parse_episode(1, &json!({ "number": 1 })).is_none());
     }
 
     #[test]
@@ -356,22 +352,5 @@ mod tests {
         assert_eq!(number(&json!(3)), Some(3));
         assert_eq!(number(&json!(-1)), None);
         assert_eq!(number(&json!(null)), None);
-    }
-
-    #[test]
-    fn extract_stream_prefers_direct_download_url() {
-        let html = "<body><script>var a = 1</script><script>window.downloadUrl = 'https://cdn/x.mp4'</script></body>";
-        assert_eq!(extract_stream(html).as_deref(), Some("https://cdn/x.mp4"));
-    }
-
-    #[test]
-    fn extract_stream_falls_back_to_playlist() {
-        let html =
-            r#"<body><script>token: "t", expires: "e", url: "https://v.co/p/1"</script></body>"#;
-        assert_eq!(
-            extract_stream(html).as_deref(),
-            Some("https://v.co/p/1?token=t&expires=e")
-        );
-        assert!(extract_stream("<body></body>").is_none());
     }
 }

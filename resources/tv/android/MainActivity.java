@@ -7,7 +7,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.util.Base64;
 import android.webkit.JavascriptInterface;
-import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -39,11 +38,7 @@ public final class MainActivity extends Activity {
     private static final Map<String, String> TYPES = Map.of(
             "html", "text/html",
             "js", "text/javascript",
-            "css", "text/css",
-            "wasm", "application/wasm",
-            "json", "application/json",
-            "png", "image/png",
-            "svg", "image/svg+xml");
+            "wasm", "application/wasm");
     private static final String BRIDGE = String.format(Locale.ROOT, """
             <script>
               (() => {
@@ -79,12 +74,6 @@ public final class MainActivity extends Activity {
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(true);
         web.addJavascriptInterface(this, "StreamVault");
-        web.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public void onCloseWindow(WebView window) {
-                finish();
-            }
-        });
         web.setWebViewClient(new WebViewClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
@@ -193,9 +182,12 @@ public final class MainActivity extends Activity {
         Map<String, String> response = allow(origin);
         StringBuilder exposed = new StringBuilder();
         for (Map.Entry<String, List<String>> header : connection.getHeaderFields().entrySet()) {
-            if (header.getKey() != null && !header.getKey().equalsIgnoreCase("Content-Type")) {
-                response.put(header.getKey(), String.join(", ", header.getValue()));
-                exposed.append(exposed.length() == 0 ? "" : ", ").append(header.getKey());
+            String name = header.getKey();
+            if (name != null
+                    && !name.equalsIgnoreCase("Content-Type")
+                    && !name.toLowerCase(Locale.ROOT).startsWith("access-control-")) {
+                response.put(name, String.join(", ", header.getValue()));
+                exposed.append(exposed.length() == 0 ? "" : ", ").append(name);
             }
         }
         response.put("Access-Control-Expose-Headers", exposed.toString());
@@ -246,7 +238,6 @@ public final class MainActivity extends Activity {
     private static Map<String, String> allow(String origin) {
         Map<String, String> headers = new HashMap<>();
         headers.put("Access-Control-Allow-Origin", origin);
-        headers.put("Access-Control-Allow-Credentials", "true");
         return headers;
     }
 

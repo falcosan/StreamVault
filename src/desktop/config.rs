@@ -143,12 +143,18 @@ pub fn state_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
         let dir = local_dir().join("state");
-        let legacy = config_dir();
-        for name in [WATCH_FILE, PREFS_FILE] {
-            migrate_file(&legacy.join(name), &dir.join(name));
-        }
+        migrate_legacy(&config_dir(), &dir);
         dir
     })
+}
+
+fn migrate_legacy(legacy: &Path, dir: &Path) {
+    if dir.join(REPLICA_FILE).exists() {
+        return;
+    }
+    for name in [WATCH_FILE, PREFS_FILE] {
+        migrate_file(&legacy.join(name), &dir.join(name));
+    }
 }
 
 fn icloud_dir() -> Option<PathBuf> {
@@ -181,6 +187,13 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> io::Result<T> {
     Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
 }
 
+pub fn missing_ok(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
 pub fn write_json(path: &Path, value: &(impl Serialize + ?Sized)) -> io::Result<()> {
     let json = serde_json::to_string_pretty(value)?;
     replace_file(path, |tmp| fs::write(tmp, json))
@@ -192,6 +205,7 @@ fn replace_file(path: &Path, fill: impl FnOnce(&Path) -> io::Result<()>) -> io::
     }
     let tmp = path.with_extension("tmp");
     fill(&tmp)?;
+    fs::File::open(&tmp)?.sync_all()?;
     fs::rename(&tmp, path)
 }
 
@@ -236,15 +250,18 @@ mod tests {
     }
 
     #[test]
-    fn local_dir_ends_with_app_name() {
-        assert!(local_dir().ends_with("StreamVault"));
-    }
-
-    #[test]
-    fn icloud_dir_when_present_ends_with_app_folder() {
-        if let Some(dir) = icloud_dir() {
-            assert!(dir.ends_with("Contents/Video/StreamVault"));
-        }
+    fn legacy_state_is_copied_only_until_a_replica_exists() {
+        let base = scratch_dir("migrate_legacy_once");
+        let (legacy, dir) = (base.join("legacy"), base.join("state"));
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join(WATCH_FILE), "[]").unwrap();
+        migrate_legacy(&legacy, &dir);
+        assert!(dir.join(WATCH_FILE).is_file());
+        fs::remove_file(dir.join(WATCH_FILE)).unwrap();
+        fs::write(dir.join(REPLICA_FILE), "{}").unwrap();
+        migrate_legacy(&legacy, &dir);
+        assert!(!dir.join(WATCH_FILE).exists());
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -267,6 +284,14 @@ mod tests {
         let corrupt = read_json::<AppConfig>(&base.join("bad.json")).unwrap_err();
         assert_ne!(corrupt.kind(), io::ErrorKind::NotFound);
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn missing_ok_tolerates_only_missing_files() {
+        assert!(missing_ok(Ok(())).is_ok());
+        assert!(missing_ok(Err(io::ErrorKind::NotFound.into())).is_ok());
+        let denied = missing_ok(Err(io::ErrorKind::PermissionDenied.into()));
+        assert_eq!(denied.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]

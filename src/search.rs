@@ -16,8 +16,8 @@ pub fn rank(entries: Vec<MediaEntry>, query: &str) -> Vec<MediaEntry> {
         .collect();
     scored.sort_by(|(sa, a), (sb, b)| {
         sb.cmp(sa)
-            .then(a.name.len().cmp(&b.name.len()))
-            .then(a.name.cmp(&b.name))
+            .then_with(|| a.name.len().cmp(&b.name.len()))
+            .then_with(|| a.name.cmp(&b.name))
     });
     scored.into_iter().map(|(_, entry)| entry).collect()
 }

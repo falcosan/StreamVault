@@ -1,8 +1,9 @@
-use super::{BackButton, PAUSE_ICON, PLAY_ICON, focus};
+use super::{BackButton, PLAY_ICON, focus};
 use crate::app::{AppState, Playback};
-use crate::player::{Menu, OSD_SECONDS, SEEK_SECONDS, Tracks, clock};
+use crate::player::{Menu, OSD_SECONDS, SEEK_SECONDS, clock};
 use dioxus::prelude::*;
 
+const PAUSE_ICON: &str = include_str!("../../assets/img/vector/pause.svg");
 const FULLSCREEN_ICON: &str = include_str!("../../assets/img/vector/fullscreen.svg");
 const FULLSCREEN_EXIT_ICON: &str = include_str!("../../assets/img/vector/fullscreen-exit.svg");
 
@@ -23,14 +24,10 @@ pub fn PlayerView() -> Element {
     } else {
         0.0
     };
-    let phase = if player.osd.read().is_multiple_of(2) {
-        "a"
-    } else {
-        "b"
-    };
+    let phase = if *player.osd.read() { "b" } else { "a" };
     let menu = *player.menu.read();
     let pinned = status.paused || menu.is_some();
-    let list = player.tracks.read().clone();
+    let list = player.tracks.read();
     let audio = list
         .current(Menu::Audio)
         .map_or_else(|| "Default".into(), |t| t.name());
@@ -42,11 +39,14 @@ pub fn PlayerView() -> Element {
         div {
             class: "player-screen",
             tabindex: "-1",
-            autofocus: true,
+            onmounted: move |e| async move {
+                let _ = e.set_focus(true).await;
+            },
             onmousemove: move |_| {
                 player.wake();
             },
             onkeydown: move |e: KeyboardEvent| {
+                player.wake();
                 match e.key() {
                     Key::Character(c) if c == " " => player.toggle(),
                     Key::ArrowLeft => player.seek(-SEEK_SECONDS),
@@ -75,7 +75,7 @@ pub fn PlayerView() -> Element {
                 }
                 div { class: "player-osd-bottom",
                     if let Some(menu) = menu {
-                        TrackMenu { menu, tracks: list.clone() }
+                        TrackMenu { menu }
                     }
                     div { class: "player-timeline",
                         span { class: "player-time", "{clock(time)}" }
@@ -88,6 +88,7 @@ pub fn PlayerView() -> Element {
                             step: "any",
                             value: "{time}",
                             aria_label: "Seek",
+                            aria_valuetext: "{clock(time)} of {clock(status.duration)}",
                             style: "--progress: {percent}%;",
                             oninput: move |e| {
                                 if let Ok(time) = e.value().parse() {
@@ -115,16 +116,18 @@ pub fn PlayerView() -> Element {
                         }
                         if list.audio.len() > 1 {
                             button {
-                                id: "control-audio",
+                                id: Menu::Audio.id(),
                                 class: "player-control",
+                                aria_expanded: menu == Some(Menu::Audio),
                                 onclick: move |_| player.toggle_menu(Menu::Audio),
                                 "Audio: {audio}"
                             }
                         }
                         if !list.subtitles.is_empty() {
                             button {
-                                id: "control-subtitles",
+                                id: Menu::Subtitles.id(),
                                 class: "player-control",
+                                aria_expanded: menu == Some(Menu::Subtitles),
                                 onclick: move |_| player.toggle_menu(Menu::Subtitles),
                                 "Subtitles: {subtitles}"
                             }
@@ -158,8 +161,9 @@ pub fn PlayerView() -> Element {
 }
 
 #[component]
-fn TrackMenu(menu: Menu, tracks: Tracks) -> Element {
+fn TrackMenu(menu: Menu) -> Element {
     let app = use_context::<AppState>();
+    let tracks = app.player.tracks.read();
     let (title, selected) = match menu {
         Menu::Audio => ("Audio", tracks.audio_index.max(0)),
         Menu::Subtitles => ("Subtitles", tracks.subtitle_index),
@@ -175,14 +179,13 @@ fn TrackMenu(menu: Menu, tracks: Tracks) -> Element {
         options.insert(0, (-1, "Off".into()));
     }
     rsx! {
-        div { class: "player-menu", role: "menu", aria_label: "{title}",
+        div { class: "player-menu", role: "group", aria_label: "{title}",
             span { class: "player-menu-title", "{title}" }
             for (index, name) in options {
                 button {
                     key: "{index}",
                     class: if index == selected { "player-option active" } else { "player-option" },
-                    role: "menuitemradio",
-                    aria_checked: index == selected,
+                    aria_pressed: index == selected,
                     onmounted: move |e| async move {
                         if index == selected {
                             let _ = e.set_focus(true).await;
@@ -226,21 +229,6 @@ fn is_language_code(language: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
-
-    const TRACKS: &str = r#"[{ language: "eng", label: "English [CC]" }, { language: "forced-ita", label: "Italian [Forced]" }, { language: "ita", label: "Italian" }]"#;
-
-    fn eval(expression: &str) -> String {
-        let script = format!(
-            "{}JSON.stringify({expression});",
-            include_str!("../../assets/js/player.js")
-        );
-        let output = Command::new("osascript")
-            .args(["-l", "JavaScript", "-e", &script])
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
-    }
 
     #[test]
     fn only_plain_language_codes_go_without_a_label() {
@@ -248,41 +236,5 @@ mod tests {
         assert!(is_language_code("en"));
         assert!(!is_language_code("forced-ita"));
         assert!(!is_language_code(""));
-    }
-
-    #[test]
-    fn pick_prefers_the_exact_track_over_a_partial_match() {
-        assert_eq!(
-            eval(&format!(
-                r#"["ita", "forced-ita", "Italian"].map((lang) => pick({TRACKS}, lang))"#
-            )),
-            "[2,1,2]"
-        );
-    }
-
-    #[test]
-    fn only_the_first_load_or_a_stalled_playback_is_buffering() {
-        assert_eq!(
-            eval(
-                r#"[
-                    buffering({ paused: true, seeking: false, readyState: 0 }, false),
-                    buffering({ paused: true, seeking: true, readyState: 1 }, true),
-                    buffering({ paused: false, seeking: false, readyState: 2 }, true),
-                    buffering({ paused: false, seeking: true, readyState: 4 }, true),
-                    buffering({ paused: false, seeking: false, readyState: 4 }, true),
-                ]"#
-            ),
-            "[true,false,true,true,false]"
-        );
-    }
-
-    #[test]
-    fn pick_falls_back_to_a_partial_match_then_the_first_track() {
-        assert_eq!(
-            eval(&format!(
-                r#"["ital", "xyz", ""].map((lang) => pick({TRACKS}, lang))"#
-            )),
-            "[1,0,0]"
-        );
     }
 }

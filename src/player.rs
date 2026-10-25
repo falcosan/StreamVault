@@ -4,7 +4,6 @@ use crate::prefs::PlayerPrefs;
 use crate::time::{now_ms, sleep};
 use dioxus::core::Task;
 use dioxus::document::{Eval, EvalError};
-use dioxus::logger::tracing::warn;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -29,8 +28,8 @@ pub enum Menu {
 impl Menu {
     pub fn id(self) -> &'static str {
         match self {
-            Self::Audio => "audio",
-            Self::Subtitles => "subtitles",
+            Self::Audio => "control-audio",
+            Self::Subtitles => "control-subtitles",
         }
     }
 }
@@ -52,8 +51,13 @@ impl Tracks {
     }
 
     pub fn current(&self, menu: Menu) -> Option<&Track> {
-        let (list, index) = self.list(menu);
-        usize::try_from(index).ok().and_then(|i| list.get(i))
+        self.get(menu, self.list(menu).1)
+    }
+
+    fn get(&self, menu: Menu, index: i32) -> Option<&Track> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|i| self.list(menu).0.get(i))
     }
 }
 
@@ -81,7 +85,7 @@ impl Track {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 pub struct Status {
     pub time: f64,
     pub duration: f64,
@@ -97,6 +101,7 @@ enum Command<'a> {
         url: &'a str,
         start: f64,
         prefs: &'a PlayerPrefs,
+        generation: u32,
     },
     Detach,
     Toggle,
@@ -119,14 +124,28 @@ enum Event {
     Failed { reason: String },
 }
 
+#[derive(Deserialize)]
+struct Message {
+    generation: u32,
+    #[serde(flatten)]
+    event: Event,
+}
+
+impl Message {
+    fn current(self, generation: u32) -> Option<Event> {
+        (self.generation == generation).then_some(self.event)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Player {
-    pub osd: Signal<u32>,
+    pub osd: Signal<bool>,
     pub menu: Signal<Option<Menu>>,
     pub status: Signal<Status>,
     pub tracks: Signal<Tracks>,
     pub scrub: Signal<Option<f64>>,
-    pending: Signal<Option<Task>>,
+    pending: CopyValue<Option<Task>>,
+    generation: CopyValue<u32>,
     last_input: CopyValue<u64>,
     channel: CopyValue<Option<Eval>>,
 }
@@ -139,9 +158,10 @@ impl Player {
             scrub: Signal::default(),
             status: Signal::default(),
             tracks: Signal::default(),
-            pending: Signal::default(),
-            last_input: CopyValue::new(0),
-            channel: CopyValue::new(None),
+            pending: CopyValue::default(),
+            generation: CopyValue::default(),
+            last_input: CopyValue::default(),
+            channel: CopyValue::default(),
         }
     }
 
@@ -150,13 +170,16 @@ impl Player {
         self.channel.set(Some(channel));
         let mut saved = None;
         loop {
-            let event = match channel.recv::<Event>().await {
-                Ok(event) => event,
+            let message = match channel.recv::<Message>().await {
+                Ok(message) => message,
                 Err(EvalError::Serialization(e)) => {
                     warn!("unreadable player event: {e}");
                     continue;
                 }
                 Err(e) => return warn!("player channel closed: {e}"),
+            };
+            let Some(event) = message.current(*self.generation.peek()) else {
+                continue;
             };
             match event {
                 Event::Status(status) => {
@@ -185,7 +208,12 @@ impl Player {
 
     pub fn attach(mut self, url: &str, start: f64, prefs: &PlayerPrefs) {
         self.last_input.set(now_ms());
-        self.send(Command::Attach { url, start, prefs });
+        self.send(Command::Attach {
+            url,
+            start,
+            prefs,
+            generation: *self.generation.peek(),
+        });
     }
 
     pub fn detach(self) {
@@ -193,6 +221,7 @@ impl Player {
     }
 
     pub fn reset(mut self) {
+        self.generation += 1;
         cancel(self.pending);
         self.scrub.set(None);
         self.menu.set(None);
@@ -201,7 +230,7 @@ impl Player {
     }
 
     pub fn wake(mut self) -> bool {
-        self.osd += 1;
+        self.osd.toggle();
         let now = now_ms();
         let last = std::mem::replace(&mut *self.last_input.write(), now);
         now.saturating_sub(last) > OSD_SECONDS * 1000
@@ -260,28 +289,17 @@ impl Player {
     }
 
     pub fn close(mut self, menu: Menu) {
-        focus(&format!("#control-{}", menu.id()));
+        focus(&format!("#{}", menu.id()));
         self.menu.set(None);
     }
 
     pub fn choose(self, app: AppState, menu: Menu, index: i32) {
         self.send(Command::Select { menu, index });
-        let mut prefs = app.prefs.peek().clone();
-        let chosen = usize::try_from(index)
-            .ok()
-            .and_then(|i| self.tracks.peek().list(menu).0.get(i).cloned());
-        match (menu, chosen) {
-            (Menu::Audio, Some(track)) => prefs.audio_lang = track.lang(),
-            (Menu::Subtitles, Some(track)) => {
-                prefs.subtitles_on = true;
-                prefs.subtitle_lang = track.lang();
-            }
-            (Menu::Subtitles, None) => {
-                prefs.subtitles_on = false;
-                prefs.subtitle_lang = String::new();
-            }
-            (Menu::Audio, None) => {}
-        }
+        let prefs = with_choice(
+            app.prefs.peek().clone(),
+            menu,
+            self.tracks.peek().get(menu, index),
+        );
         app.change_prefs(prefs);
         self.close(menu);
     }
@@ -293,6 +311,22 @@ impl Player {
             warn!("player command failed: {e}");
         }
     }
+}
+
+fn with_choice(mut prefs: PlayerPrefs, menu: Menu, track: Option<&Track>) -> PlayerPrefs {
+    match (menu, track) {
+        (Menu::Audio, Some(track)) => prefs.audio_lang = track.lang(),
+        (Menu::Subtitles, Some(track)) => {
+            prefs.subtitles_on = true;
+            prefs.subtitle_lang = track.lang();
+        }
+        (Menu::Subtitles, None) => {
+            prefs.subtitles_on = false;
+            prefs.subtitle_lang = String::new();
+        }
+        (Menu::Audio, None) => {}
+    }
+    prefs
 }
 
 fn scrub_target(time: f64, duration: f64) -> Option<f64> {
@@ -399,16 +433,49 @@ mod tests {
     }
 
     #[test]
+    fn only_events_of_the_current_playback_are_kept() {
+        let message = |generation| {
+            let status = json!({"type": "status", "time": 5, "duration": 60, "paused": false, "waiting": false, "fullscreen": false, "generation": generation});
+            serde_json::from_value::<Message>(status).unwrap()
+        };
+        assert!(matches!(
+            message(3).current(3),
+            Some(Event::Status(Status { duration: 60.0, .. }))
+        ));
+        assert!(message(2).current(3).is_none());
+    }
+
+    #[test]
+    fn choosing_a_track_becomes_the_preference() {
+        let prefs = PlayerPrefs {
+            audio_lang: "eng".into(),
+            subtitle_lang: "ita".into(),
+            subtitles_on: true,
+            ..PlayerPrefs::default()
+        };
+        let ita = track("ita", "Italian");
+        let audio = with_choice(prefs.clone(), Menu::Audio, Some(&ita));
+        assert_eq!(audio.audio_lang, "ita");
+        assert_eq!(with_choice(prefs.clone(), Menu::Audio, None), prefs);
+        let off = with_choice(prefs.clone(), Menu::Subtitles, None);
+        assert_eq!((off.subtitles_on, off.subtitle_lang.as_str()), (false, ""));
+        let on = with_choice(off, Menu::Subtitles, Some(&track("eng", "")));
+        assert_eq!((on.subtitles_on, on.subtitle_lang.as_str()), (true, "eng"));
+    }
+
+    #[test]
     fn commands_serialize_for_the_player_script() {
         let prefs = PlayerPrefs::default();
         let attach = Command::Attach {
             url: "u",
             start: 3.0,
             prefs: &prefs,
+            generation: 4,
         };
+        let attach = serde_json::to_value(&attach).unwrap();
         assert_eq!(
-            serde_json::to_value(&attach).unwrap()["type"],
-            json!("attach")
+            (&attach["type"], &attach["generation"]),
+            (&json!("attach"), &json!(4))
         );
         assert_eq!(
             serde_json::to_value(Command::SeekTo { time: 1.0 }).unwrap(),
@@ -422,5 +489,56 @@ mod tests {
             .unwrap(),
             json!({"type": "select", "menu": "subtitles", "index": -1})
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    mod script {
+        use crate::js_test::run;
+        use serde_json::{Value, json};
+
+        const TRACKS: &str = r#"[{ language: "eng", label: "English [CC]" }, { language: "forced-ita", label: "Italian [Forced]" }, { language: "ita", label: "Italian" }]"#;
+
+        fn eval(expression: &str) -> Value {
+            run(&format!(
+                "var HTMLMediaElement = {{ HAVE_FUTURE_DATA: 3 }};{}JSON.stringify({expression});",
+                include_str!("../assets/js/player.js")
+            ))
+        }
+
+        #[test]
+        fn pick_prefers_the_exact_track_over_a_partial_match() {
+            assert_eq!(
+                eval(&format!(
+                    r#"["ita", "forced-ita", "Italian"].map((lang) => pick({TRACKS}, lang))"#
+                )),
+                json!([2, 1, 2])
+            );
+        }
+
+        #[test]
+        fn only_the_first_load_or_a_stalled_playback_is_buffering() {
+            assert_eq!(
+                eval(
+                    r#"[
+                        buffering({ paused: true, seeking: false, readyState: 0 }, false),
+                        buffering({ paused: true, seeking: true, readyState: 1 }, true),
+                        buffering({ paused: false, seeking: false, readyState: 2 }, true),
+                        buffering({ paused: false, seeking: true, readyState: 4 }, true),
+                        buffering({ paused: false, seeking: false, readyState: 4 }, true),
+                    ]"#
+                ),
+                json!([true, false, true, true, false])
+            );
+        }
+
+        #[test]
+        fn pick_falls_back_to_a_partial_match_then_the_first_track() {
+            assert_eq!(
+                eval(&format!(
+                    r#"["ital", "xyz", ""].map((lang) => pick({TRACKS}, lang))"#
+                )),
+                json!([1, 0, 0])
+            );
+        }
     }
 }

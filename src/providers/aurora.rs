@@ -1,6 +1,6 @@
 use super::{
     Episode, Http, MediaEntry, Provider, ProviderError, ProviderResult, StreamUrl, fetch_json,
-    items, stable_hash,
+    items, stable_hash, uint,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -37,7 +37,6 @@ impl Realm {
     }
 }
 
-#[derive(Debug)]
 struct Video {
     season: u32,
     episode: Episode,
@@ -75,10 +74,6 @@ impl Aurora {
             .filter_map(|item| {
                 let title = item["title"].as_str().filter(|t| !t.is_empty())?;
                 Some(MediaEntry {
-                    year: item["dateLastModified"]
-                        .as_str()
-                        .and_then(|d| d.split('-').next())
-                        .map(String::from),
                     image_url: item["image"]["url"].as_str().map(String::from),
                     ..self.show(
                         title,
@@ -113,17 +108,14 @@ fn parse_videos(entry: &MediaEntry, json: &Value) -> ProviderResult<Vec<Video>> 
         .filter(|item| show_id.is_none_or(|id| item["show"]["id"] == id))
         .filter_map(|item| {
             let id = video_id(item)?;
-            let season = u32::try_from(item["seasonNumber"].as_u64()?).ok()?;
+            let season = uint(&item["seasonNumber"])?;
             let number = episode_number(item)?;
             seen.insert(id.clone()).then(|| Video {
                 season,
                 episode: Episode {
                     id: stable_hash(&format!("{}-{season}-{id}", entry.id)),
                     number,
-                    name: item["title"]
-                        .as_str()
-                        .filter(|t| !t.is_empty())
-                        .map_or_else(|| format!("Episode {number}"), String::from),
+                    name: item["title"].as_str().unwrap_or_default().to_owned(),
                     duration: item["videoDuration"]
                         .as_u64()
                         .filter(|ms| *ms > 0)
@@ -155,16 +147,15 @@ fn video_id(item: &Value) -> Option<String> {
 }
 
 fn episode_number(item: &Value) -> Option<u32> {
-    if let Some(n) = item["episodeNumber"].as_u64() {
-        return u32::try_from(n).ok();
-    }
-    item["title"]
-        .as_str()?
-        .strip_prefix("Episodio ")?
-        .split(|c: char| !c.is_ascii_digit())
-        .next()?
-        .parse()
-        .ok()
+    uint(&item["episodeNumber"]).or_else(|| {
+        item["title"]
+            .as_str()?
+            .strip_prefix("Episodio ")?
+            .split(|c: char| !c.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()
+    })
 }
 
 #[async_trait(?Send)]
@@ -207,21 +198,15 @@ impl Provider for Aurora {
         let wanted =
             episode.ok_or_else(|| ProviderError::StreamExtraction("Episode required".into()))?;
         let home = self.client.get(format!(
-            "{BASE}/site/page/homepage/?include=default&filter[environment]=realtime&v=2"
+            "{BASE}/site/page/homepage/?include=default&filter[environment]={}&v=2",
+            self.env
         ));
         let (videos, home) = tokio::try_join!(self.videos(entry), fetch_json(home))?;
         let video = videos
             .into_iter()
             .find(|v| v.episode.id == wanted.id)
             .ok_or_else(|| ProviderError::StreamExtraction("Episode data not found".into()))?;
-        let token = home["userMeta"]["realm"][video.realm.key()]
-            .as_str()
-            .ok_or_else(|| {
-                ProviderError::StreamExtraction(format!(
-                    "No token for channel {}",
-                    video.realm.key()
-                ))
-            })?;
+        let token = realm_token(&home, video.realm)?;
         let playback = fetch_json(
             self.client
                 .post(video.realm.playback())
@@ -234,6 +219,14 @@ impl Provider for Aurora {
         .await?;
         playback_url(&playback)
     }
+}
+
+fn realm_token(home: &Value, realm: Realm) -> ProviderResult<&str> {
+    home["userMeta"]["realm"][realm.key()]
+        .as_str()
+        .ok_or_else(|| {
+            ProviderError::StreamExtraction(format!("No token for channel {}", realm.key()))
+        })
 }
 
 fn playback_url(playback: &Value) -> ProviderResult<StreamUrl> {
@@ -249,14 +242,7 @@ mod tests {
     use crate::providers::MediaType;
 
     fn aurora() -> Aurora {
-        Aurora::new(
-            Http::new(
-                reqwest::Client::builder(),
-                std::time::Duration::from_secs(1),
-            ),
-            "nove",
-            "Nove",
-        )
+        Aurora::new(Http::new(std::time::Duration::from_secs(1)), "nove", "Nove")
     }
 
     #[test]
@@ -281,7 +267,7 @@ mod tests {
         let entries = aurora().parse_search(&json).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "Show");
-        assert_eq!(entries[0].year.as_deref(), Some("2024"));
+        assert_eq!(entries[0].year, None);
         assert_eq!(entries[0].image_url.as_deref(), Some("https://img"));
         assert!(aurora().parse_search(&json!({})).is_err());
     }
@@ -318,7 +304,7 @@ mod tests {
         assert_eq!(videos[1].id, "11");
         assert_eq!(videos[1].realm, Realm::It);
         assert_eq!(videos[1].episode.id, stable_hash("7-1-11"));
-        assert_eq!(videos[1].episode.name, "Episode 1");
+        assert_eq!(videos[1].episode.name, "");
         assert_eq!(videos[1].episode.duration, Some(30));
         assert_eq!(
             videos[1].episode.image_url.as_deref(),
@@ -339,6 +325,16 @@ mod tests {
         assert!(
             playback_url(&json!({ "errors": [{ "code": "access.denied.geoblocked" }] })).is_err()
         );
+    }
+
+    #[test]
+    fn realm_token_reads_the_homepage_user_meta() {
+        let home = json!({ "userMeta": { "realm": {
+            "X-REALM-IT": "it-token", "X-REALM-DPLAY": null
+        }}});
+        assert_eq!(realm_token(&home, Realm::It).unwrap(), "it-token");
+        assert!(realm_token(&home, Realm::Dplay).is_err());
+        assert!(realm_token(&json!({}), Realm::It).is_err());
     }
 
     #[test]

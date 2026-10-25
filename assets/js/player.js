@@ -1,4 +1,3 @@
-const HAVE_FUTURE_DATA = 3;
 const PROGRESSIVE = /\.(mp4|m4v|mov|webm|mkv)$/i;
 
 const normalize = (text) =>
@@ -21,7 +20,7 @@ const pick = (tracks, lang) => {
 const buffering = (video, started) =>
   video.paused
     ? !started
-    : video.seeking || video.readyState < HAVE_FUTURE_DATA;
+    : video.seeking || video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA;
 
 const track = (t) => ({
   language: t.lang || t.language || "",
@@ -223,12 +222,13 @@ function fullscreen(video) {
 
 async function control(channel) {
   let session;
-  const send = (event) => channel.send(event);
   for (;;) {
     const command = await channel.recv();
     if (command.type === "attach") {
       session?.detach();
       const video = document.querySelector(".player-video");
+      const send = (event) =>
+        channel.send({ ...event, generation: command.generation });
       session =
         video && attach(video, command.url, command.start, command.prefs, send);
       continue;
@@ -240,9 +240,10 @@ async function control(channel) {
     }
     const video = session?.video;
     if (!video) continue;
-    if (command.type === "toggle")
-      video.paused ? video.play().catch(() => {}) : video.pause();
-    else if (command.type === "seek_to") seek(video, command.time);
+    if (command.type === "toggle") {
+      if (video.paused) video.play().catch(() => {});
+      else video.pause();
+    } else if (command.type === "seek_to") seek(video, command.time);
     else if (command.type === "select")
       session.select(command.menu, command.index);
     else if (command.type === "fullscreen") fullscreen(video);

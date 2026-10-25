@@ -2,32 +2,17 @@ use crate::app::AppState;
 use crate::providers::{MediaEntry, stable_hash};
 use dioxus::prelude::*;
 
-const POSTER_COLORS: [(u8, u8, u8); 16] = [
-    (0x8B, 0x1A, 0x1A),
-    (0x0D, 0x3B, 0x66),
-    (0x3B, 0x0A, 0x5C),
-    (0x14, 0x40, 0x14),
-    (0x6B, 0x3A, 0x00),
-    (0x5C, 0x0E, 0x0E),
-    (0x0A, 0x2A, 0x4A),
-    (0x40, 0x0A, 0x50),
-    (0x4A, 0x0E, 0x0E),
-    (0x00, 0x3A, 0x3A),
-    (0x3E, 0x21, 0x23),
-    (0x1B, 0x2A, 0x41),
-    (0x2D, 0x1B, 0x00),
-    (0x1A, 0x0A, 0x2E),
-    (0x0E, 0x33, 0x1A),
-    (0x33, 0x1A, 0x0E),
+const POSTER_COLORS: [&str; 16] = [
+    "#8b1a1a", "#0d3b66", "#3b0a5c", "#144014", "#6b3a00", "#5c0e0e", "#0a2a4a", "#400a50",
+    "#4a0e0e", "#003a3a", "#3e2123", "#1b2a41", "#2d1b00", "#1a0a2e", "#0e331a", "#331a0e",
 ];
 
-pub(super) fn poster_color(name: &str) -> String {
+pub(super) fn poster_color(name: &str) -> &'static str {
     let index = stable_hash(name) % POSTER_COLORS.len() as u64;
-    let (r, g, b) = POSTER_COLORS[usize::try_from(index).unwrap_or_default()];
-    format!("rgb({r},{g},{b})")
+    POSTER_COLORS[usize::try_from(index).unwrap_or_default()]
 }
 
-pub(super) fn card_background(name: &str, image: Option<&str>) -> String {
+pub fn card_background(name: &str, image: Option<&str>) -> String {
     let color = poster_color(name);
     let Some(url) = image else {
         return format!("background-color: {color};");
@@ -50,9 +35,9 @@ pub(super) fn format_score(score: &str) -> String {
 
 pub(super) fn badge(entry: &MediaEntry) -> (&'static str, &'static str) {
     if entry.is_movie() {
-        ("badge-movie", "MOVIE")
+        ("badge-movie", "Movie")
     } else {
-        ("badge-series", "SERIES")
+        ("badge-series", "Series")
     }
 }
 
@@ -61,7 +46,6 @@ pub(super) fn PosterCard(entry: MediaEntry) -> Element {
     let app = use_context::<AppState>();
     let background = card_background(&entry.name, entry.image_url.as_deref());
     let (tone, label) = badge(&entry);
-    let year = entry.year_display().to_owned();
     let score = entry.score.as_deref().map(format_score);
     let target = entry.clone();
     rsx! {
@@ -74,11 +58,13 @@ pub(super) fn PosterCard(entry: MediaEntry) -> Element {
             if let Some(score) = score {
                 span { class: "poster-score", "★ {score}" }
             }
-            div { class: "poster-overlay",
-                div { class: "poster-title", "{entry.name}" }
-                div { class: "poster-meta",
+            span { class: "poster-overlay",
+                span { class: "poster-title", "{entry.name}" }
+                span { class: "poster-meta",
                     span { class: "badge {tone}", "{label}" }
-                    span { class: "poster-year", "{year}" }
+                    if let Some(year) = &entry.year {
+                        span { class: "poster-year", "{year}" }
+                    }
                 }
             }
         }
@@ -91,8 +77,7 @@ mod tests {
 
     #[test]
     fn poster_color_is_deterministic() {
-        assert_eq!(poster_color("Lost"), poster_color("Lost"));
-        assert!(poster_color("Lost").starts_with("rgb("));
+        assert_eq!(poster_color("Lost"), "#6b3a00");
     }
 
     #[test]

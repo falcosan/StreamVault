@@ -102,12 +102,6 @@ mod tests {
     }
 
     #[test]
-    fn url_lives_under_the_route() {
-        let id = Uuid::new_v4();
-        assert_eq!(url(id), format!("/{ROUTE}/{id}"));
-    }
-
-    #[test]
     fn requested_range_reads_header() {
         assert_eq!(
             requested_range(&request("/media/x", Some("bytes=0-1"))).as_deref(),

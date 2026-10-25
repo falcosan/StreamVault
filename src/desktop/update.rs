@@ -7,17 +7,21 @@ use std::path::Path;
 const REPOSITORY: &str = "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main";
 
 pub async fn check(mut device: Device) {
-    let Ok(response) = reqwest::get(format!("{REPOSITORY}/Cargo.toml")).await else {
-        return;
-    };
-    let manifest = response.text().await.unwrap_or_default();
-    if manifest_version(&manifest).is_some_and(|v| is_newer(v, env!("CARGO_PKG_VERSION"))) {
-        device.update_available.set(true);
+    match manifest(&format!("{REPOSITORY}/Cargo.toml")).await {
+        Ok(manifest) => {
+            if manifest_version(&manifest).is_some_and(|v| is_newer(v, env!("CARGO_PKG_VERSION"))) {
+                device.update_available.set(true);
+            }
+        }
+        Err(e) => warn!("update check failed: {e}"),
     }
 }
 
-pub fn install(mut app: AppState) {
+pub fn install(app: AppState) {
     let mut device = app.device;
+    if *device.updating.peek() {
+        return;
+    }
     device.updating.set(true);
     spawn_forever(async move {
         let dir = std::env::current_exe()
@@ -36,17 +40,22 @@ pub fn install(mut app: AppState) {
             ))
             .current_dir(dir)
             .status()
-            .await
-            .is_ok_and(|s| s.success());
-        if installed {
-            if let Ok(exe) = std::env::current_exe() {
-                let _ = std::process::Command::new(exe).spawn();
-            }
-            return dioxus::desktop::window().close();
-        }
+            .await;
         device.updating.set(false);
-        app.error.set(Some("Update failed".into()));
+        match installed {
+            Ok(status) if status.success() => {}
+            Ok(status) => return app.report("Update failed", status),
+            Err(e) => return app.report("Update failed", e),
+        }
+        match std::env::current_exe().and_then(|exe| std::process::Command::new(exe).spawn()) {
+            Ok(_) => dioxus::desktop::window().close(),
+            Err(e) => app.report("Update installed, restart StreamVault", e),
+        }
     });
+}
+
+async fn manifest(url: &str) -> reqwest::Result<String> {
+    reqwest::get(url).await?.error_for_status()?.text().await
 }
 
 fn manifest_version(manifest: &str) -> Option<&str> {
@@ -75,6 +84,14 @@ fn is_newer(remote: &str, local: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http_test::serve;
+
+    #[tokio::test]
+    async fn manifest_fetch_fails_on_http_errors() {
+        let (url, _) = serve(&[(404, "Not Found"), (200, "version = \"9.9.9\"")]).await;
+        assert!(manifest(&url).await.is_err());
+        assert_eq!(manifest(&url).await.unwrap(), "version = \"9.9.9\"");
+    }
 
     #[test]
     fn manifest_version_reads_package_version() {

@@ -1,5 +1,6 @@
 use super::config::{
-    DOWNLOADS_FILE, PREFS_FILE, REPLICA_FILE, WATCH_FILE, read_json, state_dir, write_json,
+    DOWNLOADS_FILE, PREFS_FILE, REPLICA_FILE, WATCH_FILE, missing_ok, read_json, state_dir,
+    write_json,
 };
 use super::download::Download;
 use crate::prefs::PlayerPrefs;
@@ -43,16 +44,14 @@ fn migrate(dir: &Path) -> Option<Replica> {
     let mut replica = saved.unwrap_or_else(Replica::fresh);
     if watch.is_file() {
         let items = parse_items(load(&watch));
-        replica.record_watch(&replica.watch(), &items, modified(&watch));
+        replica.record_watch(&items, modified(&watch));
     }
     if prefs.is_file() {
         replica.record_prefs(&load::<PlayerPrefs>(&prefs), modified(&prefs));
     }
     if save(&path, &replica) {
         for legacy in [watch, prefs] {
-            if let Err(e) = fs::remove_file(&legacy)
-                && e.kind() != io::ErrorKind::NotFound
-            {
+            if let Err(e) = missing_ok(fs::remove_file(&legacy)) {
                 warn!("{} remove error: {e}", legacy.display());
             }
         }
@@ -60,7 +59,7 @@ fn migrate(dir: &Path) -> Option<Replica> {
     Some(replica)
 }
 
-fn load<T: DeserializeOwned + Default>(path: &Path) -> T {
+pub fn load<T: DeserializeOwned + Default>(path: &Path) -> T {
     read_json(path).unwrap_or_else(|e| {
         if e.kind() != io::ErrorKind::NotFound {
             warn!("{} read error: {e}", path.display());

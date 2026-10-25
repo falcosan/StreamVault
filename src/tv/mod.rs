@@ -7,6 +7,7 @@ use crate::providers::{Episode, MediaEntry};
 use crate::sync::SyncConfig;
 use dioxus::prelude::*;
 use remote::{Direction, Key};
+pub use remote::{focus_key, restore as restore_focus};
 use std::time::Duration;
 pub use storage::{load_replica, save_replica};
 use wasm_bindgen::prelude::*;
@@ -58,18 +59,10 @@ pub fn use_device(app: AppState) {
 
 pub fn sync_config() -> SyncConfig {
     SyncConfig {
-        enabled: SYNC_URL.is_some() && SYNC_TOKEN.is_some(),
+        enabled: true,
         endpoint: SYNC_URL.unwrap_or_default().into(),
         token: SYNC_TOKEN.unwrap_or_default().into(),
     }
-}
-
-pub fn focus_key() -> Option<String> {
-    remote::focus_key()
-}
-
-pub fn restore_focus(key: Option<String>) {
-    remote::restore(key);
 }
 
 #[component]
@@ -115,12 +108,7 @@ fn handle(app: AppState, key: Key) -> bool {
         }
         Key::Select if remote::is_focused("#search-go") => remote::focus("#search-input"),
         Key::Select => remote::activate(),
-        Key::Back => {
-            if !app.back() {
-                remote::exit();
-            }
-            true
-        }
+        Key::Back => app.back() || remote::exit(),
         _ => false,
     }
 }
@@ -205,12 +193,12 @@ fn pause_when_hidden(app: AppState) {
     let Some(document) = web_sys::window().and_then(|w| w.document()) else {
         return;
     };
-    let listener = Closure::<dyn FnMut()>::new(move || {
-        let hidden = web_sys::window()
-            .and_then(|w| w.document())
-            .is_some_and(|d| d.hidden());
-        if hidden && !app.player.status.peek().paused {
-            app.player.toggle();
+    let listener = Closure::<dyn FnMut()>::new({
+        let document = document.clone();
+        move || {
+            if document.hidden() && !app.player.status.peek().paused {
+                app.player.toggle();
+            }
         }
     });
     let _ = document

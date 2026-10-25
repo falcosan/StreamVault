@@ -5,7 +5,6 @@ readonly DX_VERSION=0.7.10
 readonly ANDROID_API=36
 readonly ANDROID_BUILD_TOOLS=36.0.0
 readonly ANDROID_MIN_API=21
-readonly ANDROID_ID=local.streamvault
 readonly WEBVIEW_MIN=96
 readonly CMDLINE_TOOLS=https://dl.google.com/android/repository/commandlinetools-mac-15641748_latest.zip
 readonly TIZEN_STUDIO=https://download.tizen.org/sdk/Installer/tizen-studio_6.1/web-ide_Tizen_Studio_6.1_macos-64.dmg
@@ -13,14 +12,15 @@ readonly SAMSUNG_PORT=4794
 readonly SAMSUNG_LOGIN="https://account.samsung.com/mobile/account/check.do?serviceID=v285zxnl3h&actionID=StartOAuth2&accessToken=Y&redirect_uri=http://localhost:$SAMSUNG_PORT/signin/callback"
 readonly SAMSUNG_API=https://svdca.samsungqbe.com/apis/v3
 readonly SCAN_MASK=0xfffffc00
+readonly PROBE_JOBS=64
 readonly BACKGROUND=151515
 readonly SOURCE=https://github.com/falcosan/StreamVault/archive/refs/heads/main.tar.gz
 
 cache="$HOME/Library/Caches/StreamVault"
-if [[ -z "${BASH_SOURCE[0]:-}" || "$(basename "${BASH_SOURCE[0]:-bash}")" == bash ]]; then
+if [[ ! -f "${BASH_SOURCE[0]:-}" ]]; then
   mkdir -p "$cache/source"
   find "$cache/source" -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +
-  curl -fsSL "$SOURCE" | tar xz -C "$cache/source" --strip-components 1
+  curl -fsSL "$SOURCE" | tar xzm -C "$cache/source" --strip-components 1
   exec bash "$cache/source/scripts/deploy-tv.sh" "$@" </dev/tty
 fi
 
@@ -32,6 +32,7 @@ out="$root/target/tv"
 log="$out/deploy.log"
 tizen_home="${TIZEN_HOME:-$HOME/tizen-studio}"
 android_home="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
+adb="$android_home/platform-tools/adb"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
 arch="$(uname -m | sed 's/arm64/aarch64/')"
 
@@ -42,6 +43,7 @@ raster() { run sips -s format png --resampleHeightWidth "$1" "$1" "$logo" --out 
 download() { [[ -s "$2" ]] || { curl -fsSL --retry 3 "$1" -o "$2.part" && mv "$2.part" "$2"; }; }
 port() { nc -z -G 1 "$1" "$2" &>/dev/null; }
 field() { plutil -extract "$1" raw -o - - 2>/dev/null | sed 's/&quot;/"/g; s/&amp;/\&/g'; }
+tizen_info() { curl -fsS --connect-timeout 1 -m 3 "http://$1:8001/api/v2/" 2>/dev/null; }
 
 wait_until() {
   local message=$1
@@ -53,7 +55,7 @@ wait_until() {
 
 probe() {
   local ip=$1 info
-  if info="$(curl -fsS --connect-timeout 1 -m 3 "http://$ip:8001/api/v2/" 2>/dev/null)" &&
+  if info="$(tizen_info "$ip")" &&
     [[ "$(field device.OS <<<"$info")" == Tizen ]]; then
     printf 'tizen\t%s\tSamsung %s (%s)\n' "$ip" "$(field device.name <<<"$info")" "$(field device.modelName <<<"$info")"
   elif port "$ip" 5555 || port "$ip" 6466; then
@@ -81,7 +83,7 @@ hosts() {
 }
 
 discover() {
-  local adb="$android_home/platform-tools/adb"
+  local probes=0
   if [[ -x "$adb" ]]; then
     "$adb" devices -l 2>/dev/null | awk '$2 == "device" && $1 !~ /:/ {
       model = $1; for (i = 3; i <= NF; i++) if ($i ~ /^model:/) model = substr($i, 7)
@@ -89,13 +91,17 @@ discover() {
   fi
   hosts | xargs -P 256 -n 1 ping -c 1 -t 1 -q &>/dev/null || true
   arp -an | awk '$4 ~ /:/ { gsub(/[()]/, "", $2); print $2 }' | sort -u | {
-    while read -r ip; do probe "$ip" & done
+    while read -r ip; do
+      probe "$ip" &
+      ((++probes % PROBE_JOBS)) || wait
+    done
     wait
   }
 }
 
 choose() {
-  local -a tvs=() labels=() line kind address name
+  local -a tvs=() labels=()
+  local line kind address name
   while IFS=$'\t' read -r kind address name; do
     case "$kind" in
       tizen | android) tvs+=("$kind"$'\t'"$address") labels+=("$name · $address") ;;
@@ -131,7 +137,9 @@ rust_tools() {
   [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
   if ! command -v rustup &>/dev/null; then
     export RUSTUP_HOME="$cache/rustup" CARGO_HOME="$cache/cargo" PATH="$cache/cargo/bin:$PATH"
-    if ! command -v rustup &>/dev/null; then
+    if command -v rustup &>/dev/null; then
+      run rustup update stable --no-self-update
+    else
       say "Installing Rust…"
       download https://sh.rustup.rs "$cache/rustup-init.sh"
       run sh "$cache/rustup-init.sh" -y --no-modify-path --profile minimal --default-toolchain stable
@@ -167,26 +175,26 @@ android_tools() {
   local sdkmanager="$android_home/cmdline-tools/latest/bin/sdkmanager"
   if [[ ! -x "$sdkmanager" ]]; then
     say "Installing the Android SDK tools…"
-    download "$CMDLINE_TOOLS" "$cache/cmdline-tools.zip"
+    local archive="$cache/${CMDLINE_TOOLS##*/}"
+    download "$CMDLINE_TOOLS" "$archive"
     rm -rf "$android_home/cmdline-tools/latest" "$cache/cmdline-tools"
-    run unzip -q "$cache/cmdline-tools.zip" -d "$cache"
+    run unzip -q "$archive" -d "$cache"
     mkdir -p "$android_home/cmdline-tools" && mv "$cache/cmdline-tools" "$android_home/cmdline-tools/latest"
   fi
-  if [[ ! -x "$android_home/build-tools/$ANDROID_BUILD_TOOLS/apksigner" || ! -f "$android_home/platforms/android-$ANDROID_API/android.jar" || ! -x "$android_home/platform-tools/adb" ]]; then
+  if [[ ! -x "$android_home/build-tools/$ANDROID_BUILD_TOOLS/apksigner" || ! -f "$android_home/platforms/android-$ANDROID_API/android.jar" || ! -x "$adb" ]]; then
     say "Installing the Android build tools…"
     yes | "$sdkmanager" --sdk_root="$android_home" --licenses &>/dev/null || true
     run "$sdkmanager" --sdk_root="$android_home" "platform-tools" "build-tools;$ANDROID_BUILD_TOOLS" "platforms;android-$ANDROID_API"
   fi
-  adb="$android_home/platform-tools/adb"
 }
 
 tizen_tools() {
   if [[ ! -x "$tizen_home/tools/ide/bin/tizen" ]]; then
     say "Installing Tizen Studio (about 3 GB, once)…"
-    local mount java="$HOME/.package-manager/jdk/Contents/Home/bin/java"
-    download "$TIZEN_STUDIO" "$cache/tizen-studio.dmg"
+    local mount java="$HOME/.package-manager/jdk/Contents/Home/bin/java" image="$cache/${TIZEN_STUDIO##*/}"
+    download "$TIZEN_STUDIO" "$image"
     mount="$(mktemp -d)"
-    run hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$cache/tizen-studio.dmg"
+    run hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$image"
     trap 'hdiutil detach -quiet "$mount"' EXIT
     local installer="$mount/installer.app/Contents/Resources/Java"
     run unzip -qq -o "$installer/tizen-sdk.zip" "jdk/*" -d "$HOME/.package-manager"
@@ -220,7 +228,7 @@ build_web() {
 
 developer_mode() {
   local info
-  info="$(curl -fsS -m 3 "http://$1:8001/api/v2/" 2>/dev/null)" &&
+  info="$(tizen_info "$1")" &&
     [[ "$(field device.developerMode <<<"$info")" == 1 && "$(field device.developerIP <<<"$info")" == "$2" ]]
 }
 
@@ -295,9 +303,10 @@ samsung_certificate() {
 install_wgt() {
   local stage="$out/tizen"
   [[ -n "$2" ]] || return 1
-  rm -rf "$stage" && mkdir -p "$stage"
-  cp -R "$public"/. "$stage"/
-  sed "/<widget /s/ version=\"[^\"]*\"/ version=\"$version\"/" "$resources/tizen/config.xml" >"$stage/config.xml"
+  run rm -rf "$stage"
+  run cp -R "$public" "$stage"
+  sed "s/<widget /<widget version=\"$version\" /" "$resources/tizen/config.xml" >"$stage/config.xml" ||
+    die "Cannot write $stage/config.xml."
   raster 512 "$stage/icon.png"
   run "$tizen" package -t wgt -s "$2" -o "$out" -- "$stage"
   result="$("$tizen" install -s "$1" -n "$out/StreamVault.wgt" 2>&1)" || true
@@ -352,7 +361,7 @@ adb_online() {
 }
 
 build_apk() {
-  local work="$out/android" jar="$android_home/platforms/android-$ANDROID_API/android.jar"
+  local package=$1 work="$out/android" jar="$android_home/platforms/android-$ANDROID_API/android.jar"
   local tools="$android_home/build-tools/$ANDROID_BUILD_TOOLS" keystore="$HOME/.android/debug.keystore" major minor patch
   IFS=. read -r major minor patch <<<"$version"
   mkdir -p "$work/res/drawable" "$work/classes" "$work/dex" "$work/assets" "$HOME/.android"
@@ -367,26 +376,27 @@ build_apk() {
     --manifest "$resources/android/AndroidManifest.xml" --min-sdk-version "$ANDROID_MIN_API" \
     --target-sdk-version "$ANDROID_API" --version-code $((major * 10000 + minor * 100 + patch)) --version-name "$version"
   run javac --release 17 -classpath "$jar" -d "$work/classes" "$resources/android/MainActivity.java"
-  run "$tools/d8" --release --min-api "$ANDROID_MIN_API" --lib "$jar" --output "$work/dex" "$work"/classes/local/streamvault/*.class
+  run "$tools/d8" --release --min-api "$ANDROID_MIN_API" --lib "$jar" --output "$work/dex" "$work/classes/${package//.//}"/*.class
   (cd "$work/dex" && run zip -q "$work/unsigned.apk" classes.dex)
   run "$tools/zipalign" -f 4 "$work/unsigned.apk" "$work/aligned.apk"
   run "$tools/apksigner" sign --ks "$keystore" --ks-pass pass:android --out "$out/StreamVault.apk" "$work/aligned.apk"
 }
 
 deploy_android() {
+  local app webview
+  app="$(sed -n 's/.*<manifest .*package="\([^"]*\)".*/\1/p' "$resources/android/AndroidManifest.xml")"
   android_tools
   wait_until "On the TV: enable Developer options (tap Build 7 times in About), turn on USB, network or wireless debugging (Fire TV: ADB debugging), and allow this Mac when asked." \
     adb_online "$1"
-  local webview
   webview="$("$adb" -s "$serial" shell dumpsys webviewupdate 2>/dev/null |
     sed -n 's/.*Current WebView package (name, version): (.*, \([0-9]*\)\..*/\1/p')"
   if [[ -n "$webview" ]] && ((webview < WEBVIEW_MIN)); then
     say "This TV has WebView $webview; StreamVault needs $WEBVIEW_MIN or later: update Android System WebView from the Play Store."
   fi
   build_web
-  build_apk
+  build_apk "$app"
   run "$adb" -s "$serial" install -r "$out/StreamVault.apk"
-  run "$adb" -s "$serial" shell am start -n "$ANDROID_ID/.MainActivity"
+  run "$adb" -s "$serial" shell am start -n "$app/.MainActivity"
 }
 
 main() {

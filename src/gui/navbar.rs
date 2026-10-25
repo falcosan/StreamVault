@@ -16,23 +16,21 @@ pub fn Navbar() -> Element {
                 class: "logo",
                 aria_label: "Home",
                 onclick: move |_| app.navigate(Screen::Home),
-                div { class: "logo-icon", dangerous_inner_html: LOGO }
+                span { class: "logo-icon", dangerous_inner_html: LOGO }
             }
-            div { class: "nav-spacer" }
             for &(target, label) in NAV {
                 button {
                     key: "{label}",
                     class: if screen == target { "nav-link active" } else { "nav-link" },
+                    aria_current: if screen == target { "page" },
                     onclick: move |_| app.navigate(target),
                     "{label}"
                 }
             }
-            div { class: "nav-fill" }
             div { class: "search-bar",
                 input {
                     id: "search-input",
                     class: "search-input",
-                    tabindex: "-1",
                     placeholder: "Search...",
                     aria_label: "Search",
                     value: "{query}",
@@ -46,7 +44,7 @@ pub fn Navbar() -> Element {
                 button {
                     id: "search-go",
                     class: "search-go",
-                    aria_label: "Search",
+                    aria_label: "Submit search",
                     disabled: *app.search.busy.read(),
                     onclick: move |_| {
                         if query.peek().trim().is_empty() {
@@ -55,7 +53,7 @@ pub fn Navbar() -> Element {
                             app.search();
                         }
                     },
-                    div { class: "search-icon", dangerous_inner_html: SEARCH_ICON }
+                    span { class: "search-icon", dangerous_inner_html: SEARCH_ICON }
                 }
             }
             NavTools {}

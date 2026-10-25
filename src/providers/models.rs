@@ -35,7 +35,6 @@ pub struct Episode {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone)]
 pub struct StreamUrl {
     pub url: String,
     #[cfg(feature = "desktop")]
@@ -43,11 +42,26 @@ pub struct StreamUrl {
 }
 
 impl StreamUrl {
-    pub fn new(url: impl Into<String>) -> Self {
+    pub(super) fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
             #[cfg(feature = "desktop")]
             headers: Vec::new(),
+        }
+    }
+}
+
+impl Episode {
+    pub fn code(&self, season: u32) -> String {
+        format!("S{season:02}E{:02}", self.number)
+    }
+
+    pub fn label(&self, season: u32) -> String {
+        let code = self.code(season);
+        if self.name.is_empty() {
+            code
+        } else {
+            format!("{code} - {}", self.name)
         }
     }
 }
@@ -61,10 +75,6 @@ impl MediaEntry {
         self.media_type == MediaType::Movie
     }
 
-    pub fn year_display(&self) -> &str {
-        self.year.as_deref().unwrap_or_default()
-    }
-
     pub fn display_title(&self) -> String {
         match &self.year {
             Some(year) => format!("{} ({year})", self.name),
@@ -72,13 +82,15 @@ impl MediaEntry {
         }
     }
 
-    pub fn episode_title(&self, season: u32, episode: &Episode) -> String {
-        let code = format!("{} S{season:02}E{:02}", self.name, episode.number);
-        if episode.name.is_empty() {
-            code
-        } else {
-            format!("{code} - {}", episode.name)
+    pub fn title(&self, season: Option<u32>, episode: Option<&Episode>) -> String {
+        match (season, episode) {
+            (Some(season), Some(episode)) => self.episode_title(season, episode),
+            _ => self.display_title(),
         }
+    }
+
+    pub fn episode_title(&self, season: u32, episode: &Episode) -> String {
+        format!("{} {}", self.name, episode.label(season))
     }
 }
 
@@ -87,6 +99,20 @@ pub fn next_episode(episodes: &[Episode], after: u32) -> Option<&Episode> {
         .iter()
         .filter(|e| e.number > after)
         .min_by_key(|e| e.number)
+}
+
+#[cfg(test)]
+impl Episode {
+    pub(crate) fn numbered(number: u32, name: &str) -> Self {
+        Self {
+            id: u64::from(number),
+            number,
+            name: name.into(),
+            duration: None,
+            image_url: None,
+            description: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -102,17 +128,6 @@ mod tests {
         }
     }
 
-    fn episode(number: u32, name: &str) -> Episode {
-        Episode {
-            id: u64::from(number),
-            number,
-            name: name.into(),
-            duration: None,
-            image_url: None,
-            description: None,
-        }
-    }
-
     #[test]
     fn records_saved_before_backdrops_still_load() {
         let json = r#"{"id":1,"name":"x","slug":"","provider":0,"provider_name":"","language":"","media_type":"Movie","alternative_names":[],"year":null,"score":null,"image_url":null,"description":null}"#;
@@ -124,7 +139,7 @@ mod tests {
     fn episode_synopses_are_never_persisted() {
         let episode = Episode {
             description: Some("Plot".into()),
-            ..episode(1, "Pilot")
+            ..Episode::numbered(1, "Pilot")
         };
         let json = serde_json::to_value(&episode).unwrap();
         assert!(json.get("description").is_none());
@@ -143,15 +158,16 @@ mod tests {
     }
 
     #[test]
-    fn year_display_is_empty_without_year() {
-        assert_eq!(movie().year_display(), "2010");
-        assert_eq!(MediaEntry::default().year_display(), "");
-    }
-
-    #[test]
     fn is_movie_follows_media_type() {
         assert!(movie().is_movie());
         assert!(!MediaEntry::default().is_movie());
+    }
+
+    #[test]
+    fn episode_label_adds_the_name_only_when_present() {
+        assert_eq!(Episode::numbered(3, "").code(1), "S01E03");
+        assert_eq!(Episode::numbered(3, "").label(1), "S01E03");
+        assert_eq!(Episode::numbered(12, "Pilot").label(10), "S10E12 - Pilot");
     }
 
     #[test]
@@ -160,16 +176,23 @@ mod tests {
             name: "Lost".into(),
             ..Default::default()
         };
-        assert_eq!(show.episode_title(1, &episode(3, "")), "Lost S01E03");
         assert_eq!(
-            show.episode_title(2, &episode(5, "Pilot")),
+            show.episode_title(1, &Episode::numbered(3, "")),
+            "Lost S01E03"
+        );
+        assert_eq!(
+            show.episode_title(2, &Episode::numbered(5, "Pilot")),
             "Lost S02E05 - Pilot"
         );
     }
 
     #[test]
     fn next_episode_picks_lowest_higher_number() {
-        let episodes = [episode(3, ""), episode(1, ""), episode(2, "")];
+        let episodes = [
+            Episode::numbered(3, ""),
+            Episode::numbered(1, ""),
+            Episode::numbered(2, ""),
+        ];
         assert_eq!(next_episode(&episodes, 1).map(|e| e.number), Some(2));
         assert!(next_episode(&episodes, 3).is_none());
     }

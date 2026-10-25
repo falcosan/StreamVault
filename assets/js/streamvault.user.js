@@ -82,6 +82,8 @@
 
   const STORE_KEY = "sv:replica";
   const MAX_WATCH = 100;
+  const MAX_CHANGES = 500;
+  const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
   const PREFS_DEFAULTS = {
     audio_lang: "",
     subtitle_lang: "",
@@ -91,6 +93,17 @@
 
   const wins = (a, b) => a.at > b.at || (a.at === b.at && a.device > b.device);
   const watchKey = (provider, id) => `watch:${provider}:${id}`;
+  const liveWatch = (replica) =>
+    Object.values(replica.entries)
+      .filter((r) => r.key.startsWith("watch:") && r.value && r.value.entry)
+      .sort((a, b) => b.at - a.at || (a.key < b.key ? -1 : 1));
+
+  function put(replica, key, value, now) {
+    const current = replica.entries[key];
+    const at = Math.max(now, current ? current.at + 1 : 0);
+    replica.entries[key] = { key, value, at, device: replica.device };
+    replica.pending[key] = { key, value, at };
+  }
 
   const store = {
     inflight: null,
@@ -113,9 +126,7 @@
       } catch (_) {}
     },
     watch() {
-      return Object.values(this.load().entries)
-        .filter((r) => r.key.startsWith("watch:") && r.value && r.value.entry)
-        .sort((a, b) => b.at - a.at || (a.key < b.key ? -1 : 1))
+      return liveWatch(this.load())
         .slice(0, MAX_WATCH)
         .map((r) => r.value);
     },
@@ -124,10 +135,20 @@
     },
     write(key, value) {
       const replica = this.load();
-      const current = replica.entries[key];
-      const at = Math.max(Date.now(), current ? current.at + 1 : 0);
-      replica.entries[key] = { key, value, at, device: replica.device };
-      replica.pending[key] = { key, value, at };
+      const now = Date.now();
+      put(replica, key, value, now);
+      for (const r of liveWatch(replica).slice(MAX_WATCH)) {
+        put(replica, r.key, null, now);
+      }
+      for (const r of Object.values(replica.entries)) {
+        if (
+          r.value === null &&
+          !replica.pending[r.key] &&
+          now - r.at > TOMBSTONE_TTL_MS
+        ) {
+          delete replica.entries[r.key];
+        }
+      }
       this.save(replica);
       return this.sync();
     },
@@ -136,7 +157,7 @@
         return this.inflight.catch(() => {}).then(() => this.sync());
       }
       const before = this.load();
-      const sent = Object.values(before.pending);
+      const sent = Object.values(before.pending).slice(0, MAX_CHANGES);
       this.inflight = http(
         "POST",
         ENDPOINT,
@@ -152,11 +173,19 @@
           const replica = this.load();
           const processed = (change) =>
             sent.some((s) => s.key === change.key && s.at === change.at);
-          if (res.reset) {
-            for (const key of Object.keys(replica.entries)) {
-              if (!replica.pending[key]) delete replica.entries[key];
+          const wiped =
+            res.id && replica.document && res.id !== replica.document;
+          if (wiped || res.reset) {
+            for (const { key, value, at } of Object.values(replica.entries)) {
+              if (replica.pending[key]) continue;
+              if (wiped) {
+                replica.pending[key] = { key, value, at };
+              } else {
+                delete replica.entries[key];
+              }
             }
           }
+          if (res.id) replica.document = res.id;
           for (const record of res.entries) {
             const change = replica.pending[record.key];
             if (change) {
@@ -166,7 +195,7 @@
             }
             replica.entries[record.key] = record;
           }
-          replica.since = res.seq;
+          replica.since = wiped ? 0 : res.seq;
           this.save(replica);
         })
         .finally(() => {
@@ -204,12 +233,15 @@
     const tag = (t) => norm((t.language || "") + " " + (t.label || ""));
 
     function pickIndex(tracks, wantLang) {
-      if (wantLang) {
-        for (let i = 0; i < tracks.length; i++) {
-          if (tag(tracks[i]).includes(norm(wantLang))) return i;
-        }
-      }
-      return 0;
+      const wanted = norm(wantLang);
+      if (!wanted) return 0;
+      const list = Array.from(tracks);
+      const exact = list.findIndex((t) =>
+        [t.language, t.label].some((value) => norm(value) === wanted),
+      );
+      const index =
+        exact >= 0 ? exact : list.findIndex((t) => tag(t).includes(wanted));
+      return Math.max(index, 0);
     }
 
     function applyTracks(prefs) {
@@ -410,6 +442,10 @@
     return res.json();
   }
 
+  function cdnBase() {
+    return `${location.protocol}//cdn.${location.hostname.replace(/^www\./, "")}`;
+  }
+
   function watchContext() {
     const m = location.pathname.match(/^\/([a-z]{2})\/watch\/(\d+)/);
     if (!m) return null;
@@ -441,9 +477,7 @@
       name: title.name || document.title.replace(/\s*[-|].*$/, "").trim(),
       slug: title.slug || "",
       mediaType: title.type === "movie" ? "Movie" : "Series",
-      imageUrl: poster
-        ? `${location.protocol}//cdn.${location.host}/images/${poster.filename}`
-        : null,
+      imageUrl: poster ? `${cdnBase()}/images/${poster.filename}` : null,
       year: title.release_date ? String(title.release_date).slice(0, 4) : null,
       score: title.score != null ? String(title.score) : null,
       season: season != null ? Number(season) : null,
@@ -476,11 +510,11 @@
     const existing = store
       .watch()
       .find((i) => i.entry.provider === PROVIDER && i.entry.id === ctx.mediaId);
-    if (!existing && !ctx.hasTitle) return store.sync();
+    if (!existing && !ctx.hasTitle) return Promise.resolve();
     const mediaType = existing ? existing.entry.media_type : ctx.mediaType;
     const finished = duration > 0 && duration - current <= 20;
     if (finished && mediaType === "Movie") {
-      return existing ? store.write(key, null) : store.sync();
+      return existing ? store.write(key, null) : Promise.resolve();
     }
     const item = {
       entry: existing
@@ -624,8 +658,7 @@
         /^cdn\.streamingcommunity/i.test(url.hostname) &&
         /^(www\.)?streamingcommunity/i.test(location.hostname)
       ) {
-        url.hostname = "cdn." + location.hostname.replace(/^www\./, "");
-        return url.toString();
+        return `${cdnBase()}${url.pathname}${url.search}`;
       }
     } catch (_) {}
     return u;
@@ -884,12 +917,12 @@
     function ensurePoster() {
       if (!ctx || !ctx.hasTitle || !ctx.slug) return;
       const key = String(ctx.mediaId);
-      if (posterCache[key] && posterCache[key] !== "pending") {
-        if (!ctx.imageUrl) ctx.imageUrl = posterCache[key];
+      if (key in posterCache) {
+        if (posterCache[key] && !ctx.imageUrl) ctx.imageUrl = posterCache[key];
         return;
       }
-      if (ctx.imageUrl || posterCache[key] === "pending") return;
-      posterCache[key] = "pending";
+      if (ctx.imageUrl) return;
+      posterCache[key] = null;
       const mediaId = ctx.mediaId;
       fetchPage(`/${ctx.lang}/titles/${ctx.mediaId}-${ctx.slug}`)
         .then((p) => {
@@ -899,18 +932,14 @@
             imgs.find((i) => i.type === "poster") ||
             imgs.find((i) => i.type === "cover") ||
             null;
-          const cdn =
-            (p && p.props && p.props.cdn_url) ||
-            `${location.protocol}//cdn.${location.hostname.replace(/^www\./, "")}`;
+          const cdn = (p && p.props && p.props.cdn_url) || cdnBase();
           const url = img ? `${cdn}/images/${img.filename}` : null;
           posterCache[key] = url;
           if (url && ctx && ctx.mediaId === mediaId && !ctx.imageUrl) {
             ctx.imageUrl = url;
           }
         })
-        .catch(() => {
-          delete posterCache[key];
-        });
+        .catch(() => {});
     }
 
     let ctxFetchAt = 0;

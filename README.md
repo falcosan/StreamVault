@@ -28,7 +28,7 @@
 curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/package.sh" | bash
 ```
 
-`StreamVault.app` appears in the current folder, ready to drag into Applications.
+`StreamVault.app` appears in the current folder, ready to drag into Applications. The source, the build and, when Rust is not already installed, Rust itself stay in `~/Library/Caches/StreamVault`, so updates rebuild only what changed; delete that folder to free the space.
 
 **TV**
 
@@ -42,10 +42,10 @@ No Rust, SDK or Java to set up beforehand: the scripts fetch what is missing. Ru
 
 ## Why StreamVault
 
-- **Everything in one place.** StreamingCommunity, RaiPlay and more in a single catalogue and a single search.
-- **Built for the remote.** Every screen works with the D-pad; seeking follows your thumb instantly, audio and subtitles are one press away.
-- **Continue Watching everywhere.** Progress and track choices follow you across Mac, TV and browser, stored in your own Google Drive.
-- **Downloads on the Mac.** Save movies and episodes with the tracks you want, merged into MP4 by [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) and [FFmpeg](https://ffmpeg.org/).
+- **Everything in one place.** StreamingCommunity's catalogue, and one search across StreamingCommunity, RaiPlay, the Discovery channels and, on the Mac, AnimeUnity.
+- **Built for the remote.** Every screen works with the D-pad; seeking follows your thumb instantly, and the audio and subtitle menus sit right under the progress bar.
+- **Continue Watching everywhere.** Progress and track choices follow you across Mac, TV and the StreamingCommunity site in your browser, stored in your own Google Drive.
+- **Downloads on the Mac.** Save movies and episodes with the tracks you want: [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) fetches them, [FFmpeg](https://ffmpeg.org/) merges video and audio into MP4, subtitles sit alongside as `.vtt`.
 - **The TV stands alone.** Catalogue, playback and sync run on the TV itself: no server, and no Mac once it is installed.
 - **Native and light.** One Rust codebase built with [Dioxus](https://dioxuslabs.com/) for every screen; the Mac app updates itself.
 
@@ -54,8 +54,8 @@ No Rust, SDK or Java to set up beforehand: the scripts fetch what is missing. Ru
 | TV                    | Works on                                              |
 | --------------------- | ----------------------------------------------------- |
 | Samsung (Tizen)       | Tizen 8 or later: 2024 models, and older ones updated |
-| Android TV, Google TV | Android 5 or later with an up-to-date System WebView  |
-| Fire TV               | Fire OS models (not the newer Vega OS)                |
+| Android TV, Google TV | Android 5 or later with System WebView 96+ (tested on Android 16) |
+| Fire TV               | Fire OS models (not the newer Vega OS); the same APK, not yet tried on a device |
 
 LG webOS, Hisense VIDAA, Philips Titan OS and Roku cannot run it: [docs/TV.md](docs/TV.md) explains why, along with the remote controls and how the TV build works.
 
@@ -69,7 +69,10 @@ Optional and private: a small Google Apps Script keeps one JSON file in your Dri
 cargo run                  # run the Mac app
 ./scripts/package.sh       # build dist/StreamVault.app
 ./scripts/deploy-tv.sh     # build and install on a TV
+./scripts/update.sh        # upgrade the dependencies in Cargo.toml and Cargo.lock
 ```
+
+The Mac app needs macOS 13 or later. With `cargo run`, downloads use the `N_m3u8DL-RE` and `ffmpeg` found in `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` or `~/.local/bin`; the packaged app ships its own.
 
 Settings, download options and file locations: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 

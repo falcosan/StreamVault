@@ -14,11 +14,11 @@ use dioxus::logger::tracing::warn;
 use futures::future::join_all;
 use raiplay::RaiPlay;
 use regex::Regex;
-use reqwest::{Client, ClientBuilder, IntoUrl, RequestBuilder, Response, Url};
+use reqwest::{Client, IntoUrl, RequestBuilder, Response, Url};
+use scraper::{Html, Selector};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use streaming_community::StreamingCommunity;
@@ -33,6 +33,7 @@ pub enum ProviderError {
     Network(String),
     Parse(String),
     StreamExtraction(String),
+    UnknownProvider(usize),
 }
 
 impl std::fmt::Display for ProviderError {
@@ -41,6 +42,7 @@ impl std::fmt::Display for ProviderError {
             Self::Network(m) => write!(f, "Network error: {m}"),
             Self::Parse(m) => write!(f, "Parse error: {m}"),
             Self::StreamExtraction(m) => write!(f, "Stream extraction error: {m}"),
+            Self::UnknownProvider(index) => write!(f, "Unknown provider {index}"),
         }
     }
 }
@@ -86,12 +88,9 @@ pub struct Providers(Arc<[Arc<dyn Provider>]>);
 
 impl Providers {
     pub fn new(timeout: Duration) -> Self {
-        let shared = Http::new(Client::builder(), timeout);
+        let shared = Http::new(timeout);
         let list: Vec<Arc<dyn Provider>> = vec![
-            Arc::new(StreamingCommunity::new(Http::new(
-                with_cookies(Client::builder()),
-                timeout,
-            ))),
+            Arc::new(StreamingCommunity::new(shared.clone())),
             Arc::new(RaiPlay::new(shared.clone())),
             Arc::new(Aurora::new(shared.clone(), "nove", "Nove")),
             Arc::new(Aurora::new(shared.clone(), "realtime", "RealTime")),
@@ -111,15 +110,12 @@ impl Providers {
         self.0
             .get(index)
             .cloned()
-            .ok_or_else(|| ProviderError::Parse(format!("Unknown provider {index}")))
+            .ok_or(ProviderError::UnknownProvider(index))
     }
 
     pub async fn search(&self, query: &str) -> Vec<MediaEntry> {
-        self.gather("search", |p| {
-            let query = query.to_owned();
-            async move { p.search(&query).await }
-        })
-        .await
+        self.gather("search", |p| async move { p.search(query).await })
+            .await
     }
 
     pub async fn catalog(&self) -> Vec<MediaEntry> {
@@ -127,14 +123,11 @@ impl Providers {
             .await
     }
 
-    pub async fn catalog_more(
-        &self,
-        seen: &mut HashSet<(usize, u64)>,
-    ) -> ProviderResult<Option<Vec<MediaEntry>>> {
+    pub async fn catalog_more(&self, seen: &mut HashSet<(usize, u64)>) -> Option<Vec<MediaEntry>> {
         loop {
             let mut fresh = Vec::new();
             let mut exhausted = true;
-            let mut failure = None;
+            let mut failed = false;
             for (index, provider) in self.0.iter().enumerate() {
                 match provider.catalog_more().await {
                     Ok(batch) => {
@@ -143,17 +136,17 @@ impl Providers {
                             tag(index, provider.name(), batch).filter(|e| seen.insert(e.key())),
                         );
                     }
-                    Err(e) => failure = Some(e),
+                    Err(e) => {
+                        warn!("{} catalog page failed: {e}", provider.name());
+                        failed = true;
+                    }
                 }
             }
-            if !fresh.is_empty() {
-                return Ok(Some(fresh));
-            }
-            if let Some(e) = failure {
-                return Err(e);
+            if failed || !fresh.is_empty() {
+                return Some(fresh);
             }
             if exhausted {
-                return Ok(None);
+                return None;
             }
         }
     }
@@ -195,8 +188,8 @@ struct Http {
 }
 
 impl Http {
-    fn new(builder: ClientBuilder, timeout: Duration) -> Self {
-        let client = builder
+    fn new(timeout: Duration) -> Self {
+        let client = Client::builder()
             .user_agent(USER_AGENT)
             .build()
             .expect("HTTP client must initialize");
@@ -212,18 +205,9 @@ impl Http {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn with_cookies(builder: ClientBuilder) -> ClientBuilder {
-    builder.cookie_store(true)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn with_cookies(builder: ClientBuilder) -> ClientBuilder {
-    builder
-}
-
 async fn fetch_json(request: RequestBuilder) -> ProviderResult<Value> {
-    Ok(send(request).await?.json().await?)
+    let bytes = send(request).await?.bytes().await?;
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 async fn fetch_text(request: RequestBuilder) -> ProviderResult<String> {
@@ -265,6 +249,16 @@ fn items(value: &Value) -> impl Iterator<Item = &Value> {
     value.as_array().into_iter().flatten()
 }
 
+fn uint(value: &Value) -> Option<u32> {
+    u32::try_from(value.as_u64()?).ok()
+}
+
+fn year(date: &str) -> Option<String> {
+    date.get(..4)
+        .filter(|y| y.bytes().all(|b| b.is_ascii_digit()))
+        .map(String::from)
+}
+
 fn non_blank(text: &str) -> Option<String> {
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_owned())
@@ -275,18 +269,37 @@ pub fn stable_hash(text: &str) -> u64 {
         .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)))
 }
 
+fn vixcloud_stream(player: &str) -> ProviderResult<StreamUrl> {
+    let url = vixcloud_playlist(&scripts(player))
+        .ok_or_else(|| ProviderError::StreamExtraction("No HLS params in script".into()))?;
+    Ok(StreamUrl {
+        url,
+        #[cfg(feature = "desktop")]
+        headers: vec![("User-Agent".into(), USER_AGENT.into())],
+    })
+}
+
+fn scripts(html: &str) -> String {
+    static SCRIPT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("script").unwrap());
+    Html::parse_document(html)
+        .select(&SCRIPT)
+        .map(|s| s.inner_html())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn vixcloud_playlist(script: &str) -> Option<String> {
     static TOKEN: LazyLock<Regex> = LazyLock::new(|| field("token", "[^'\"]+"));
     static EXPIRES: LazyLock<Regex> = LazyLock::new(|| field("expires", "[^'\"]+"));
     static URL: LazyLock<Regex> = LazyLock::new(|| field("url", "https?://[^'\"]+"));
     static FHD: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"window\.canPlayFHD\s*=\s*(true|false)").unwrap());
+        LazyLock::new(|| Regex::new(r"window\.canPlayFHD\s*=\s*true\b").unwrap());
 
     let capture = |re: &Regex| re.captures(script).map(|c| c[1].to_owned());
     let token = capture(&TOKEN)?;
     let expires = capture(&EXPIRES)?;
     let mut url = Url::parse(&capture(&URL)?).ok()?;
-    let fhd = capture(&FHD).is_some_and(|v| v == "true");
+    let fhd = FHD.is_match(script);
     let bandwidth = url.query_pairs().any(|(k, v)| k == "b" && v == "1");
     {
         let mut query = url.query_pairs_mut();
@@ -314,6 +327,7 @@ fn field(name: &str, value: &str) -> Regex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http_test::serve;
 
     struct Fake {
         name: &'static str,
@@ -376,45 +390,36 @@ mod tests {
         Err(ProviderError::Network("down".into()))
     }
 
-    async fn serve(statuses: &'static [u16]) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/", listener.local_addr().unwrap());
-        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counter = hits.clone();
-        tokio::spawn(async move {
-            for status in statuses {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let _ = socket.read(&mut [0; 1024]).await;
-                let response = format!(
-                    "HTTP/1.1 {status} X\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok"
-                );
-                socket.write_all(response.as_bytes()).await.unwrap();
-            }
-        });
-        (url, hits)
-    }
-
     #[tokio::test]
     async fn send_retries_transient_server_errors() {
-        let (url, hits) = serve(&[500, 200]).await;
+        let (url, paths) = serve(&[(500, "ok"), (200, "ok")]).await;
         assert_eq!(fetch_text(Client::new().get(url)).await.unwrap(), "ok");
-        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(paths.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]
     async fn send_gives_up_after_all_attempts() {
-        let (url, hits) = serve(&[503, 500, 502, 504]).await;
+        let (url, paths) = serve(&[(503, ""), (500, ""), (502, ""), (504, "")]).await;
         assert!(fetch_text(Client::new().get(url)).await.is_err());
-        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 4);
+        assert_eq!(paths.lock().unwrap().len(), 4);
     }
 
     #[tokio::test]
     async fn send_does_not_retry_client_errors() {
-        let (url, hits) = serve(&[404, 200]).await;
+        let (url, paths) = serve(&[(404, ""), (200, "ok")]).await;
         assert!(fetch_text(Client::new().get(url)).await.is_err());
-        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(paths.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn fetch_json_reports_invalid_json_as_parse_error() {
+        let (url, _) = serve(&[(200, "ok"), (200, r#"{"a":1}"#)]).await;
+        let client = Client::new();
+        assert!(matches!(
+            fetch_json(client.get(&url)).await,
+            Err(ProviderError::Parse(_))
+        ));
+        assert_eq!(fetch_json(client.get(&url)).await.unwrap()["a"], 1);
     }
 
     #[tokio::test]
@@ -453,7 +458,10 @@ mod tests {
     fn get_rejects_unknown_index() {
         let providers = Providers(vec![fake("A", vec![])].into());
         assert_eq!(providers.get(0).unwrap().name(), "A");
-        assert!(providers.get(1).is_err());
+        assert!(matches!(
+            providers.get(1),
+            Err(ProviderError::UnknownProvider(1))
+        ));
     }
 
     #[tokio::test]
@@ -481,21 +489,20 @@ mod tests {
             .into(),
         );
         let mut seen = HashSet::from([(0, 1)]);
-        let fresh = providers.catalog_more(&mut seen).await.unwrap().unwrap();
+        let fresh = providers.catalog_more(&mut seen).await.unwrap();
         assert_eq!(fresh.iter().map(|e| e.id).collect::<Vec<_>>(), [2]);
     }
 
     #[tokio::test]
-    async fn catalog_more_reports_exhaustion_and_failure() {
+    async fn catalog_more_ends_only_when_every_provider_is_exhausted() {
         let done = Providers(vec![fake("A", vec![])].into());
-        assert!(
-            done.catalog_more(&mut HashSet::new())
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(done.catalog_more(&mut HashSet::new()).await.is_none());
         let broken = Providers(vec![fake("A", vec![failure()])].into());
-        assert!(broken.catalog_more(&mut HashSet::new()).await.is_err());
+        assert_eq!(
+            broken.catalog_more(&mut HashSet::new()).await,
+            Some(Vec::new())
+        );
+        assert!(broken.catalog_more(&mut HashSet::new()).await.is_none());
     }
 
     #[test]
@@ -521,6 +528,50 @@ mod tests {
     }
 
     #[test]
+    fn uint_rejects_values_outside_u32() {
+        assert_eq!(uint(&serde_json::json!(7)), Some(7));
+        assert_eq!(uint(&serde_json::json!(u64::from(u32::MAX) + 1)), None);
+        assert_eq!(uint(&serde_json::json!(-1)), None);
+        assert_eq!(uint(&serde_json::json!("7")), None);
+    }
+
+    #[test]
+    fn year_reads_four_leading_digits() {
+        assert_eq!(year("2021-09-15").as_deref(), Some("2021"));
+        assert_eq!(year("1999").as_deref(), Some("1999"));
+        assert_eq!(year("Prima-2001"), None);
+        assert_eq!(year("202"), None);
+        assert_eq!(year(""), None);
+    }
+
+    #[test]
+    fn vixcloud_stream_reads_the_embed_page() {
+        let player = r#"<html><head><script src="/app.js"></script></head><body>
+            <script>
+                window.video = { id: '262696', filename: '', timestamps: [], };
+                window.streams = [{"name":"Server1","active":true,"url":"https:\/\/vixcloud.cc\/playlist\/262696?ub=1"}];
+                window.masterPlaylist = {
+                    params: { 'token': 'tok', 'expires': '1798073132', 'asn': '', },
+                    url: 'https://vixcloud.cc/playlist/262696',
+                }
+                window.canPlayFHD = true
+            </script>
+            <script>window.downloadUrl = 'https://animeunity.so/video/262696'</script>
+        </body></html>"#;
+        let stream = vixcloud_stream(player).unwrap();
+        assert_eq!(
+            stream.url,
+            "https://vixcloud.cc/playlist/262696?h=1&token=tok&expires=1798073132"
+        );
+        #[cfg(feature = "desktop")]
+        assert_eq!(
+            stream.headers,
+            [("User-Agent".to_owned(), USER_AGENT.to_owned())]
+        );
+        assert!(vixcloud_stream("<body><script>var a = 1</script></body>").is_err());
+    }
+
+    #[test]
     fn vixcloud_playlist_builds_signed_url() {
         let script = "window.masterPlaylist = { params: { 'token': 'abc', 'expires': '123', }, url: 'https://vixcloud.co/playlist/9?b=1&x=2', }; window.canPlayFHD = true";
         assert_eq!(
@@ -531,7 +582,8 @@ mod tests {
 
     #[test]
     fn vixcloud_playlist_omits_optional_flags() {
-        let script = r#"token: "t", expires: "e", url: "https://v.co/p/1""#;
+        let script =
+            r#"token: "t", expires: "e", url: "https://v.co/p/1"; window.canPlayFHD = false"#;
         assert_eq!(
             vixcloud_playlist(script).as_deref(),
             Some("https://v.co/p/1?token=t&expires=e")

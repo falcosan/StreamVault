@@ -21,6 +21,10 @@ impl WatchItem {
         }
     }
 
+    pub fn started(&self) -> bool {
+        self.current_time > 0.0
+    }
+
     fn episode_number(&self) -> Option<u32> {
         self.episode.as_ref().map(|e| e.number)
     }
@@ -74,6 +78,14 @@ pub fn start_of(entry: MediaEntry, season: u32, episode: Episode) -> WatchItem {
     }
 }
 
+pub fn next_season(seasons: &[u32], after: u32) -> Option<u32> {
+    seasons.iter().copied().filter(|s| *s > after).min()
+}
+
+pub fn first_episode(episodes: &[Episode]) -> Option<&Episode> {
+    episodes.iter().min_by_key(|e| e.number)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,17 +95,6 @@ mod tests {
             id,
             media_type,
             ..Default::default()
-        }
-    }
-
-    fn episode(number: u32) -> Episode {
-        Episode {
-            id: u64::from(number),
-            number,
-            name: format!("Ep {number}"),
-            duration: Some(45),
-            image_url: None,
-            description: None,
         }
     }
 
@@ -113,7 +114,7 @@ mod tests {
             current_time: time,
             duration: 100.0,
             season: Some(1),
-            episode: Some(episode(number)),
+            episode: Some(Episode::numbered(number, "")),
         }
     }
 
@@ -179,7 +180,7 @@ mod tests {
 
     #[test]
     fn record_near_end_advances_series_once() {
-        let episodes = [episode(1), episode(2)];
+        let episodes = [Episode::numbered(1, ""), Episode::numbered(2, "")];
         let mut items = vec![series_at(1, 30.0)];
         assert!(record(&mut items, series_at(1, 90.0), &episodes));
         assert_eq!(items[0].episode.as_ref().unwrap().number, 2);
@@ -201,14 +202,43 @@ mod tests {
         assert!(!finish(
             &mut items,
             &series_at(2, 99.0),
-            &[episode(1), episode(2)]
+            &[Episode::numbered(1, ""), Episode::numbered(2, "")]
         ));
         assert_eq!(items.len(), 1);
     }
 
     #[test]
+    fn finish_advances_once_the_season_episodes_are_known() {
+        let mut items = vec![series_at(1, 99.0)];
+        assert!(!finish(&mut items, &series_at(1, 99.0), &[]));
+        assert!(finish(
+            &mut items,
+            &series_at(1, 99.0),
+            &[Episode::numbered(1, ""), Episode::numbered(2, "")]
+        ));
+        assert_eq!(items[0].episode.as_ref().unwrap().number, 2);
+    }
+
+    #[test]
+    fn next_season_is_the_lowest_later_one() {
+        assert_eq!(next_season(&[3, 1, 2], 1), Some(2));
+        assert_eq!(next_season(&[1, 2], 2), None);
+    }
+
+    #[test]
+    fn first_episode_is_the_lowest_number() {
+        let episodes = [
+            Episode::numbered(3, ""),
+            Episode::numbered(0, ""),
+            Episode::numbered(1, ""),
+        ];
+        assert_eq!(first_episode(&episodes).map(|e| e.number), Some(0));
+        assert!(first_episode(&[]).is_none());
+    }
+
+    #[test]
     fn start_of_resets_progress() {
-        let item = start_of(entry(1, MediaType::Series), 2, episode(1));
+        let item = start_of(entry(1, MediaType::Series), 2, Episode::numbered(1, ""));
         assert_eq!(
             (item.current_time, item.duration, item.season),
             (0.0, 0.0, Some(2))

@@ -35,8 +35,8 @@ cross-site request natively, answering CORS itself; a small script added to
 `index.html` hands request bodies to it, since the WebView does not expose
 them. What a browser still forbids also applies on both: requests cannot set
 `Cookie`, `Referer` or `User-Agent`, and responses do not expose `Set-Cookie`.
-StreamingCommunity, RaiPlay and Aurora work without them; AnimeUnity's login
-flow needs them (and its search currently fails on macOS as well).
+StreamingCommunity, RaiPlay and Aurora do not need them; AnimeUnity's login
+flow needs them, so AnimeUnity works on macOS only.
 
 ## TVs
 
@@ -52,8 +52,8 @@ flow needs them (and its search currently fails on macOS as well).
 The WASM uses reference types (`wasm-bindgen` keeps JS values in an `externref`
 table), so the TV's web engine must be Chromium 96 or later: Samsung models
 running Tizen 8 or later (2024 on, and earlier ones updated to it); on Android
-the system WebView, which the Play Store keeps updated and the script checks
-before installing.
+the system WebView, which the script checks before installing (Android TV
+updates it from the Play Store, Fire TV with system updates).
 
 ## Build and install
 
@@ -77,26 +77,30 @@ which unpacks the latest `main` into `~/Library/Caches/StreamVault/source`
   debugging allowed on Android (it asks for the pairing code when the TV shows
   one);
 - enables sync with the endpoint and token of the macOS `sync.json` when that
-  file exists and is enabled (see the root README); otherwise the TV keeps its
+  file exists and is enabled (see [CONFIGURATION.md](CONFIGURATION.md#sync)); otherwise the TV keeps its
   state locally;
-- builds and signs `target/tv/StreamVault.wgt` (with the active certificate
-  profile) or `target/tv/StreamVault.apk` (with `~/.android/debug.keystore`,
+- builds and signs `target/tv/StreamVault.wgt` (with the Samsung certificate
+  profile below) or `target/tv/StreamVault.apk` (with `~/.android/debug.keystore`,
   created if missing, so updates keep the app data), both with the version of
   `Cargo.toml`, then installs and launches it.
 
 Samsung TVs only install apps signed with a Samsung certificate issued to a
 Samsung account for that TV's device id. The script uses the profile
-`streamvault-<device id>`, else the active one; when there is none or the TV
-rejects it, it creates the certificate as Certificate Manager does: it opens
+`streamvault-<device id>`, else the active one; when there is none, or the TV
+rejects the active one's certificate, it creates the certificate as
+Certificate Manager does: it opens
 the Samsung sign-in in the browser, takes the answer on `localhost:4794`, reads
 the device id over `sdb`, sends the author and distributor requests to
 Samsung, stores the result in `~/SamsungCertificate/streamvault-<device id>`,
 registers the profile, allows the TV to install with it and retries. Build
 output goes to `target/tv/deploy.log`.
 
+Downloaded installers stay in `~/Library/Caches/StreamVault` for the next run,
+and Tizen Studio's installer unpacks its Java runtime into `~/.package-manager`.
+
 The sync settings are compiled into the WASM, so run it again when `sync.json`
-changes. `STREAMVAULT_SYNC_URL`, `STREAMVAULT_SYNC_TOKEN`, `TV`, `ANDROID_HOME`
-and `TIZEN_HOME` override the defaults.
+changes. `STREAMVAULT_SYNC_URL`, `STREAMVAULT_SYNC_TOKEN`, `TV`, `ANDROID_HOME`,
+`TIZEN_HOME` and `JAVA_HOME` override the defaults.
 
 ## Remote
 
