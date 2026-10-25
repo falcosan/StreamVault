@@ -807,10 +807,10 @@ replaced by a per-key last-writer-wins map:
   the macOS app folds its old `continue_watching.json`/`player_prefs.json` into
   the replica and removes them. Userscript: the same replica in `localStorage`.
 - The server code is tested from Rust: `sync.rs` runs `google_apps_script.gs`
-  under JavaScriptCore (`osascript`) and drives real replicas through it
-  (migration, convergence, deletions, clock skew, pruning, a wiped document,
-  the request limit, auth, and a Drive read failure or an unparseable file that
-  must not overwrite the stored state).
+  under JavaScriptCore (the system `jsc` shell) and drives real replicas
+  through it (migration, convergence, deletions, clock skew, pruning, a wiped
+  document, the request limit, auth, and a Drive read failure or an unparseable
+  file that must not overwrite the stored state).
 - Verified end to end against a local server running the same `.gs`: a change
   from a simulated Mac reached the TV, the TV's progress and subtitle choice
   reached the server, and the userscript's store (run in Node) pulled both and
@@ -971,6 +971,10 @@ context), and no Content-Security-Policy.
   after an unconfirmed start or a corrupted stored update, a newer
   installation replacing the download, and a store locked for a moment (the
   update starts) or never readable (the installed version starts).
+- `tv/update.rs` runs `boot.js` under the same JavaScriptCore with an
+  in-memory IndexedDB: a store locked by the closing app opens on a later
+  attempt, one that never opens still starts the installed version, and only a
+  trial start is confirmed.
 
 ---
 

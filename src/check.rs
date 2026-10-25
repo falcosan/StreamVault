@@ -2,7 +2,11 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-#[cfg(feature = "desktop")]
+#[cfg(target_os = "macos")]
+const JSC: &str =
+    "/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc";
+
+#[cfg(any(feature = "desktop", target_os = "macos"))]
 pub fn scratch_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("sv_{name}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -34,10 +38,15 @@ pub async fn serve(responses: &'static [(u16, &'static str)]) -> (String, Arc<Mu
 
 #[cfg(target_os = "macos")]
 pub fn run_js(script: &str) -> serde_json::Value {
-    let output = std::process::Command::new("osascript")
-        .args(["-l", "JavaScript", "-e", script])
+    let runner = format!(
+        "Promise.resolve((0, eval)({})).then(print, (e) => print(e?.stack ?? e));",
+        serde_json::Value::from(script)
+    );
+    let output = std::process::Command::new(JSC)
+        .args(["-e", &runner])
         .output()
         .unwrap();
-    serde_json::from_slice(&output.stdout)
-        .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&output.stderr)))
+    let printed = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&printed)
+        .unwrap_or_else(|_| panic!("{printed}{}", String::from_utf8_lossy(&output.stderr)))
 }
