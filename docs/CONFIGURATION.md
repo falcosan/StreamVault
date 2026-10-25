@@ -12,12 +12,12 @@ Config is stored in JSON. On first launch, StreamVault creates a default config 
 
 Main sections:
 
-| Section      | Key Options                                                                                                                    |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| **output**   | `root_path`, `movie_folder_name`, `serie_folder_name`, `map_episode_name`                                                      |
-| **download** | `thread_count` (default: 8), `retry_count`, `concurrent_download`, `max_speed`, track selection                                |
-| **process**  | `merge_audio` (false drops every audio track), `merge_subtitle` (false drops every subtitle track), `extension` (default: mp4) |
-| **requests** | `timeout` (default: 30s)                                                                                                       |
+| Section      | Key Options                                                                                                                                  |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **output**   | `root_path`, `movie_folder_name`, `serie_folder_name`, `map_episode_name`                                                                    |
+| **download** | `thread_count` (default: 8), `retry_count`, `concurrent_download`, `max_speed`, track selection (best video, every audio and subtitle track) |
+| **process**  | `merge_audio` (false drops every audio track), `merge_subtitle` (false drops every subtitle track), `extension` (default: mp4)               |
+| **requests** | `timeout` (default: 30s)                                                                                                                     |
 
 ## Sync
 

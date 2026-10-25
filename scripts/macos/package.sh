@@ -39,7 +39,7 @@ main() {
       | tar xzm -C "$p" --strip-components 1 \
       || { printf '\n  Failed to download repository\n' >&2; exit 1; }
   else
-    p="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    p="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
     progress
   fi
 

@@ -52,9 +52,10 @@ StreamVault/            one crate, one device feature per build
 ├── resources/          packaging: macos/ (Info.plist, icon), tv/
 │                       (tizen/config.xml, android/ manifest + WebView host,
 │                       boot.js update loader)
-├── scripts/            package.sh (macOS app), update.sh (dependencies), tv/
-│                       (deploy.sh: find the TV, install the tools, build, sign,
-│                       install, launch; bundle.sh: signed TV update)
+├── scripts/            macos/package.sh (build the macOS app), update.sh
+│                       (dependencies), tv/ (deploy.sh: find the TV, install the
+│                       tools, build, sign, install, launch; bundle.sh: signed TV
+│                       update)
 ├── .github/workflows/  deploy.yml (one release per version, a job per device)
 └── index.html          boot page of the web build (viewport 960, dark background)
 ```
@@ -554,8 +555,7 @@ Arrows, OK and Return are always delivered and cannot be registered.
 ### 10.2 Handle keys by **code**, not by name
 
 On this Tizen webview the remote's **OK button arrives as `keyCode == 13` but
-with an empty `key` string**, so a handler that matched on `event.key ==
-"Enter"` silently did nothing. Keys are mapped code-first, name second (for
+with an empty `key` string**, so a handler that matched on `event.key == "Enter"` silently did nothing. Keys are mapped code-first, name second (for
 desktop-browser testing):
 
 | Remote button                 | keyCode                | Browsing                                         | Player                                                             |
@@ -1015,6 +1015,7 @@ context), and no Content-Security-Policy.
 | 31  | track menu stuck after Return on the TV                      | `document::eval` called from the remote's own key listener runs outside any Dioxus scope and panics                                                                 | focus through the device module, `web-sys` on the TV                          |
 | 32  | first key after opening a series is lost                     | the focus observer saw only added nodes, and _Play_ was still disabled                                                                                              | observe `disabled` too                                                        |
 | 33  | seek distance drifts while scrubbing                         | measured from the playing position, which keeps moving                                                                                                              | measure from where the scrub started                                          |
+| 34  | the updated Mac app reopens behind the other windows         | the old app spawned its own binary, which skipped LaunchServices and inherited the old `XPC_SERVICE_NAME`; any process with that name crashes once the job is gone  | wait for the old app to quit, then `open -n` without the XPC variables        |
 
 ---
 
@@ -1041,7 +1042,12 @@ context), and no Content-Security-Policy.
 - `scripts/tv/deploy.sh` finds the TV, installs every missing tool and waits
   for the TV-side steps (§13.5).
 - Installed TVs update themselves from the signed releases `deploy.yml`
-  publishes (§13.6), verified on the Samsung with a signed test release.
+  publishes (§13.6), verified on the Samsung with a signed test release and in
+  the browser against the published v1.1.2.
+- The macOS app updates from its update icon: it rebuilds through
+  `scripts/macos/package.sh` and reopens through LaunchServices once the old
+  instance has quit (gotcha 34); the 1.1.1 → 1.1.2 update ran on the Mac, the
+  relaunch was verified on its own.
 
 **Open**
 

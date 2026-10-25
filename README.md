@@ -25,7 +25,7 @@
 **Mac**
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/package.sh" | bash
+curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/macos/package.sh" | bash
 ```
 
 `StreamVault.app` appears in the current folder, ready to drag into Applications. The source, the build and, when Rust is not already installed, Rust itself stay in `~/Library/Caches/StreamVault`, so updates rebuild only what changed; delete that folder to free the space.
@@ -67,7 +67,7 @@ Optional and private: a small Google Apps Script keeps one JSON file in your Dri
 
 ```bash
 cargo run                  # run the Mac app
-./scripts/package.sh       # build dist/StreamVault.app
+./scripts/macos/package.sh # build dist/StreamVault.app for the Mac app
 ./scripts/tv/deploy.sh     # build and install on a TV
 ./scripts/update.sh        # upgrade the dependencies in Cargo.toml and Cargo.lock
 ```

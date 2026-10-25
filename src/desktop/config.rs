@@ -74,7 +74,7 @@ impl Default for DownloadConfig {
             retry_count: 30,
             concurrent_download: true,
             max_speed: String::new(),
-            select_video: "all".into(),
+            select_video: "best".into(),
             select_audio: "all".into(),
             select_subtitle: "all".into(),
         }
@@ -223,6 +223,13 @@ mod tests {
         assert_eq!(c.download.thread_count, 8);
         assert_eq!(c.download.retry_count, 30);
         assert!(c.download.concurrent_download);
+        assert_eq!(
+            (
+                c.download.select_video.as_str(),
+                c.download.select_audio.as_str()
+            ),
+            ("best", "all")
+        );
         assert!(c.process.merge_audio && c.process.merge_subtitle);
         assert_eq!(c.process.extension, "mp4");
         assert_eq!(c.timeout(), Duration::from_secs(30));
