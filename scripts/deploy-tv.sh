@@ -110,7 +110,7 @@ choose() {
       vidaa) say "Skipping $name ($address): VIDAA does not allow installing apps outside its store." ;;
     esac
   done < <(discover)
-  ((${#tvs[@]})) || die "No supported TV found. Turn on the TV; on Android TV, Google TV or Fire TV enable debugging in Developer options first."
+  ((${#tvs[@]})) || die "No supported TV found. Turn on the TV and connect it to the same network as this Mac; on Android TV, Google TV or Fire TV enable debugging in Developer options first."
   if ((${#tvs[@]} == 1)); then
     say "Found ${labels[0]}"
     choice="${tvs[0]}"
