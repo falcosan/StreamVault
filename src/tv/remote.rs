@@ -197,6 +197,7 @@ pub fn install(mut handle: impl FnMut(Key) -> bool + 'static) {
         let options = MutationObserverInit::new();
         options.set_child_list(true);
         options.set_subtree(true);
+        options.set_attribute_filter(&JsValue::from(vec![JsValue::from_str("disabled")]));
         let _ = observer.observe_with_options(&body, &options);
     }
     settle.forget();
@@ -266,6 +267,23 @@ pub fn focus_key() -> Option<String> {
 
 pub fn restore(key: Option<String>) {
     PENDING.set(key);
+}
+
+pub fn back_to_top() -> bool {
+    let Some(content) =
+        document().and_then(|document| document.query_selector(CONTENT).ok().flatten())
+    else {
+        return false;
+    };
+    if content.scroll_top() <= 0 {
+        return false;
+    }
+    content
+        .query_selector(RESTORABLE)
+        .ok()
+        .flatten()
+        .inspect(reveal)
+        .is_some()
 }
 
 pub fn exit() -> bool {

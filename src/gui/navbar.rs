@@ -1,6 +1,6 @@
-use super::{LOGO, focus};
+use super::LOGO;
 use crate::app::{AppState, Screen};
-use crate::platform::{NAV, NavTools};
+use crate::platform::{NAV, NavTools, focus};
 use dioxus::prelude::*;
 
 const SEARCH_ICON: &str = include_str!("../../assets/img/vector/search.svg");

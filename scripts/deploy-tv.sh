@@ -209,15 +209,22 @@ tizen_tools() {
 }
 
 load_sync() {
-  local sync
+  local sync answer="${SYNC:-}"
   for sync in "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Contents/Video/StreamVault/sync.json" \
     "$HOME/Library/Application Support/StreamVault/sync.json"; do
     if [[ -f "$sync" && "$(plutil -extract enabled raw -o - "$sync" 2>/dev/null)" == true ]]; then
       export STREAMVAULT_SYNC_URL="${STREAMVAULT_SYNC_URL:-$(plutil -extract endpoint raw -o - "$sync")}"
       export STREAMVAULT_SYNC_TOKEN="${STREAMVAULT_SYNC_TOKEN:-$(plutil -extract token raw -o - "$sync")}"
-      return
+      break
     fi
   done
+  [[ -n "${STREAMVAULT_SYNC_URL:-}" ]] || return 0
+  if [[ -z "$answer" && -t 0 ]]; then
+    read -rp "  Sync this TV with your Continue Watching and preferences? Answer n on someone else's TV. [Y/n] " answer || true
+  fi
+  if [[ "$answer" == [Nn]* || "$answer" == off ]]; then
+    unset STREAMVAULT_SYNC_URL STREAMVAULT_SYNC_TOKEN
+  fi
 }
 
 build_web() {
@@ -411,8 +418,8 @@ main() {
     choose
   fi
   IFS=$'\t' read -r kind address <<<"$choice"
-  rust_tools
   load_sync
+  rust_tools
   "deploy_$kind" "$address"
   say "StreamVault $version installed on $address (sync $([[ -n "${STREAMVAULT_SYNC_URL:-}" ]] && echo on || echo off))."
 }

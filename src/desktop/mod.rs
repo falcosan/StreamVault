@@ -44,6 +44,12 @@ pub fn sync_config() -> SyncConfig {
     storage::load(&config_dir().join("sync.json"))
 }
 
+pub fn focus(selector: &str) {
+    document::eval(&format!(
+        "document.querySelector({selector:?})?.focus({{ preventScroll: true }});"
+    ));
+}
+
 pub fn focus_key() -> Option<String> {
     None
 }

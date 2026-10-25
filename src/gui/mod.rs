@@ -34,12 +34,6 @@ pub fn BackButton() -> Element {
     }
 }
 
-pub fn focus(selector: &str) {
-    document::eval(&format!(
-        "document.querySelector({selector:?})?.focus({{ preventScroll: true }});"
-    ));
-}
-
 pub fn count(n: usize, noun: &str) -> String {
     if n == 1 {
         format!("1 {noun}")

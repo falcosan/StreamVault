@@ -7,7 +7,7 @@ use crate::providers::{Episode, MediaEntry};
 use crate::sync::SyncConfig;
 use dioxus::prelude::*;
 use remote::{Direction, Key};
-pub use remote::{focus_key, restore as restore_focus};
+pub use remote::{focus, focus_key, restore as restore_focus};
 use std::time::Duration;
 pub use storage::{load_replica, save_replica};
 use wasm_bindgen::prelude::*;
@@ -101,7 +101,7 @@ fn handle(app: AppState, key: Key) -> bool {
         Key::Move(direction) => remote::navigate(direction),
         Key::Select if remote::is_focused("#search-go") => remote::focus("#search-input"),
         Key::Select => remote::activate(),
-        Key::Back => app.back() || remote::exit(),
+        Key::Back => app.back() || remote::back_to_top() || remote::exit(),
         _ => false,
     }
 }

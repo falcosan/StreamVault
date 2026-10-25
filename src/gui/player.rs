@@ -1,5 +1,6 @@
-use super::{BackButton, PLAY_ICON, focus};
+use super::{BackButton, PLAY_ICON};
 use crate::app::{AppState, Playback};
+use crate::platform::focus;
 use crate::player::{Menu, OSD_SECONDS, SEEK_SECONDS, clock, offset_label};
 use dioxus::prelude::*;
 

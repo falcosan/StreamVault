@@ -1,5 +1,5 @@
 use crate::app::{AppState, cancel, restart};
-use crate::gui::focus;
+use crate::platform::focus;
 use crate::prefs::PlayerPrefs;
 use crate::time::{now_ms, sleep};
 use crate::watch;

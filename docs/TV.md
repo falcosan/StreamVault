@@ -61,13 +61,24 @@ updates it from the Play Store, Fire TV with system updates).
 scripts/deploy-tv.sh
 ```
 
-or, without a clone, `curl -fsSL https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/deploy-tv.sh | bash`,
-which unpacks the latest `main` into `~/Library/Caches/StreamVault/source`
-(keeping its `target/` between runs) and runs it from there. It:
+or, without a clone,
+
+```sh
+curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/deploy-tv.sh" | bash
+```
+
+The second form unpacks the latest `main` into
+`~/Library/Caches/StreamVault/source` (keeping its `target/` between runs) and
+runs it from there. It:
 
 - scans the local network (up to 1022 addresses per interface) and the Android
   devices already connected to `adb`, lists the TVs it finds and asks which one
   when there is more than one; `TV=<address>` picks one without asking;
+- when the macOS `sync.json` exists and is enabled (see
+  [CONFIGURATION.md](CONFIGURATION.md#sync)), asks whether this TV syncs with
+  it: Enter builds it with that endpoint and token, `n` leaves them out, so a
+  TV in someone else's home keeps its state locally; `SYNC=on` or `SYNC=off`
+  answers in advance;
 - installs what is missing: the Command Line Tools; into
   `~/Library/Caches/StreamVault` Rust with the `wasm32-unknown-unknown`
   target, `dx` 0.7.10, a JDK; for Android the SDK build tools (into
@@ -76,9 +87,6 @@ which unpacks the latest `main` into `~/Library/Caches/StreamVault/source`
 - waits, with instructions, until the TV is ready: Developer Mode on Samsung,
   debugging allowed on Android (it asks for the pairing code when the TV shows
   one);
-- enables sync with the endpoint and token of the macOS `sync.json` when that
-  file exists and is enabled (see [CONFIGURATION.md](CONFIGURATION.md#sync));
-  otherwise the TV keeps its state locally;
 - builds and signs `target/tv/StreamVault.wgt` (with the Samsung certificate
   profile below) or `target/tv/StreamVault.apk` (with `~/.android/debug.keystore`,
   created if missing, so updates keep the app data), both with the version of
@@ -99,19 +107,19 @@ Downloaded installers stay in `~/Library/Caches/StreamVault` for the next run,
 and Tizen Studio's installer unpacks its Java runtime into `~/.package-manager`.
 
 The sync settings are compiled into the WASM, so run it again when `sync.json`
-changes. `STREAMVAULT_SYNC_URL`, `STREAMVAULT_SYNC_TOKEN`, `TV`, `ANDROID_HOME`,
-`TIZEN_HOME` and `JAVA_HOME` override the defaults.
+changes. `STREAMVAULT_SYNC_URL`, `STREAMVAULT_SYNC_TOKEN`, `SYNC`, `TV`,
+`ANDROID_HOME`, `TIZEN_HOME` and `JAVA_HOME` override the defaults.
 
 ## Remote
 
-| Key                     | Browsing              | Player                                                                            |
-| ----------------------- | --------------------- | --------------------------------------------------------------------------------- |
-| Arrows                  | move focus            | Left/Right on the progress bar seek 10 s; Down to the buttons, Up back to the bar |
-| OK                      | open the focused item | play/pause on the progress bar, otherwise press the focused button                |
-| Return / Back           | back; exits on Home   | close the track menu, otherwise stop                                              |
-| Play/Pause, Play, Pause |                       | play/pause                                                                        |
-| Rewind, Fast forward    |                       | seek 30 s                                                                         |
-| Stop                    |                       | stop                                                                              |
+| Key                     | Browsing                                        | Player                                                                            |
+| ----------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------- |
+| Arrows                  | move focus                                      | Left/Right on the progress bar seek 10 s; Down to the buttons, Up back to the bar |
+| OK                      | open the focused item                           | play/pause on the progress bar, otherwise press the focused button                |
+| Return / Back           | back; on Home back to the top first, then exits | close the track menu, otherwise stop                                              |
+| Play/Pause, Play, Pause |                                                 | play/pause                                                                        |
+| Rewind, Fast forward    |                                                 | seek 30 s                                                                         |
+| Stop                    |                                                 | stop                                                                              |
 
 Search: OK on the magnifier opens the TV keyboard, _Done_ searches, _Cancel_
 or Return closes it.

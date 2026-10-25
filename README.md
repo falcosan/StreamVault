@@ -25,7 +25,7 @@
 **Mac**
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/package.sh" | bash
+curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/package.sh" | bash
 ```
 
 `StreamVault.app` appears in the current folder, ready to drag into Applications. The source, the build and, when Rust is not already installed, Rust itself stay in `~/Library/Caches/StreamVault`, so updates rebuild only what changed; delete that folder to free the space.
@@ -33,7 +33,7 @@ curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/ma
 **TV**
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main/scripts/deploy-tv.sh" | bash
+curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/deploy-tv.sh" | bash
 ```
 
 Run it on a Mac on the same network as the TV. It finds the TVs, asks which one if there are several, installs every tool it needs and puts StreamVault on the TV. When the TV needs something only you can do, such as switching on Developer Mode, it tells you exactly what and carries on by itself.
@@ -61,7 +61,7 @@ LG webOS, Hisense VIDAA, Philips Titan OS and Roku cannot run it: [docs/TV.md](d
 
 ## Sync
 
-Optional and private: a small Google Apps Script keeps one JSON file in your Drive, protected by your own token. Put its address and token in `sync.json` on the Mac and every device you install from it stays in step. Setup takes four steps: [docs/CONFIGURATION.md](docs/CONFIGURATION.md#sync).
+Optional and private: a small Google Apps Script keeps one JSON file in your Drive, protected by your own token. Put its address and token in `sync.json` on the Mac and every device you install from it stays in step; installing on someone else's TV, you answer no and it stays on its own. Setup takes four steps: [docs/CONFIGURATION.md](docs/CONFIGURATION.md#sync).
 
 ## Build from source
 
