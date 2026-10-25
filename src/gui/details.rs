@@ -138,7 +138,7 @@ fn Episodes(entry: MediaEntry, resume: Option<WatchItem>) -> Element {
             div { class: "episodes-head",
                 h2 { class: "section-title", "Episodes" }
                 if seasons.len() > 1 {
-                    div { class: "season-chips",
+                    div { class: "season-chips", role: "group", aria_label: "Seasons",
                         for &number in seasons.iter() {
                             button {
                                 key: "{number}",

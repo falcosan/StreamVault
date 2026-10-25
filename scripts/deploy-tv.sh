@@ -404,8 +404,8 @@ main() {
   mkdir -p "$out" "$cache"
   local choice kind address
   if [[ -n "${TV:-}" ]]; then
-    choice="$(discover | awk -F '\t' -v tv="$TV" '$2 == tv { print $1 "\t" $2; exit }')"
-    [[ -n "$choice" ]] || die "TV $TV not found."
+    choice="$(discover | awk -F '\t' -v tv="$TV" '$2 == tv && ($1 == "tizen" || $1 == "android") { print $1 "\t" $2; exit }')"
+    [[ -n "$choice" ]] || die "No supported TV found at $TV."
   else
     say "Looking for TVs…"
     choose

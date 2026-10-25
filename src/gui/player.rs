@@ -18,8 +18,8 @@ pub fn PlayerView() -> Element {
     let tracks = playback.as_ref().map(Playback::tracks).unwrap_or_default();
     let status = *player.status.read();
     let scrub = *player.scrub.read();
-    let time = scrub.unwrap_or(status.time);
-    let offset = scrub.and_then(|target| offset_label(target, status.time));
+    let time = scrub.map_or(status.time, |scrub| scrub.to);
+    let offset = scrub.and_then(|scrub| offset_label(scrub.to, scrub.from));
     let loading = url.is_none() || status.waiting;
     let percent = if status.duration > 0.0 {
         time / status.duration * 100.0

@@ -733,6 +733,8 @@ svg {
 }
 
 .season-chip {
+  flex-shrink: 0;
+  white-space: nowrap;
   padding: 6px 14px;
   border: 1px solid var(--border);
   border-radius: 999px;

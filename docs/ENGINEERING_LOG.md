@@ -569,7 +569,10 @@ with Up but skipped by Right). Candidates that overlap on the cross axis win; ti
 fall back to `gap × 2 + cross gap`, then centre offset. This matches Chromium's
 own spatial navigation closely enough that Up from the right edge of the grid
 reaches the search button, while Up from the left reaches Continue Watching. The
-ranking is pure Rust with unit tests (`remote.rs`).
+ranking is pure Rust with unit tests (`remote.rs`). A move that enters a group
+(`role="group"`, the season chips) from outside lands on its selected member
+(`aria-pressed`), the roving focus of WAI-ARIA, so Up from the episodes reaches
+the season they belong to.
 
 Focus survives screen changes: navigating stores the focused element's
 `data-focus` key in the history, Return restores it, and a `MutationObserver`
@@ -740,13 +743,16 @@ only when the video is seeking or has less than `HAVE_FUTURE_DATA`. Before,
 it was set by `waiting` and cleared only by `playing`, so a seek while paused
 left it spinning until playback resumed.
 
-Presses in the same direction while a scrub is pending accelerate it: from the
-fifth each counts three times, from the tenth six (`acceleration` in
-`player.rs`), so holding the key crosses an episode in seconds. While the
-scrub is a second or more away from the playing position, the middle of the
-screen shows the distance (`+30 s`, `−1:30`). The last 20 s of an episode
-(`watch::ending`, the margin after which Continue Watching moves on to the
-next episode) start the next one while playing, and `AppState::play` starts
+Presses in the same direction while a scrub is pending continue it, and the
+step doubles for every second the streak lasts, up to 16 times (10 s to 160 s
+on the progress bar). A held key steps at most every 200 ms, so the speed
+depends on how long the key is held, not on how fast the remote repeats it;
+these are the defaults of Amazon's Vega TV seek bar with a step factor of 2
+(`Streak` in `player.rs`). The middle of the screen shows the distance from
+where the scrub started (`+30 s`, `−1:30`), not from the playing position,
+which keeps moving until the seek and made the label drift. The last 20 s of an
+episode (`watch::ending`, the margin after which Continue Watching moves on to
+the next episode) start the next one while playing, and `AppState::play` starts
 every title at its Continue Watching position, so an episode or movie opened
 from its page or from Downloads resumes instead of restarting.
 

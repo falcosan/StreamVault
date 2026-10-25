@@ -120,16 +120,17 @@ Player: the progress bar is focused when the controls appear; below it are
 Play/Pause, Audio, Subtitles and Next episode. Seeking moves the bar and the
 time at once on every press; playback jumps there 0.6 s after the last press,
 keeping its play or pause state, or right away with OK, which also toggles
-play/pause. Presses in a row in the same direction go further: from the fifth
-each counts three times, from the tenth six times (10, 30 and 60 s on the
-progress bar; 30, 90 and 180 s with Rewind and Fast forward), and the distance
-from the playing position shows in the middle of the screen while it moves
-(on macOS also while dragging the bar). In the last 20 seconds of an episode
-the next one starts by itself, and an episode or movie played from its page
-resumes where Continue Watching left it. The spinner only shows while the
-first frames load or while playback is stalled, never while paused. The
-audio/subtitle choice is saved as the player preference (the same one the
-macOS app uses), applied to every title and synced.
+play/pause. Holding the key, or pressing it again and again, goes further: the
+step doubles for every second, up to 16 times (10 s to 160 s on the progress
+bar, 30 s to 8 min with Rewind and Fast forward), and a held key moves at most
+five steps a second on any remote. The distance from where the seek started
+shows in the middle of the screen while it moves (on macOS also while dragging
+the bar). In the last 20 seconds of an episode the next one starts by itself,
+and an episode or movie played from its page resumes where Continue Watching
+left it. The spinner only shows while the first frames load or while playback
+is stalled, never while paused. The audio/subtitle choice is saved as the
+player preference (the same one the macOS app uses), applied to every title and
+synced.
 
 ## Notes
 

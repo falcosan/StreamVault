@@ -19,6 +19,8 @@ const FOCUSABLE: &str = "button:not([disabled]), input[type='range']:not([disabl
 const RESTORABLE: &str = "[data-focus]";
 const EDITABLE: &str = "input:not([type='range'])";
 const CONTENT: &str = ".content";
+const GROUP: &str = "[role='group']";
+const SELECTED: &str = "[aria-pressed='true']";
 
 #[wasm_bindgen]
 extern "C" {
@@ -223,7 +225,7 @@ pub fn navigate_in(direction: Direction, scope: &str) -> bool {
             candidates[index].1,
             candidates.iter().map(|(_, rect)| *rect),
         )
-        .map(|i| candidates[i].0.clone()),
+        .map(|i| entry(&candidates[index].0, candidates[i].0.clone())),
         None => root
             .query_selector(RESTORABLE)
             .ok()
@@ -288,6 +290,20 @@ fn settle() {
     {
         reveal(&target);
     }
+}
+
+fn entry(from: &Element, target: Element) -> Element {
+    let Some(group) = target.closest(GROUP).ok().flatten() else {
+        return target;
+    };
+    if group.contains(Some(from)) {
+        return target;
+    }
+    group
+        .query_selector(SELECTED)
+        .ok()
+        .flatten()
+        .unwrap_or(target)
 }
 
 fn document() -> Option<Document> {

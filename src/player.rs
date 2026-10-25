@@ -8,6 +8,7 @@ use dioxus::document::{Eval, EvalError};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use web_time::Instant;
 
 const SCRIPT: &str = concat!(
     include_str!("../assets/js/player.js"),
@@ -16,6 +17,7 @@ const SCRIPT: &str = concat!(
 const PROGRESS_SECONDS: f64 = 10.0;
 const SCRUB_DELAY: Duration = Duration::from_millis(600);
 const SCRUB_TOLERANCE: f64 = 1.0;
+const STEP_INTERVAL: Duration = Duration::from_millis(200);
 pub const OSD_SECONDS: u64 = 4;
 pub const SEEK_SECONDS: f64 = 10.0;
 
@@ -138,15 +140,64 @@ impl Message {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Scrub {
+    pub from: f64,
+    pub to: f64,
+}
+
+impl Scrub {
+    fn next(current: Option<Self>, playing: f64, to: f64) -> Self {
+        Self {
+            from: current.map_or(playing, |scrub| scrub.from),
+            to,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Streak {
+    forward: bool,
+    since: Instant,
+    last: Instant,
+}
+
+impl Streak {
+    fn next(previous: Option<Self>, forward: bool, now: Instant) -> Option<Self> {
+        match previous.filter(|streak| streak.forward == forward) {
+            Some(streak) if now.duration_since(streak.last) < STEP_INTERVAL => None,
+            Some(streak) => Some(Self {
+                last: now,
+                ..streak
+            }),
+            None => Some(Self {
+                forward,
+                since: now,
+                last: now,
+            }),
+        }
+    }
+
+    fn boost(self) -> f64 {
+        match self.last.duration_since(self.since).as_secs() {
+            0 => 1.0,
+            1 => 2.0,
+            2 => 4.0,
+            3 => 8.0,
+            _ => 16.0,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Player {
     pub osd: Signal<bool>,
     pub menu: Signal<Option<Menu>>,
     pub status: Signal<Status>,
     pub tracks: Signal<Tracks>,
-    pub scrub: Signal<Option<f64>>,
+    pub scrub: Signal<Option<Scrub>>,
     pending: CopyValue<Option<Task>>,
-    streak: CopyValue<(bool, u32)>,
+    streak: CopyValue<Option<Streak>>,
     generation: CopyValue<u32>,
     last_input: CopyValue<u64>,
     channel: CopyValue<Option<Eval>>,
@@ -186,9 +237,9 @@ impl Player {
             };
             match event {
                 Event::Status(status) => {
-                    let target = *self.scrub.peek();
+                    let scrub = *self.scrub.peek();
                     if self.pending.peek().is_none()
-                        && target.is_some_and(|target| settled(target, status.time))
+                        && scrub.is_some_and(|scrub| settled(scrub.to, status.time))
                     {
                         self.scrub.set(None);
                     }
@@ -251,23 +302,30 @@ impl Player {
     }
 
     pub fn seek(mut self, by: f64) {
-        let forward = by > 0.0;
-        let (direction, presses) = *self.streak.peek();
-        let presses = if direction == forward && self.pending.peek().is_some() {
-            presses.saturating_add(1)
-        } else {
-            1
+        let previous = self
+            .pending
+            .peek()
+            .is_some()
+            .then(|| *self.streak.peek())
+            .flatten();
+        let Some(streak) = Streak::next(previous, by > 0.0, Instant::now()) else {
+            return;
         };
-        self.streak.set((forward, presses));
-        let from = self.scrub.peek().unwrap_or(self.status.peek().time);
-        self.scrub_to(from + by * acceleration(presses));
+        self.streak.set(Some(streak));
+        let from = self
+            .scrub
+            .peek()
+            .map_or(self.status.peek().time, |scrub| scrub.to);
+        self.scrub_to(from + by * streak.boost());
     }
 
     pub fn scrub_to(mut self, time: f64) {
-        let Some(target) = scrub_target(time, self.status.peek().duration) else {
+        let status = *self.status.peek();
+        let Some(to) = scrub_target(time, status.duration) else {
             return;
         };
-        self.scrub.set(Some(target));
+        let scrub = Scrub::next(*self.scrub.peek(), status.time, to);
+        self.scrub.set(Some(scrub));
         restart(self.pending, async move {
             sleep(SCRUB_DELAY).await;
             self.pending.set(None);
@@ -288,8 +346,8 @@ impl Player {
     }
 
     fn commit(self) {
-        if let Some(time) = *self.scrub.peek() {
-            self.send(Command::SeekTo { time });
+        if let Some(scrub) = *self.scrub.peek() {
+            self.send(Command::SeekTo { time: scrub.to });
         }
     }
 
@@ -354,20 +412,12 @@ fn settled(target: f64, time: f64) -> bool {
     (time - target).abs() < SCRUB_TOLERANCE
 }
 
-fn acceleration(presses: u32) -> f64 {
-    match presses {
-        0..=4 => 1.0,
-        5..=9 => 3.0,
-        _ => 6.0,
-    }
-}
-
-pub fn offset_label(target: f64, time: f64) -> Option<String> {
-    if settled(target, time) {
+pub fn offset_label(target: f64, from: f64) -> Option<String> {
+    if settled(target, from) {
         return None;
     }
-    let sign = if target > time { '+' } else { '−' };
-    let seconds = (target - time).abs().round();
+    let sign = if target > from { '+' } else { '−' };
+    let seconds = (target - from).abs().round();
     Some(if seconds < 60.0 {
         format!("{sign}{seconds} s")
     } else {
@@ -419,10 +469,57 @@ mod tests {
     }
 
     #[test]
-    fn repeated_presses_seek_further_each_time() {
+    fn a_scrub_measures_from_where_it_started_while_playback_moves_on() {
+        let first = Scrub::next(None, 12.0, 22.0);
         assert_eq!(
-            [1, 4, 5, 9, 10, 40].map(acceleration),
-            [1.0, 1.0, 3.0, 3.0, 6.0, 6.0]
+            first,
+            Scrub {
+                from: 12.0,
+                to: 22.0
+            }
+        );
+        let further = Scrub::next(Some(first), 13.5, 42.0);
+        assert_eq!(
+            further,
+            Scrub {
+                from: 12.0,
+                to: 42.0
+            }
+        );
+        assert_eq!(
+            offset_label(further.to, further.from).as_deref(),
+            Some("+30 s")
+        );
+    }
+
+    #[test]
+    fn a_held_key_steps_at_most_every_interval() {
+        let start = Instant::now();
+        let first = Streak::next(None, true, start).unwrap();
+        assert_eq!(
+            Streak::next(Some(first), true, start + STEP_INTERVAL / 2),
+            None
+        );
+        let second = Streak::next(Some(first), true, start + STEP_INTERVAL).unwrap();
+        assert_eq!((second.since, second.last), (start, start + STEP_INTERVAL));
+        let back = Streak::next(Some(second), false, start + STEP_INTERVAL).unwrap();
+        assert_eq!((back.forward, back.since), (false, start + STEP_INTERVAL));
+    }
+
+    #[test]
+    fn the_step_doubles_for_every_second_of_the_streak() {
+        let since = Instant::now();
+        let boost = |held: u64| {
+            Streak {
+                forward: true,
+                since,
+                last: since + Duration::from_millis(held),
+            }
+            .boost()
+        };
+        assert_eq!(
+            [0, 999, 1_000, 2_000, 3_000, 4_000, 60_000].map(boost),
+            [1.0, 1.0, 2.0, 4.0, 8.0, 16.0, 16.0]
         );
     }
 
