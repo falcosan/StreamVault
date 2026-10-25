@@ -51,10 +51,10 @@ No Rust, SDK or Java to set up beforehand: the scripts fetch what is missing. Ru
 
 ## Supported TVs
 
-| TV                    | Works on                                              |
-| --------------------- | ----------------------------------------------------- |
-| Samsung (Tizen)       | Tizen 8 or later: 2024 models, and older ones updated |
-| Android TV, Google TV | Android 5 or later with System WebView 96+ (tested on Android 16) |
+| TV                    | Works on                                                                        |
+| --------------------- | ------------------------------------------------------------------------------- |
+| Samsung (Tizen)       | Tizen 8 or later: 2024 models, and older ones updated                           |
+| Android TV, Google TV | Android 5 or later with System WebView 96+ (tested on Android 16)               |
 | Fire TV               | Fire OS models (not the newer Vega OS); the same APK, not yet tried on a device |
 
 LG webOS, Hisense VIDAA, Philips Titan OS and Roku cannot run it: [docs/TV.md](docs/TV.md) explains why, along with the remote controls and how the TV build works.

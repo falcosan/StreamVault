@@ -464,7 +464,8 @@ final `config.xml` (§6):
   resume/launch semantics on the TV home).
 - `<tizen:profile name="tv-samsung"/>` (not the generic `tv`).
 - `<feature screen.size.all>`.
-- `html5.4k.support` and `use.uwe` metadata (`prelaunch.support` was tried and dropped, §10.6).
+- `html5.4k.support` and `use.uwe` metadata (`prelaunch.support` was tried and
+  dropped, §10.6).
 
 ### 8.5 Takeaways
 
@@ -480,11 +481,11 @@ final `config.xml` (§6):
 ## 9. The data layer: providers on the TV
 
 The providers (StreamingCommunity, RaiPlay, the Aurora family, AnimeUnity) run
-inside the TV app, compiled from `src/providers/` to WASM. The first versions ran them in
-`tv/service`, an axum JSON service on the Mac that the TV called over the LAN
-(and that macOS's application firewall blocked until the unsigned binary was
-allowed with `socketfilterfw`). That made the TV useless without the Mac, so
-the service was removed.
+inside the TV app, compiled from `src/providers/` to WASM. The first versions
+ran them in `tv/service`, an axum JSON service on the Mac that the TV called
+over the LAN (and that macOS's application firewall blocked until the unsigned
+binary was allowed with `socketfilterfw`). That made the TV useless without the
+Mac, so the service was removed.
 
 ### 9.1 Why the providers can run in the webview
 
@@ -588,19 +589,19 @@ dropped (§12.1).
 ### 10.5 Visible focus ring
 
 At 3 m, a 3 px outline is invisible. Cards get a 3 px accent ring (6 px on the
-TV after the ×2 viewport scale), a 6 % lift and a shadow; buttons and rows
-invert to the accent colour, and primary buttons, already accent, get the
-ring. The rules use `:focus-visible` in the shared
+TV after the ×2 viewport scale), a 6 % lift and a shadow; buttons and menu
+options invert to the accent colour, while episode rows and primary buttons,
+already accent, get the ring. The rules use `:focus-visible` in the shared
 stylesheet: the TV's programmatic focus matches it, a mouse click on macOS does
 not, so keyboard users on the desktop get the same feedback. The Continue
 Watching card uses `:focus-within`, because a selector list containing `:has()`
-is dropped whole by Chromium before 105.
-Focus changes are not animated (`transition: none`, §12.1).
-On the TV only the focused element is ever filled with the accent colour
-(`tv.css`): primary buttons are neutral until focused, the active season is a
-white chip and the chosen track carries a check mark, so exactly one element on
-screen reads as "selected by the remote". Sideways moves stay in the
-focused row, so Right at the end of a row no longer jumps to the search button.
+is dropped whole by Chromium before 105. Focus changes are not animated
+(`transition: none`, §12.1). On the TV only the focused element is ever filled
+with the accent colour: primary buttons are neutral until focused (`tv.css`),
+the active season is a white chip and the chosen track carries a check mark, so
+exactly one element on screen reads as "selected by the remote". Sideways moves
+stay in the focused row, so Right at the end of a row no longer jumps to the
+search button.
 
 ### 10.6 App-lifecycle gotcha
 
@@ -895,8 +896,8 @@ URIs `URN:tizen:packageid=` and `URN:tizen:deviceid=<DUID>`) go to
 is the device profile with the certificate inside. PKCS#12 files with
 Samsung's CA from the Certificate Manager plugin (LibreSSL's defaults, which
 the CLI's Java 8 reads) become profile `streamvault-<DUID>`, and the device
-profile is pushed to `/home/owner/share/tmp/sdk_tools/`, as *Permit to install
-applications* does. The script signs with the per-TV profile if it exists, else
+profile is pushed to `/home/owner/share/tmp/sdk_tools/`, as _Permit to install
+applications_ does. The script signs with the per-TV profile if it exists, else
 with the active one, and creates a per-TV certificate only when there is no
 profile or the TV rejects the active one's certificate. Checked
 with a local CA standing in for Samsung (profile registered, `.wgt` signed,

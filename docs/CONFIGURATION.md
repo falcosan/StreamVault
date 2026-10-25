@@ -2,22 +2,22 @@
 
 Config is stored in JSON. On first launch, StreamVault creates a default config automatically.
 
-| Data                                                   | With iCloud Drive                                 | Without iCloud Drive                        |
-| ------------------------------------------------------ | ------------------------------------------------- | ------------------------------------------- |
-| **Settings** (`config.json`, `sync.json`)              | `iCloud Drive/Contents/Video/StreamVault`         | `~/Library/Application Support/StreamVault` |
+| Data                                                                  | With iCloud Drive                                 | Without iCloud Drive                        |
+| --------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------- |
+| **Settings** (`config.json`, `sync.json`)                             | `iCloud Drive/Contents/Video/StreamVault`         | `~/Library/Application Support/StreamVault` |
 | **State** (watch progress, player prefs, sync replica, download list) | `~/Library/Application Support/StreamVault/state` | same                                        |
-| **Downloads** (`root_path`)                            | `iCloud Drive/Contents/Video/StreamVault/Medias`  | `~/Medias`                                  |
+| **Downloads** (`root_path`)                                           | `iCloud Drive/Contents/Video/StreamVault/Medias`  | `~/Medias`                                  |
 
 `root_path` (default `Medias`) is relative to that base, with movies and series in `movie_folder_name` and `serie_folder_name` (`Movie`, `Serie`). State is per device and never stored in iCloud Drive; enable `sync.json` to share it across devices. Downloads run two at a time (the rest wait their turn), are assembled in `~/Library/Caches/StreamVault`, and only the finished file is moved into place.
 
 Main sections:
 
-| Section      | Key Options                                                                                     |
-| ------------ | ----------------------------------------------------------------------------------------------- |
-| **output**   | `root_path`, `movie_folder_name`, `serie_folder_name`, `map_episode_name`                       |
-| **download** | `thread_count` (default: 8), `retry_count`, `concurrent_download`, `max_speed`, track selection |
+| Section      | Key Options                                                                                                                    |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| **output**   | `root_path`, `movie_folder_name`, `serie_folder_name`, `map_episode_name`                                                      |
+| **download** | `thread_count` (default: 8), `retry_count`, `concurrent_download`, `max_speed`, track selection                                |
 | **process**  | `merge_audio` (false drops every audio track), `merge_subtitle` (false drops every subtitle track), `extension` (default: mp4) |
-| **requests** | `timeout` (default: 30s)                                                                        |
+| **requests** | `timeout` (default: 30s)                                                                                                       |
 
 ## Sync
 
