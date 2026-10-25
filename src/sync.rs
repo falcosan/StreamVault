@@ -275,6 +275,7 @@ async fn exchange(client: &Client, config: &SyncConfig, body: String) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::check::serve;
     use crate::providers::MediaEntry;
     use serde_json::json;
 
@@ -548,33 +549,23 @@ mod tests {
 
     #[tokio::test]
     async fn exchange_posts_pending_changes_and_applies_the_answer() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (endpoint, requests) = serve(&[(
+            200,
+            r#"{"ok":true,"seq":3,"reset":false,"entries":[{"key":"watch:0:9","value":{"entry":{"id":9,"name":"","slug":"","provider":0,"provider_name":"","language":"","media_type":"Movie","alternative_names":[],"year":null,"score":null,"image_url":null,"description":null},"current_time":1,"duration":2,"season":null,"episode":null},"at":5,"device":"tv"}]}"#,
+        )])
+        .await;
         let config = SyncConfig {
             enabled: true,
-            endpoint: format!("http://{}/", listener.local_addr().unwrap()),
+            endpoint,
             token: "secret".into(),
         };
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = vec![0; 8192];
-            let read = socket.read(&mut request).await.unwrap();
-            let body = r#"{"ok":true,"seq":3,"reset":false,"entries":[{"key":"watch:0:9","value":{"entry":{"id":9,"name":"","slug":"","provider":0,"provider_name":"","language":"","media_type":"Movie","alternative_names":[],"year":null,"score":null,"image_url":null,"description":null},"current_time":1,"duration":2,"season":null,"episode":null},"at":5,"device":"tv"}]}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            socket.write_all(response.as_bytes()).await.unwrap();
-            String::from_utf8_lossy(&request[..read]).into_owned()
-        });
         let mut replica = Replica::new("mac");
         replica.record_watch(&[item(1, 5.0)], 1_000);
         let changes = replica.changes();
         let body = serde_json::to_string(&replica.request(&config.token, &changes)).unwrap();
         let response = exchange(&Client::new(), &config, body).await.unwrap();
         replica.apply(&changes, response).unwrap();
-        let request = server.await.unwrap();
+        let request = &requests.lock().unwrap()[0];
         assert!(request.contains("content-type: text/plain;charset=utf-8"));
         assert!(request.contains(r#""token":"secret""#));
         assert!(request.contains(r#""key":"watch:0:1""#));

@@ -26,6 +26,7 @@ const track = (t) => ({
   language: t.lang || t.language || "",
   label: t.name || t.label || "",
 });
+const audioTracks = (video) => Array.from(video.audioTracks || []);
 const textTracks = (video) =>
   Array.from(video.textTracks || []).filter(
     (t) => t.kind === "subtitles" || t.kind === "captions",
@@ -33,16 +34,13 @@ const textTracks = (video) =>
 
 function nativePlayer(video) {
   return {
-    audio: () => Array.from(video.audioTracks || []),
-    audioIndex: () =>
-      Array.from(video.audioTracks || []).findIndex((t) => t.enabled),
+    audio: () => audioTracks(video),
+    audioIndex: () => audioTracks(video).findIndex((t) => t.enabled),
     subtitles: () => textTracks(video),
     subtitleIndex: () =>
       textTracks(video).findIndex((t) => t.mode === "showing"),
     selectAudio: (index) =>
-      Array.from(video.audioTracks || []).forEach(
-        (t, i) => (t.enabled = i === index),
-      ),
+      audioTracks(video).forEach((t, i) => (t.enabled = i === index)),
     selectSubtitle: (index) =>
       textTracks(video).forEach(
         (t, i) => (t.mode = i === index ? "showing" : "disabled"),

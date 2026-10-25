@@ -121,6 +121,19 @@ impl Rank {
     }
 }
 
+fn nearest(
+    direction: Direction,
+    from: Rect,
+    rects: impl IntoIterator<Item = Rect>,
+) -> Option<usize> {
+    rects
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, to)| Some((rank(direction, from, to)?, i)))
+        .min_by(|(a, _), (b, _)| a.compare(b))
+        .map(|(_, i)| i)
+}
+
 fn rank(direction: Direction, from: Rect, to: Rect) -> Option<Rank> {
     let ((fx, fy), (tx, ty)) = (from.center(), to.center());
     let span_gap = |a0: f64, a1: f64, b0: f64, b1: f64| (b0 - a1).max(a0 - b1).max(0.0);
@@ -205,16 +218,12 @@ pub fn navigate_in(direction: Direction, scope: &str) -> bool {
             .position(|(element, _)| *element == active)
     });
     let target = match current {
-        Some(index) => {
-            let from = candidates[index].1;
-            candidates
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| *i != index)
-                .filter_map(|(_, (element, rect))| Some((rank(direction, from, *rect)?, element)))
-                .min_by(|(a, _), (b, _)| a.compare(b))
-                .map(|(_, element)| element.clone())
-        }
+        Some(index) => nearest(
+            direction,
+            candidates[index].1,
+            candidates.iter().map(|(_, rect)| *rect),
+        )
+        .map(|i| candidates[i].0.clone()),
         None => root
             .query_selector(RESTORABLE)
             .ok()
@@ -363,15 +372,6 @@ mod tests {
         }
     }
 
-    fn best(direction: Direction, from: Rect, candidates: &[Rect]) -> Option<usize> {
-        candidates
-            .iter()
-            .enumerate()
-            .filter_map(|(i, to)| Some((rank(direction, from, *to)?, i)))
-            .min_by(|(a, _), (b, _)| a.compare(b))
-            .map(|(_, i)| i)
-    }
-
     #[test]
     fn remote_codes_map_to_keys_even_without_a_key_name() {
         assert_eq!(key(13, ""), Some(Key::Select));
@@ -399,11 +399,11 @@ mod tests {
         let diagonal = rect(120.0, 170.0, 220.0, 320.0);
         let far_below = rect(0.0, 340.0, 100.0, 490.0);
         assert_eq!(
-            best(Direction::Down, from, &[diagonal, far_below, below]),
+            nearest(Direction::Down, from, [diagonal, far_below, below]),
             Some(2)
         );
         let right = rect(120.0, 0.0, 220.0, 150.0);
-        assert_eq!(best(Direction::Right, from, &[diagonal, right]), Some(1));
+        assert_eq!(nearest(Direction::Right, from, [diagonal, right]), Some(1));
     }
 
     #[test]
@@ -412,7 +412,7 @@ mod tests {
         let continue_card = rect(342.0, 140.0, 592.0, 281.0);
         let search = rect(1644.0, 10.0, 1900.0, 46.0);
         assert_eq!(
-            best(Direction::Up, poster, &[search, continue_card]),
+            nearest(Direction::Up, poster, [search, continue_card]),
             Some(1)
         );
     }
@@ -423,10 +423,10 @@ mod tests {
         let search = rect(905.0, 12.0, 937.0, 44.0);
         let next_row = rect(20.0, 345.0, 191.0, 602.0);
         assert_eq!(
-            best(Direction::Right, last_poster, &[search, next_row]),
+            nearest(Direction::Right, last_poster, [search, next_row]),
             None
         );
-        assert_eq!(best(Direction::Up, last_poster, &[search]), Some(0));
+        assert_eq!(nearest(Direction::Up, last_poster, [search]), Some(0));
     }
 
     #[test]
@@ -435,8 +435,11 @@ mod tests {
         let remove = rect(288.0, 146.0, 312.0, 170.0);
         let next_card = rect(342.0, 140.0, 592.0, 281.0);
         let nav_link = rect(74.0, 10.0, 109.0, 46.0);
-        assert_eq!(best(Direction::Right, card, &[remove, next_card]), Some(1));
-        assert_eq!(best(Direction::Up, card, &[nav_link, remove]), Some(1));
-        assert_eq!(best(Direction::Down, remove, &[card, next_card]), Some(0));
+        assert_eq!(
+            nearest(Direction::Right, card, [remove, next_card]),
+            Some(1)
+        );
+        assert_eq!(nearest(Direction::Up, card, [nav_link, remove]), Some(1));
+        assert_eq!(nearest(Direction::Down, remove, [card, next_card]), Some(0));
     }
 }

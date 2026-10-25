@@ -29,11 +29,12 @@ impl Realm {
         }
     }
 
-    fn playback(self) -> &'static str {
-        match self {
-            Self::It => "https://public.aurora.enhanced.live/playback/v3/videoPlaybackInfo",
-            Self::Dplay => "https://eu1-prod.disco-api.com/playback/v3/videoPlaybackInfo",
-        }
+    fn playback(self) -> String {
+        let host = match self {
+            Self::It => BASE,
+            Self::Dplay => "https://eu1-prod.disco-api.com",
+        };
+        format!("{host}/playback/v3/videoPlaybackInfo")
     }
 }
 
@@ -340,16 +341,14 @@ mod tests {
     #[test]
     fn realms_map_to_their_playback_endpoints() {
         assert_eq!(Realm::It.key(), "X-REALM-IT");
-        assert!(
-            Realm::It
-                .playback()
-                .starts_with("https://public.aurora.enhanced.live/")
+        assert_eq!(
+            Realm::It.playback(),
+            "https://public.aurora.enhanced.live/playback/v3/videoPlaybackInfo"
         );
         assert_eq!(Realm::Dplay.key(), "X-REALM-DPLAY");
-        assert!(
-            Realm::Dplay
-                .playback()
-                .starts_with("https://eu1-prod.disco-api.com/")
+        assert_eq!(
+            Realm::Dplay.playback(),
+            "https://eu1-prod.disco-api.com/playback/v3/videoPlaybackInfo"
         );
     }
 

@@ -70,22 +70,14 @@ pub fn EntryActions(entry: MediaEntry, season: Option<u32>, episode: Option<Epis
         None => rsx! { span { class: "dl-ring" } },
     };
     rsx! {
-        if compact {
-            button {
-                class: "dl-icon-button {state}",
-                style: "--progress: {progress}%;",
-                aria_label: "{action}",
-                title: "{label}",
-                onclick,
-                {icon}
-            }
-        } else {
-            button {
-                class: "dl-button {state}",
-                style: "--progress: {progress}%;",
-                aria_label: "{action}",
-                onclick,
-                {icon}
+        button {
+            class: if compact { "dl-icon-button {state}" } else { "dl-button {state}" },
+            style: "--progress: {progress}%;",
+            aria_label: "{action}",
+            title: if compact { "{label}" },
+            onclick,
+            {icon}
+            if !compact {
                 "{label}"
             }
         }

@@ -533,7 +533,7 @@ mod tests {
 
     #[tokio::test]
     async fn catalog_more_reuses_catalog_genres_and_skips_failed_pages() {
-        let (base, paths) = serve(&[
+        let (base, requests) = serve(&[
             (
                 200,
                 r#"<div id="app" data-page='{"props":{"titles":[{"id":1,"name":"A"}]}}'></div>"#,
@@ -547,8 +547,14 @@ mod tests {
         assert!(provider.catalog_more().await.is_err());
         assert_eq!(ids(&provider.catalog_more().await.unwrap()), [2]);
         assert!(provider.catalog_more().await.unwrap().is_empty());
+        let paths: Vec<_> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.split(' ').nth(1).unwrap_or_default().to_owned())
+            .collect();
         assert_eq!(
-            *paths.lock().unwrap(),
+            paths,
             [
                 "/",
                 "/it/browse/trending?lang=it&page=1",

@@ -392,23 +392,23 @@ mod tests {
 
     #[tokio::test]
     async fn send_retries_transient_server_errors() {
-        let (url, paths) = serve(&[(500, "ok"), (200, "ok")]).await;
+        let (url, requests) = serve(&[(500, "ok"), (200, "ok")]).await;
         assert_eq!(fetch_text(Client::new().get(url)).await.unwrap(), "ok");
-        assert_eq!(paths.lock().unwrap().len(), 2);
+        assert_eq!(requests.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]
     async fn send_gives_up_after_all_attempts() {
-        let (url, paths) = serve(&[(503, ""), (500, ""), (502, ""), (504, "")]).await;
+        let (url, requests) = serve(&[(503, ""), (500, ""), (502, ""), (504, "")]).await;
         assert!(fetch_text(Client::new().get(url)).await.is_err());
-        assert_eq!(paths.lock().unwrap().len(), 4);
+        assert_eq!(requests.lock().unwrap().len(), 4);
     }
 
     #[tokio::test]
     async fn send_does_not_retry_client_errors() {
-        let (url, paths) = serve(&[(404, ""), (200, "ok")]).await;
+        let (url, requests) = serve(&[(404, ""), (200, "ok")]).await;
         assert!(fetch_text(Client::new().get(url)).await.is_err());
-        assert_eq!(paths.lock().unwrap().len(), 1);
+        assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

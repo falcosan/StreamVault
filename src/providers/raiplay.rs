@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 
 const BASE: &str = "https://www.raiplay.it";
-const SEARCH: &str = "https://www.raiplay.it/atomatic/raiplay-search-service/api/v1/msearch";
+const SEARCH: &str = "/atomatic/raiplay-search-service/api/v1/msearch";
 const RELINKER: &str = "https://mediapolisvod.rai.it/relinker/relinkerServlet.htm";
 const SEARCH_LIMIT: usize = 15;
 const IMAGE_KEYS: [&str; 4] = ["landscape", "portrait_logo", "portrait", "square"];
@@ -217,7 +217,7 @@ impl Provider for RaiPlay {
             "templateOut": "6516ac5d40da6c377b151642",
             "params": { "param": query, "from": null, "sort": "relevance", "onlyVideoQuery": false }
         });
-        let json = fetch_json(self.client.post(SEARCH).json(&body)).await?;
+        let json = fetch_json(self.client.post(format!("{BASE}{SEARCH}")).json(&body)).await?;
         let mut seen = HashSet::new();
         let entries = items(&json["agg"]["titoli"]["cards"])
             .take(SEARCH_LIMIT)

@@ -39,6 +39,8 @@ StreamVault/            one crate, one device feature per build
 │   ├── providers/      StreamingCommunity, RaiPlay, Aurora, AnimeUnity, models
 │   ├── search.rs  watch.rs  prefs.rs  time.rs
 │   ├── sync.rs         replica + sync loop against the Apps Script endpoint
+│   ├── check.rs        test helpers: local HTTP server, JavaScriptCore runner,
+│   │                   scratch dirs
 │   ├── desktop/        macOS only: window, files, downloads, local media,
 │   │                   self-update, Downloads view
 │   └── tv/             TVs only: remote focus engine, IndexedDB storage,
@@ -206,9 +208,10 @@ tv = ["dioxus/web", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys
 ```
 
 Both devices load `assets/style/style.css`; the TV adds `assets/style/tv.css`
-(no transitions, no pointer-only buttons, neutral buttons until focused). The TV renders the desktop layout at
-960×540 CSS pixels (`<meta name="viewport" content="width=960">`), which the
-webview scales ×2 to 1920×1080, so one set of sizes serves both screens.
+(no transitions, no pointer-only buttons, neutral buttons until focused). The TV
+renders the desktop layout at 960×540 CSS pixels
+(`<meta name="viewport" content="width=960">`), which the webview scales ×2 to
+1920×1080, so one set of sizes serves both screens.
 
 Build:
 
@@ -711,14 +714,15 @@ adopted. Appending a page still costs ~100 ms once per page.
 The player controls (Down from the progress bar) are Play/Pause, Audio,
 Subtitles and Next episode; Audio and Subtitles open a menu of the stream's
 tracks. The progress bar is the default focus and grows a scrubber thumb when
-focused, so every focusable element in the player has visible feedback. No
-emoji are used anywhere in the UI; the icons are SVG files in
-`assets/img/vector/`, besides the score star and the menu check mark, which are text. Selection is stored as `PlayerPrefs` and applied to every
-title by `pick` in `player.js`; macOS uses the same player and the same menus,
-so both devices choose tracks identically. hls.js re-selects forced subtitles when the audio track
-changes; `player.js` re-applies the chosen subtitle track after every audio
-switch, which was verified on the TV (English audio + Italian subtitles from a
-preference written by another device).
+focused, so every focusable element in the player has visible feedback. No emoji
+are used anywhere in the UI; the icons are SVG files in `assets/img/vector/`,
+besides the score star and the menu check mark, which are text. Selection is
+stored as `PlayerPrefs` and applied to every title by `pick` in `player.js`;
+macOS uses the same player and the same menus, so both devices choose tracks
+identically. hls.js re-selects forced subtitles when the audio track changes;
+`player.js` re-applies the chosen subtitle track after every audio switch, which
+was verified on the TV (English audio + Italian subtitles from a preference
+written by another device).
 
 Seeking scrubs before it seeks. Each Left/Right (or Rewind/Fast forward) moves
 `Player::scrub`, which the bar and the clock render in the same frame, and
@@ -820,19 +824,20 @@ origin and survives `adb install -r`.
 
 ### 13.2 CORS
 
-Unlike a Tizen widget, the page is subject to CORS, and the sites send no
-CORS headers. A probe page showed that `shouldInterceptRequest` receives every
+Unlike a Tizen widget, the page is subject to CORS, and the sites send no CORS
+headers. A probe page showed that `shouldInterceptRequest` receives every
 CORS-mode request (`Origin` header), preflights included, and that an
 intercepted response carrying `Access-Control-Allow-Origin` satisfies both
 `fetch` and XHR. So the activity answers preflights itself and performs the
 requests natively (`HttpURLConnection`, redirects followed by hand, 303 and
-POST-on-301/302 turning into GET as `fetch` does), returning the response
-with its own CORS headers in place of the site's. The WebView never exposes request bodies, so a script
-inserted into `index.html` before the app wraps `fetch`: a request with a body
-hands it (base64) to the activity through a `@JavascriptInterface` and sends a
-one-time id header instead. Verified from DevTools on a debuggable build:
-JSON and binary bodies, 302 and 307 redirects, 404 status, custom response
-headers, DNS failure (rejects like `fetch`) and `AbortSignal` timeouts.
+POST-on-301/302 turning into GET as `fetch` does), returning the response with
+its own CORS headers in place of the site's. The WebView never exposes request
+bodies, so a script inserted into `index.html` before the app wraps `fetch`: a
+request with a body hands it (base64) to the activity through a
+`@JavascriptInterface` and sends a one-time id header instead. Verified from
+DevTools on a debuggable build: JSON and binary bodies, 302 and 307 redirects,
+404 status, custom response headers, DNS failure (rejects like `fetch`) and
+`AbortSignal` timeouts.
 
 ### 13.3 Remote and lifecycle
 
@@ -867,14 +872,15 @@ are listed too. One TV is used directly; with several, it asks.
 
 Missing tools are installed without questions: Rust and `dx` (the release
 binary, avoiding the OpenSSL build of §3.3) and a Temurin JDK into
-`~/Library/Caches/StreamVault`, the Android command-line tools and packages
-into `ANDROID_HOME`, Tizen Studio as in §3.1 with only `cert-add-on` and
-`TV-SAMSUNG-Extension-Tools` (3.0 GB instead of 4.1: `TV-SAMSUNG-Public`
-only adds the TV emulator; the certificate tools are identical and the CLI
-signs with the same profile). Each path was run from an empty `HOME`. What only the owner can do is waited for, with instructions: Developer
-Mode on Samsung (checked through port 8001, then `sdb`), debugging allowed on
-Android (pairing code read from the terminal for wireless debugging), and the
-Samsung account sign-in for a new TV's certificate.
+`~/Library/Caches/StreamVault`, the Android command-line tools and packages into
+`ANDROID_HOME`, Tizen Studio as in §3.1 with only `cert-add-on` and
+`TV-SAMSUNG-Extension-Tools` (3.0 GB instead of 4.1: `TV-SAMSUNG-Public` only
+adds the TV emulator; the certificate tools are identical and the CLI signs with
+the same profile). Each path was run from an empty `HOME`. What only the owner
+can do is waited for, with instructions: Developer Mode on Samsung (checked
+through port 8001, then `sdb`), debugging allowed on Android (pairing code read
+from the terminal for wireless debugging), and the Samsung account sign-in for a
+new TV's certificate.
 
 The certificate is created the way Certificate Manager does it (its constants
 and the files it left in `~/SamsungCertificate` match; TizenBrew Installer

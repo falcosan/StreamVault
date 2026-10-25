@@ -21,7 +21,7 @@ Main sections:
 
 ## Sync
 
-Continue Watching and player preferences sync between the macOS app, the TV app and the browser userscript, which runs on the StreamingCommunity site and syncs its titles, (`assets/js/streamvault.user.js`) through a Google Apps Script web app (`assets/js/google_apps_script.gs`) that stores one JSON file in your Drive.
+Continue Watching and player preferences sync between the macOS app, the TV app and the browser userscript (`assets/js/streamvault.user.js`), which runs on the StreamingCommunity site and syncs its titles, through a Google Apps Script web app (`assets/js/google_apps_script.gs`) that stores one JSON file in your Drive.
 
 1. Create an Apps Script project, paste `google_apps_script.gs`, set the script property `TOKEN` to a random secret and deploy it as a web app (execute as you, access: anyone).
 2. macOS: `sync.json` → `{ "enabled": true, "endpoint": "<web app URL>", "token": "<TOKEN>" }`.

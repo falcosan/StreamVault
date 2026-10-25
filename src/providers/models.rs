@@ -92,13 +92,9 @@ impl MediaEntry {
 
     pub fn title(&self, season: Option<u32>, episode: Option<&Episode>) -> String {
         match (season, episode) {
-            (Some(season), Some(episode)) => self.episode_title(season, episode),
+            (Some(season), Some(episode)) => format!("{} {}", self.name, episode.label(season)),
             _ => self.display_title(),
         }
-    }
-
-    pub fn episode_title(&self, season: u32, episode: &Episode) -> String {
-        format!("{} {}", self.name, episode.label(season))
     }
 }
 
@@ -185,13 +181,14 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            show.episode_title(1, &Episode::numbered(3, "")),
+            show.title(Some(1), Some(&Episode::numbered(3, ""))),
             "Lost S01E03"
         );
         assert_eq!(
-            show.episode_title(2, &Episode::numbered(5, "Pilot")),
+            show.title(Some(2), Some(&Episode::numbered(5, "Pilot"))),
             "Lost S02E05 - Pilot"
         );
+        assert_eq!(show.title(Some(2), None), "Lost");
     }
 
     #[test]

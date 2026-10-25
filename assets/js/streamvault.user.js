@@ -130,6 +130,11 @@
         .slice(0, MAX_WATCH)
         .map((r) => r.value);
     },
+    item(id) {
+      return this.watch().find(
+        (i) => i.entry.provider === PROVIDER && i.entry.id === id,
+      );
+    },
     prefs() {
       return this.load().entries.prefs?.value || null;
     },
@@ -507,9 +512,7 @@
 
   function upsertProgress(ctx, current, duration) {
     const key = watchKey(PROVIDER, ctx.mediaId);
-    const existing = store
-      .watch()
-      .find((i) => i.entry.provider === PROVIDER && i.entry.id === ctx.mediaId);
+    const existing = store.item(ctx.mediaId);
     if (!existing && !ctx.hasTitle) return Promise.resolve();
     const mediaType = existing ? existing.entry.media_type : ctx.mediaType;
     const finished = duration > 0 && duration - current <= 20;
@@ -833,11 +836,7 @@
       if (!ctx) return;
       try {
         await store.ready;
-        const item = store
-          .watch()
-          .find(
-            (i) => i.entry.provider === PROVIDER && i.entry.id === ctx.mediaId,
-          );
+        const item = store.item(ctx.mediaId);
         const sameEpisode =
           (!ctx.episode && !item?.episode) ||
           (ctx.episode && item?.episode && item.episode.id === ctx.episode.id);

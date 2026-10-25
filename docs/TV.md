@@ -69,16 +69,16 @@ which unpacks the latest `main` into `~/Library/Caches/StreamVault/source`
   devices already connected to `adb`, lists the TVs it finds and asks which one
   when there is more than one; `TV=<address>` picks one without asking;
 - installs what is missing: the Command Line Tools; into
-  `~/Library/Caches/StreamVault` Rust with the `wasm32-unknown-unknown` target, `dx` 0.7.10, a JDK; for Android the SDK
-  build tools (into `ANDROID_HOME`, default `~/Library/Android/sdk`); for
-  Samsung Tizen Studio (about 3 GB, into `TIZEN_HOME`, default
-  `~/tizen-studio`);
+  `~/Library/Caches/StreamVault` Rust with the `wasm32-unknown-unknown`
+  target, `dx` 0.7.10, a JDK; for Android the SDK build tools (into
+  `ANDROID_HOME`, default `~/Library/Android/sdk`); for Samsung Tizen Studio
+  (about 3 GB, into `TIZEN_HOME`, default `~/tizen-studio`);
 - waits, with instructions, until the TV is ready: Developer Mode on Samsung,
   debugging allowed on Android (it asks for the pairing code when the TV shows
   one);
 - enables sync with the endpoint and token of the macOS `sync.json` when that
-  file exists and is enabled (see [CONFIGURATION.md](CONFIGURATION.md#sync)); otherwise the TV keeps its
-  state locally;
+  file exists and is enabled (see [CONFIGURATION.md](CONFIGURATION.md#sync));
+  otherwise the TV keeps its state locally;
 - builds and signs `target/tv/StreamVault.wgt` (with the Samsung certificate
   profile below) or `target/tv/StreamVault.apk` (with `~/.android/debug.keystore`,
   created if missing, so updates keep the app data), both with the version of
@@ -88,12 +88,12 @@ Samsung TVs only install apps signed with a Samsung certificate issued to a
 Samsung account for that TV's device id. The script uses the profile
 `streamvault-<device id>`, else the active one; when there is none, or the TV
 rejects the active one's certificate, it creates the certificate as
-Certificate Manager does: it opens
-the Samsung sign-in in the browser, takes the answer on `localhost:4794`, reads
-the device id over `sdb`, sends the author and distributor requests to
-Samsung, stores the result in `~/SamsungCertificate/streamvault-<device id>`,
-registers the profile, allows the TV to install with it and retries. Build
-output goes to `target/tv/deploy.log`.
+Certificate Manager does: it opens the Samsung sign-in in the browser, takes
+the answer on `localhost:4794`, reads the device id over `sdb`, sends the
+author and distributor requests to Samsung, stores the result in
+`~/SamsungCertificate/streamvault-<device id>`, registers the profile, allows
+the TV to install with it and retries. Build output goes to
+`target/tv/deploy.log`.
 
 Downloaded installers stay in `~/Library/Caches/StreamVault` for the next run,
 and Tizen Studio's installer unpacks its Java runtime into `~/.package-manager`.
@@ -126,10 +126,10 @@ progress bar; 30, 90 and 180 s with Rewind and Fast forward), and the distance
 from the playing position shows in the middle of the screen while it moves
 (on macOS also while dragging the bar). In the last 20 seconds of an episode
 the next one starts by itself, and an episode or movie played from its page
-resumes where Continue Watching left it. The spinner only shows while the first frames
-load or while playback is stalled, never while paused. The audio/subtitle choice is
-saved as the player preference (the same one the macOS app uses), applied to
-every title and synced.
+resumes where Continue Watching left it. The spinner only shows while the
+first frames load or while playback is stalled, never while paused. The
+audio/subtitle choice is saved as the player preference (the same one the
+macOS app uses), applied to every title and synced.
 
 ## Notes
 
