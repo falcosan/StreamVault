@@ -208,7 +208,7 @@ impl Device {
 pub fn use_device(app: AppState) {
     let device = app.device;
     use_hook(move || device.resume_downloads(app));
-    use_future(move || update::check(device));
+    use_future(move || update::watch(device));
     use_wry_event_handler(move |event, _| {
         if matches!(event, tao::event::Event::LoopDestroyed) {
             device.stop_downloads();

@@ -19,7 +19,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       pending: ${{ steps.release.outputs.pending }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Open the draft release of this version
         id: release
@@ -43,7 +43,7 @@ jobs:
     if: needs.release.outputs.pending == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Install Rust and dx
         run: |

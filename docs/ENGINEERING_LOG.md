@@ -960,7 +960,9 @@ context), and no Content-Security-Policy.
   once it has mounted, and an unconfirmed trial is discarded on the next
   launch. A store that stays unreadable after the retries of §11.2 starts the
   installed version, so storage never keeps the app from starting.
-- The app checks `releases/latest/download/tv.json`; `install()` refuses a
+- The app checks `releases/latest/download/tv.json` when it starts and every
+  hour after (relaunching resumes the widget, `reload="disable"`, so a check
+  at start alone could miss a release for days); `install()` refuses a
   release whose `shell` is newer than `boot.js` and asks for a new installation
   from the Mac.
 - Verified in the browser with release requests answered over CDP by a signed

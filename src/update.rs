@@ -1,8 +1,12 @@
 use crate::app::AppState;
+use crate::time::sleep;
 use dioxus::core::spawn_forever;
 use dioxus::prelude::*;
 use std::fmt::Display;
 use std::future::Future;
+use std::time::Duration;
+
+const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Clone, Copy, Default)]
 pub struct Update {
@@ -11,14 +15,13 @@ pub struct Update {
 }
 
 impl Update {
-    pub async fn check<E: Display>(mut self, latest: impl Future<Output = Result<String, E>>) {
-        match latest.await {
-            Ok(version) if is_newer(&version, env!("CARGO_PKG_VERSION")) => {
-                self.available.set(true);
-            }
-            Ok(_) => {}
-            Err(e) => warn!("update check failed: {e}"),
-        }
+    pub async fn watch<E, F>(mut self, latest: impl Fn() -> F)
+    where
+        E: Display,
+        F: Future<Output = Result<String, E>>,
+    {
+        newer(latest).await;
+        self.available.set(true);
     }
 
     pub fn install<E: Display>(
@@ -40,6 +43,21 @@ impl Update {
     }
 }
 
+async fn newer<E, F>(latest: impl Fn() -> F)
+where
+    E: Display,
+    F: Future<Output = Result<String, E>>,
+{
+    loop {
+        match latest().await {
+            Ok(version) if is_newer(&version, env!("CARGO_PKG_VERSION")) => return,
+            Ok(_) => {}
+            Err(e) => warn!("update check failed: {e}"),
+        }
+        sleep(CHECK_INTERVAL).await;
+    }
+}
+
 fn is_newer(remote: &str, local: &str) -> bool {
     let parse = |v: &str| {
         v.split('.')
@@ -55,6 +73,25 @@ fn is_newer(remote: &str, local: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use tokio::time::Instant;
+
+    #[tokio::test(start_paused = true)]
+    async fn the_check_repeats_every_interval_until_a_newer_version_is_out() {
+        let answers = RefCell::new(vec![
+            Ok("999.0.0".to_owned()),
+            Err("offline"),
+            Ok(env!("CARGO_PKG_VERSION").to_owned()),
+        ]);
+        let started = Instant::now();
+        newer(|| {
+            let answer = answers.borrow_mut().pop().unwrap();
+            async move { answer }
+        })
+        .await;
+        assert_eq!(started.elapsed(), CHECK_INTERVAL * 2);
+        assert!(answers.borrow().is_empty());
+    }
 
     #[test]
     fn is_newer_compares_numerically() {

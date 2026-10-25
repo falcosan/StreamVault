@@ -4,8 +4,8 @@ use std::path::Path;
 
 const REPOSITORY: &str = "https://raw.githubusercontent.com/falcosan/StreamVault/refs/heads/main";
 
-pub async fn check(device: Device) {
-    device.update.check(latest()).await;
+pub async fn watch(device: Device) {
+    device.update.watch(latest).await;
 }
 
 pub fn install(app: AppState) {

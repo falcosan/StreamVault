@@ -59,7 +59,7 @@ pub fn use_device(app: AppState) {
         pause_when_hidden(app);
     });
     use_future(update::confirm);
-    use_future(move || update::check(app.device));
+    use_future(move || update::watch(app.device));
 }
 
 #[component]

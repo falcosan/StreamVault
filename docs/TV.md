@@ -137,9 +137,11 @@ TV and Fire TV alike, because what changes between versions is the web bundle
   with nothing to configure. Only the publisher needs the private key; a fork
   that publishes its own releases sets its own key in `TV_UPDATE_KEY` and its
   public key and repository in `PUBLIC_KEY` and `RELEASES` of `boot.js`.
-- Installing: the app compares its version with the latest release. The
-  update is accepted only when the manifest's signature matches the public key
-  in `boot.js` and every file matches its hash; it is kept in IndexedDB.
+- Installing: the app compares its version with the latest release when it
+  starts and every hour after, since a TV resumes the app instead of
+  restarting it. The update is accepted only when the manifest's signature
+  matches the public key in `boot.js` and every file matches its hash; it is
+  kept in IndexedDB.
 - Starting: `boot.js` starts the downloaded version and, when it does not
   confirm that it started, falls back to the installed one on the next launch
   and discards it, as it does for an update that no longer verifies. When its

@@ -21,23 +21,22 @@ pub async fn confirm() {
     }
 }
 
-pub async fn check(device: Device) {
-    device
-        .update
-        .check(async {
-            latest_version()
-                .await
-                .map_err(|e| message(&e))?
-                .as_string()
-                .ok_or_else(|| "the release has no version".to_owned())
-        })
-        .await;
+pub async fn watch(device: Device) {
+    device.update.watch(latest).await;
 }
 
 pub fn install(app: AppState) {
     app.device.update.install(app, async {
         install_latest().await.map(drop).map_err(|e| message(&e))
     });
+}
+
+async fn latest() -> Result<String, String> {
+    latest_version()
+        .await
+        .map_err(|e| message(&e))?
+        .as_string()
+        .ok_or_else(|| "the release has no version".to_owned())
 }
 
 fn message(error: &JsValue) -> String {
