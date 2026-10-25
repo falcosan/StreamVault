@@ -14,19 +14,24 @@ Every device compiles the same files; only what a device alone has lives in its
 own module.
 
 - `src/` — app state, views, player, providers, search, Continue Watching,
-  preferences and sync, shared with macOS.
+  preferences, sync and the update flow, shared with macOS.
 - `src/tv/` — the TV module: remote key handling and the spatial focus engine
-  (`remote.rs`), IndexedDB storage (`storage.rs`).
+  (`remote.rs`), IndexedDB storage (`storage.rs`), and the update check and
+  install through `boot.js` (`update.rs`).
 - `assets/` — shared stylesheet and player; `style/tv.css` holds the TV-only
   overrides, `js/hls.min.js` and `js/storage.js` are loaded only by the TV.
 - `index.html` — boot page: 960×540 layout viewport (scaled to the screen by
   the TV) and the dark background shown while the WASM loads.
-- `resources/tv/` — Tizen manifest (`tizen/config.xml`) and the Android host
-  (`android/AndroidManifest.xml`, `android/MainActivity.java`). The launcher
-  icon and the Android banner are rasterised from `assets/img/vector/logo.svg`
-  at build time.
-- `scripts/deploy-tv.sh` — finds the TV, installs what the build needs, then
+- `resources/tv/` — Tizen manifest (`tizen/config.xml`), the Android host
+  (`android/AndroidManifest.xml`, `android/MainActivity.java`) and `boot.js`,
+  the loader that starts the installed app or a downloaded update. The
+  launcher icon and the Android banner are rasterised from
+  `assets/img/vector/logo.svg` at build time.
+- `scripts/tv/deploy.sh` — finds the TV, installs what the build needs, then
   builds, signs, installs and launches the app.
+- `scripts/tv/bundle.sh` and `.github/workflows/deploy.yml` — publish each
+  version as a signed update the TV installs by itself (see
+  [Updates](#updates)).
 
 Tizen does not apply CORS to an installed widget, so the providers call the
 sites directly. On Android the page is served from
@@ -58,13 +63,13 @@ updates it from the Play Store, Fire TV with system updates).
 ## Build and install
 
 ```sh
-scripts/deploy-tv.sh
+scripts/tv/deploy.sh
 ```
 
 or, without a clone,
 
 ```sh
-curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/deploy-tv.sh" | bash
+curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/tv/deploy.sh" | bash
 ```
 
 The second form unpacks the latest `main` into
@@ -81,9 +86,10 @@ runs it from there. It:
   answers in advance;
 - installs what is missing: the Command Line Tools; into
   `~/Library/Caches/StreamVault` Rust with the `wasm32-unknown-unknown`
-  target, `dx` 0.7.10, a JDK; for Android the SDK build tools (into
-  `ANDROID_HOME`, default `~/Library/Android/sdk`); for Samsung Tizen Studio
-  (about 3 GB, into `TIZEN_HOME`, default `~/tizen-studio`);
+  target, the `dx` of the `dioxus` version in `Cargo.lock`, a JDK; for
+  Android the SDK build tools (into `ANDROID_HOME`, default
+  `~/Library/Android/sdk`); for Samsung Tizen Studio (about 3 GB, into
+  `TIZEN_HOME`, default `~/tizen-studio`);
 - waits, with instructions, until the TV is ready: Developer Mode on Samsung,
   debugging allowed on Android (it asks for the pairing code when the TV shows
   one);
@@ -106,9 +112,42 @@ the TV to install with it and retries. Build output goes to
 Downloaded installers stay in `~/Library/Caches/StreamVault` for the next run,
 and Tizen Studio's installer unpacks its Java runtime into `~/.package-manager`.
 
-The sync settings are compiled into the WASM, so run it again when `sync.json`
-changes. `STREAMVAULT_SYNC_URL`, `STREAMVAULT_SYNC_TOKEN`, `SYNC`, `TV`,
-`ANDROID_HOME`, `TIZEN_HOME` and `JAVA_HOME` override the defaults.
+The sync settings go into the package as `sync.json`, never into the WASM, so
+run it again when `sync.json` changes. `STREAMVAULT_SYNC_URL`,
+`STREAMVAULT_SYNC_TOKEN`, `SYNC`, `TV`, `ANDROID_HOME`, `TIZEN_HOME` and
+`JAVA_HOME` override the defaults.
+
+## Updates
+
+Once installed, the TV updates itself. When a newer version is published, the
+update icon appears in the navbar, as on the Mac; OK on it downloads the new
+app, checks it and restarts on it. This works on Samsung, Android TV, Google
+TV and Fire TV alike, because what changes between versions is the web bundle
+(JS, WASM and hls.js), not the native package around it.
+
+- Publishing: pushing a new `version` in `Cargo.toml` to `main` runs
+  `.github/workflows/deploy.yml`. It opens a draft GitHub release `v<version>`,
+  runs one job per device (today `tv`) that attaches its files, and publishes
+  the release once every job has finished, so a TV never sees a half-uploaded
+  version; another device is another job. The `tv` job builds the bundle and
+  runs `scripts/tv/bundle.sh`, which writes `tv.json` (version, files and their
+  SHA-256) and signs it as `tv.sig` with the ECDSA P-256 key in the repository
+  secret `TV_UPDATE_KEY`, as Tauri and Sparkle sign their updates.
+- Who needs what: every installed TV updates from this repository's releases,
+  with nothing to configure. Only the publisher needs the private key; a fork
+  that publishes its own releases sets its own key in `TV_UPDATE_KEY` and its
+  public key and repository in `PUBLIC_KEY` and `RELEASES` of `boot.js`.
+- Installing: the app compares its version with the latest release. The
+  update is accepted only when the manifest's signature matches the public key
+  in `boot.js` and every file matches its hash; it is kept in IndexedDB.
+- Starting: `boot.js` starts the downloaded version and, when it does not
+  confirm that it started, falls back to the installed one on the next launch
+  and discards it, as it does for an update that no longer verifies. When its
+  store cannot be read, the installed version starts. A new installation from
+  the Mac replaces any downloaded update.
+- Reinstalling: `SHELL` in `boot.js` is the version of the native package. A
+  release that needs a newer one is not installed; the app asks to run
+  `scripts/tv/deploy.sh` again instead.
 
 ## Remote
 

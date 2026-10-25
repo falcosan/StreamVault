@@ -1,9 +1,10 @@
-use crate::sync::Replica;
+use crate::sync::{Replica, SyncConfig};
 use dioxus::core::spawn_forever;
 use dioxus::logger::tracing::warn;
 use wasm_bindgen::prelude::*;
 
 const REPLICA_KEY: &str = "replica";
+const SYNC_FILE: &str = "sync.json";
 
 #[wasm_bindgen(module = "/assets/js/storage.js")]
 extern "C" {
@@ -12,6 +13,17 @@ extern "C" {
 
     #[wasm_bindgen(catch)]
     async fn save(key: &str, value: &str) -> Result<JsValue, JsValue>;
+
+    async fn packaged(name: &str) -> JsValue;
+}
+
+pub async fn sync_config() -> SyncConfig {
+    let Some(json) = packaged(SYNC_FILE).await.as_string() else {
+        return SyncConfig::default();
+    };
+    serde_json::from_str(&json)
+        .inspect_err(|e| warn!("ignoring unreadable {SYNC_FILE}: {e}"))
+        .unwrap_or_default()
 }
 
 pub async fn load_replica() -> Option<Replica> {

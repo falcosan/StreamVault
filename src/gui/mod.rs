@@ -1,14 +1,14 @@
-mod details;
-mod home;
+mod details_view;
+mod home_view;
 mod navbar;
-mod player;
+mod player_view;
 pub mod poster;
 mod search_view;
 
-pub use details::DetailsView;
-pub use home::HomeView;
+pub use details_view::DetailsView;
+pub use home_view::HomeView;
 pub use navbar::Navbar;
-pub use player::PlayerView;
+pub use player_view::PlayerView;
 pub use search_view::SearchView;
 
 use crate::app::AppState;
@@ -17,6 +17,7 @@ use dioxus::prelude::*;
 const LOGO: &str = include_str!("../../assets/img/vector/logo.svg");
 pub const CLOSE_ICON: &str = include_str!("../../assets/img/vector/close.svg");
 pub const PLAY_ICON: &str = include_str!("../../assets/img/vector/play.svg");
+pub const UPDATE_ICON: &str = include_str!("../../assets/img/vector/update.svg");
 const BACK_ICON: &str = include_str!("../../assets/img/vector/back.svg");
 
 #[component]

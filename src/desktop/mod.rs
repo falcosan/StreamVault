@@ -8,6 +8,7 @@ mod views;
 use crate::app::{AppState, Playback, Screen};
 use crate::providers::{Episode, MediaEntry};
 use crate::sync::SyncConfig;
+use crate::update::Update;
 use config::{AppConfig, config_dir};
 use dioxus::core::{Task, spawn_forever};
 use dioxus::desktop::{
@@ -20,8 +21,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 pub use storage::{load_replica, save_replica};
 use tokio::sync::Semaphore;
+pub use update::install as install_update;
 use uuid::Uuid;
-pub use views::{DownloadsView, EntryActions, NavTools};
+pub use views::{DownloadsView, EntryActions};
 
 pub const NAV: &[(Screen, &str)] = &[(Screen::Downloads, "Downloads")];
 const MAX_DOWNLOADS: usize = 2;
@@ -40,7 +42,7 @@ pub fn launch(app: fn() -> Element) {
         .launch(app);
 }
 
-pub fn sync_config() -> SyncConfig {
+pub async fn sync_config() -> SyncConfig {
     storage::load(&config_dir().join("sync.json"))
 }
 
@@ -63,21 +65,19 @@ pub fn Head() -> Element {
 
 #[derive(Clone, Copy)]
 pub struct Device {
+    pub update: Update,
     downloads: Signal<Vec<Download>>,
     tasks: Signal<HashMap<Uuid, Task>>,
     config: CopyValue<AppConfig>,
-    update_available: Signal<bool>,
-    updating: Signal<bool>,
 }
 
 impl Device {
     pub fn new() -> Self {
         Self {
+            update: Update::default(),
             downloads: Signal::new(storage::load_downloads()),
             tasks: Signal::default(),
             config: CopyValue::new(AppConfig::load()),
-            update_available: Signal::default(),
-            updating: Signal::default(),
         }
     }
 

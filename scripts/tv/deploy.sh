@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly DX_VERSION=0.7.10
 readonly ANDROID_API=36
 readonly ANDROID_BUILD_TOOLS=36.0.0
 readonly ANDROID_MIN_API=21
@@ -21,10 +20,10 @@ if [[ ! -f "${BASH_SOURCE[0]:-}" ]]; then
   mkdir -p "$cache/source"
   find "$cache/source" -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +
   curl -fsSL "$SOURCE" | tar xzm -C "$cache/source" --strip-components 1
-  exec bash "$cache/source/scripts/deploy-tv.sh" "$@" </dev/tty
+  exec bash "$cache/source/scripts/tv/deploy.sh" "$@" </dev/tty
 fi
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 resources="$root/resources/tv"
 logo="$root/assets/img/vector/logo.svg"
 public="$root/target/dx/streamvault/release/web/public"
@@ -34,6 +33,7 @@ tizen_home="${TIZEN_HOME:-$HOME/tizen-studio}"
 android_home="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 adb="$android_home/platform-tools/adb"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
+dx_version="$(sed -n '/^name = "dioxus"$/{n;s/^version = "\(.*\)"$/\1/p;}' "$root/Cargo.lock")"
 arch="$(uname -m | sed 's/arm64/aarch64/')"
 
 say() { printf '  %s\n' "$*"; }
@@ -147,11 +147,11 @@ rust_tools() {
   fi
   run rustup target add wasm32-unknown-unknown
   export PATH="$cache/bin:$PATH"
-  if [[ "$(dx --version 2>/dev/null)" != "dioxus $DX_VERSION "* ]]; then
-    say "Installing dx ${DX_VERSION}…"
+  if [[ "$(dx --version 2>/dev/null)" != "dioxus $dx_version "* ]]; then
+    say "Installing dx ${dx_version}…"
     mkdir -p "$cache/bin"
-    download "https://github.com/DioxusLabs/dioxus/releases/download/v$DX_VERSION/dx-$arch-apple-darwin.tar.gz" "$cache/dx-$DX_VERSION.tar.gz"
-    run tar xzf "$cache/dx-$DX_VERSION.tar.gz" -C "$cache/bin" dx
+    download "https://github.com/DioxusLabs/dioxus/releases/download/v$dx_version/dx-$arch-apple-darwin.tar.gz" "$cache/dx-$dx_version.tar.gz"
+    run tar xzf "$cache/dx-$dx_version.tar.gz" -C "$cache/bin" dx
   fi
 }
 
@@ -233,6 +233,21 @@ build_web() {
   (cd "$root" && run dx build --release --platform web --debug-symbols false)
 }
 
+stage_web() {
+  local dir=$1 entry
+  run cp -R "$public" "$dir"
+  entry="$(sed -n 's:.*<script type="module" async src="\([^"]*\)"></script>.*:\1:p' "$dir/index.html")"
+  [[ -n "$entry" ]] || die "The web build has no app script in index.html."
+  run cp "$resources/boot.js" "$dir/boot.js"
+  run sed -i '' "s:<script type=\"module\" async src=\"$entry\"></script>:<script src=\"boot.js\" data-version=\"$version\" data-entry=\"$entry\"></script>:" "$dir/index.html"
+  [[ -n "${STREAMVAULT_SYNC_URL:-}" ]] || return 0
+  printf '{"enabled":true}' >"$dir/sync.json"
+  if ! plutil -insert endpoint -string "$STREAMVAULT_SYNC_URL" "$dir/sync.json" ||
+    ! plutil -insert token -string "${STREAMVAULT_SYNC_TOKEN:-}" "$dir/sync.json"; then
+    die "Cannot write the sync settings into the package."
+  fi
+}
+
 developer_mode() {
   local info
   info="$(tizen_info "$1")" &&
@@ -311,7 +326,7 @@ install_wgt() {
   local stage="$out/tizen"
   [[ -n "$2" ]] || return 1
   run rm -rf "$stage"
-  run cp -R "$public" "$stage"
+  stage_web "$stage"
   sed "s/<widget /<widget version=\"$version\" /" "$resources/tizen/config.xml" >"$stage/config.xml" ||
     die "Cannot write $stage/config.xml."
   raster 512 "$stage/icon.png"
@@ -372,7 +387,7 @@ build_apk() {
   local tools="$android_home/build-tools/$ANDROID_BUILD_TOOLS" keystore="$HOME/.android/debug.keystore" major minor patch
   IFS=. read -r major minor patch <<<"$version"
   mkdir -p "$work/res/drawable" "$work/classes" "$work/dex" "$work/assets" "$HOME/.android"
-  cp -R "$public" "$work/assets/www"
+  stage_web "$work/assets/www"
   raster 512 "$work/res/drawable/icon.png"
   raster 180 "$work/res/drawable/banner.png"
   run sips -p 180 320 --padColor "$BACKGROUND" "$work/res/drawable/banner.png"

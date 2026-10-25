@@ -1,15 +1,17 @@
 mod remote;
 mod storage;
+mod update;
 
 use crate::app::{AppState, Playback, Screen};
 use crate::player::SEEK_SECONDS;
 use crate::providers::{Episode, MediaEntry};
-use crate::sync::SyncConfig;
+use crate::update::Update;
 use dioxus::prelude::*;
 use remote::{Direction, Key};
 pub use remote::{focus, focus_key, restore as restore_focus};
 use std::time::Duration;
-pub use storage::{load_replica, save_replica};
+pub use storage::{load_replica, save_replica, sync_config};
+pub use update::install as install_update;
 use wasm_bindgen::prelude::*;
 
 pub const NAV: &[(Screen, &str)] = &[];
@@ -20,8 +22,6 @@ const HLS: Asset = asset!(
 );
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SKIP_SECONDS: f64 = 30.0;
-const SYNC_URL: Option<&str> = option_env!("STREAMVAULT_SYNC_URL");
-const SYNC_TOKEN: Option<&str> = option_env!("STREAMVAULT_SYNC_TOKEN");
 const SEEK_BAR: &str = "#seek";
 const OSD: &str = ".player-osd *";
 const CONTROLS: &str = ".player-controls";
@@ -33,11 +33,15 @@ pub fn launch(app: fn() -> Element) {
 }
 
 #[derive(Clone, Copy)]
-pub struct Device;
+pub struct Device {
+    pub update: Update,
+}
 
 impl Device {
     pub fn new() -> Self {
-        Self
+        Self {
+            update: Update::default(),
+        }
     }
 
     pub fn timeout(self) -> Duration {
@@ -54,14 +58,8 @@ pub fn use_device(app: AppState) {
         remote::install(move |key| handle(app, key));
         pause_when_hidden(app);
     });
-}
-
-pub fn sync_config() -> SyncConfig {
-    SyncConfig {
-        enabled: true,
-        endpoint: SYNC_URL.unwrap_or_default().into(),
-        token: SYNC_TOKEN.unwrap_or_default().into(),
-    }
+    use_future(update::confirm);
+    use_future(move || update::check(app.device));
 }
 
 #[component]
@@ -70,11 +68,6 @@ pub fn Head() -> Element {
         document::Script { src: HLS }
         style { dangerous_inner_html: CSS }
     }
-}
-
-#[component]
-pub fn NavTools() -> Element {
-    VNode::empty()
 }
 
 #[component]

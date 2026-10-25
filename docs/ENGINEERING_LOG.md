@@ -35,29 +35,34 @@ StreamVault/            one crate, one device feature per build
 │   ├── main.rs         picks the device module (`desktop` or `tv`) as `platform`
 │   ├── app.rs          AppState + App root, shared by every device
 │   ├── player.rs       player controller (state + channel to player.js)
-│   ├── gui/            home, search, details, player, navbar, poster
+│   ├── gui/            the views (home_view, search_view, details_view,
+│   │                   player_view) and their parts (navbar, poster)
 │   ├── providers/      StreamingCommunity, RaiPlay, Aurora, AnimeUnity, models
 │   ├── search.rs  watch.rs  prefs.rs  time.rs
 │   ├── sync.rs         replica + sync loop against the Apps Script endpoint
+│   ├── update.rs       update state and flow; each device supplies the source
 │   ├── check.rs        test helpers: local HTTP server, JavaScriptCore runner,
 │   │                   scratch dirs
 │   ├── desktop/        macOS only: window, files, downloads, local media,
-│   │                   self-update, Downloads view
+│   │                   update from package.sh, Downloads view
 │   └── tv/             TVs only: remote focus engine, IndexedDB storage,
-│                       remote key handling
+│                       remote key handling, update through boot.js
 ├── assets/             style.css and player.js for every device; tv.css
 │                       (10-foot overlay), storage.js and hls.js for the TV
 ├── resources/          packaging: macos/ (Info.plist, icon), tv/
-│                       (tizen/config.xml, android/ manifest + WebView host)
-├── scripts/            package.sh (macOS app), deploy-tv.sh (find the TV,
-│                       install the tools, build, sign, install, launch)
+│                       (tizen/config.xml, android/ manifest + WebView host,
+│                       boot.js update loader)
+├── scripts/            package.sh (macOS app), update.sh (dependencies), tv/
+│                       (deploy.sh: find the TV, install the tools, build, sign,
+│                       install, launch; bundle.sh: signed TV update)
+├── .github/workflows/  deploy.yml (one release per version, a job per device)
 └── index.html          boot page of the web build (viewport 960, dark background)
 ```
 
 Each device module exposes the same small surface that the shared code calls:
 `launch`, `Device` (request timeout, local playback lookup), `use_device`
 (device hooks), `load_replica`/`save_replica`, `sync_config`, focus
-bookkeeping, `NAV` and three slots (`Head`, `NavTools`, `EntryActions`). The
+bookkeeping, `install_update`, `NAV` and two slots (`Head`, `EntryActions`). The
 first port copied `src/providers/` and the models into `tv/` and then into a
 separate `core` crate; both are gone, so every device compiles the same files.
 
@@ -225,10 +230,12 @@ dx build --release --platform web --debug-symbols false
 `dx` 0.7.10 keeps DWARF debug sections in release WASM unless
 `--debug-symbols false` is passed (4.7 MB instead of 3 MB).
 
-The sync endpoint and token are **compile-time** constants
-(`STREAMVAULT_SYNC_URL`, `STREAMVAULT_SYNC_TOKEN`); `deploy-tv.sh` reads them from
-the macOS `sync.json` and asks first, so a TV in someone else's home can be
-built without them.
+The sync endpoint and token are not in the WASM: `scripts/tv/deploy.sh` reads
+them from the macOS `sync.json` (or `STREAMVAULT_SYNC_URL`,
+`STREAMVAULT_SYNC_TOKEN`), asks first, so a TV in someone else's home can be
+installed without them, and writes them into the package as `sync.json`, which
+the app reads when it starts. The same bundle therefore serves every TV, which
+the updates of §13.6 rely on.
 
 > **Gotcha.** `dx` emits web-absolute asset paths (`/./assets/…`). The TV loads
 > the widget as `file:///index.html`, so root paths already resolve inside the
@@ -237,8 +244,8 @@ built without them.
 > starts.
 >
 > **Gotcha.** `dx` does **not** clean old content-hashed bundles between builds;
-> `public/assets/` accumulates stale `.wasm`/`.js`. `deploy-tv.sh` deletes the
-> output directory before every build and stages from scratch.
+> `public/assets/` accumulates stale `.wasm`/`.js`. `scripts/tv/deploy.sh`
+> deletes the output directory before every build and stages from scratch.
 
 ---
 
@@ -296,7 +303,7 @@ Package + sign:
 
 ```bash
 # stages dx output + resources/tv/tizen/config.xml + the icon, then signs
-scripts/deploy-tv.sh   # → target/tv/StreamVault.wgt, then installs it
+scripts/tv/deploy.sh   # → target/tv/StreamVault.wgt, then installs it
 ```
 
 This produces `author-signature.xml` + `signature1.xml` inside the `.wgt` and
@@ -615,8 +622,9 @@ search button.
 
 `prelaunch.support=true` kept the web app **resident** between opens, so
 re-opening the tile could show the previous build. The flag is now removed and
-`deploy-tv.sh` kills the running instance (`was_kill`) before installing and
-launches with `was_execute`. This was _not_ why the remote failed (§10.7).
+`scripts/tv/deploy.sh` kills the running instance (`was_kill`) before
+installing and launches with `was_execute`. This was _not_ why the remote
+failed (§10.7).
 
 ### 10.7 What actually broke — found with DevTools on the TV
 
@@ -676,7 +684,8 @@ hidden. The IndexedDB data also survives `tizen install` of a new build.
 Relaunching right after the app closes fails `indexedDB.open` with "Internal
 error opening backing store" while the previous process still holds the
 database lock, which left that session without Continue Watching;
-`storage.js` retries the open for up to 5 s.
+`storage.js` retries the open for up to 5 s, and `boot.js` does the same for
+the update store (§13.6).
 
 ### 11.3 Tooling quirks
 
@@ -875,8 +884,8 @@ updated from the Play Store.
 
 ### 13.5 Finding the TV and installing everything
 
-`deploy-tv.sh` pings every address of the local networks (at most a /22 per
-interface) so the ARP table lists the live hosts, then probes those in
+`scripts/tv/deploy.sh` pings every address of the local networks (at most a
+/22 per interface) so the ARP table lists the live hosts, then probes those in
 parallel: Samsung's control API (port 8001, `OS: Tizen`), ADB (5555) or the
 Android TV remote service (6466), Roku's ECP (8060), LG's SSAP (3000 + 3001)
 and Hisense's MQTT (36669). Android devices already on `adb` (USB, emulators)
@@ -920,6 +929,46 @@ probe for, and cannot run it either): installed webOS
 apps cannot load module scripts from `file://` or make cross-site requests
 (LG's answer is a hosted app, which would need a server), VIDAA and Titan OS
 have no installs outside their stores, and Roku has no web engine.
+
+### 13.6 Updating from the TV
+
+A TV app cannot reinstall itself: installing a `.wgt` needs a platform
+privilege that Samsung does not grant to developer certificates, and an APK
+updating itself needs unknown sources and a published, signed APK. What
+changes between versions is the web bundle, so that is what the TV updates.
+A probe on the Tizen 9 set, over DevTools, confirmed every piece: `fetch` from
+the widget to GitHub (redirects included), module scripts from `blob:` URLs
+importing each other, the app's 3 MB WASM compiled from bytes in 42 ms, 4 MB
+in IndexedDB, WebCrypto ECDSA P-256 and SHA-256 (the widget is a secure
+context), and no Content-Security-Policy.
+
+- `deploy.yml` runs on every push to `main` and does nothing when the release
+  of the `Cargo.toml` version is already published. Otherwise it opens (or
+  resumes) a draft release `v<version>`, a job per device attaches its files,
+  and the last job publishes it as the latest release. The `tv` job builds the
+  bundle; `scripts/tv/bundle.sh` lists its files with their SHA-256 in
+  `tv.json` and signs it as `tv.sig` with `TV_UPDATE_KEY` (converted from DER
+  to the raw `r‖s` form WebCrypto verifies). It refuses a build with more than
+  one WASM, since `dx` keeps old bundles in its output directory. Signed
+  updates are what Tauri's updater requires ("This cannot be disabled"), with
+  the public key in the app and the private key only where releases are built.
+- `scripts/tv/deploy.sh` replaces the module script of `index.html` with
+  `boot.js`, which knows the installed version and entry. `boot.js` starts the
+  stored update when its signature and hashes verify: hls.js as a classic
+  `blob:` script, then the entry module with its WASM path replaced by a
+  `blob:` URL. A first start is a trial; the app calls `streamvault.confirm()`
+  once it has mounted, and an unconfirmed trial is discarded on the next
+  launch. A store that stays unreadable after the retries of §11.2 starts the
+  installed version, so storage never keeps the app from starting.
+- The app checks `releases/latest/download/tv.json`; `install()` refuses a
+  release whose `shell` is newer than `boot.js` and asks for a new installation
+  from the Mac.
+- Verified in the browser with release requests answered over CDP by a signed
+  1.1.2 bundle: the offer, refusals of a modified WASM, a bad signature and a
+  newer shell (nothing stored), the install and confirmed restart, fallback
+  after an unconfirmed start or a corrupted stored update, a newer
+  installation replacing the download, and a store locked for a moment (the
+  update starts) or never readable (the installed version starts).
 
 ---
 
@@ -983,8 +1032,10 @@ have no installs outside their stores, and Roku has no web engine.
 - Android TV, Google TV and Fire TV build from the same bundle; catalogue,
   search, details, HLS playback, remote, Back/exit and persistence verified
   on Android TV emulators (§13).
-- `scripts/deploy-tv.sh` finds the TV, installs every missing tool and waits
+- `scripts/tv/deploy.sh` finds the TV, installs every missing tool and waits
   for the TV-side steps (§13.5).
+- Installed TVs update themselves from the signed releases `deploy.yml`
+  publishes (§13.6), verified on the Samsung with a signed test release.
 
 **Open**
 
@@ -1005,7 +1056,8 @@ have no installs outside their stores, and Roku has no web engine.
 brew install pkgconf openssl@3 && brew link openssl@3 --force
 OPENSSL_DIR=/opt/homebrew/opt/openssl@3 \
   PKG_CONFIG_PATH=/opt/homebrew/opt/openssl@3/lib/pkgconfig \
-  cargo install dioxus-cli --version 0.7.10 --locked
+  cargo install dioxus-cli --locked --version \
+  "$(sed -n '/^name = "dioxus"$/{n;s/^version = "\(.*\)"$/\1/p;}' Cargo.lock)"
 rustup target add wasm32-unknown-unknown
 
 # ── one sdb client, connect by MAC-resolved IP ──────────────────────────────
@@ -1014,8 +1066,8 @@ TV=$(arp -a | grep -i e0:3:6b:70:4e:bd | grep -oE '([0-9]+\.){3}[0-9]+' | head -
 sdb start-server && sdb connect "$TV:26101" && sdb devices
 
 # ── find the TV, install the tools, build, sign, install and launch ────────
-scripts/deploy-tv.sh                 # asks when several TVs are found
-TV=192.168.68.66 scripts/deploy-tv.sh
+scripts/tv/deploy.sh                 # asks when several TVs are found
+TV=192.168.68.66 scripts/tv/deploy.sh
 
 # ── Android: debug the page (debuggable builds only) ────────────────────────
 adb forward tcp:9222 localabstract:webview_devtools_remote_$(adb shell pidof local.streamvault)

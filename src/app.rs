@@ -559,7 +559,7 @@ impl AppState {
     }
 
     async fn sync(self) {
-        sync::run(self.replica, platform::sync_config(), move || {
+        sync::run(self.replica, platform::sync_config().await, move || {
             self.publish()
         })
         .await;

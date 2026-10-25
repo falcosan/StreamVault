@@ -25,6 +25,15 @@ export async function load(key) {
   });
 }
 
+export async function packaged(name) {
+  try {
+    const response = await fetch(name);
+    return response.ok ? await response.text() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 export async function save(key, value) {
   const transaction = (await database).transaction(STORE, "readwrite", {
     durability: "strict",

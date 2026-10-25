@@ -1,0 +1,76 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      pending: ${{ steps.release.outputs.pending }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Open the draft release of this version
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          draft="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || echo missing)"
+          if [[ "$draft" == false ]]; then
+            exit 0
+          fi
+          if [[ "$draft" == missing ]]; then
+            gh release create "$tag" --draft --target "$GITHUB_SHA" \
+              --title "StreamVault ${tag#v}" --notes "StreamVault ${tag#v}."
+          fi
+          echo "pending=true" >>"$GITHUB_OUTPUT"
+
+  tv:
+    needs: release
+    if: needs.release.outputs.pending == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust and dx
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          dx="$(sed -n '/^name = "dioxus"$/{n;s/^version = "\(.*\)"$/\1/p;}' Cargo.lock)"
+          curl -fsSL "https://github.com/DioxusLabs/dioxus/releases/download/v$dx/dx-x86_64-unknown-linux-gnu.tar.gz" |
+            tar xz -C "$HOME/.cargo/bin" dx
+
+      - name: Build the web bundle
+        run: dx build --release --platform web --debug-symbols false
+
+      - name: Sign the TV update
+        env:
+          TV_UPDATE_KEY: ${{ secrets.TV_UPDATE_KEY }}
+        run: scripts/tv/bundle.sh target/dx/streamvault/release/web/public target/release/tv
+
+      - name: Attach the TV update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.release.outputs.tag }}" target/release/tv/* --clobber
+
+  publish:
+    needs: [release, tv]
+    if: needs.release.outputs.pending == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ needs.release.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --draft=false --latest

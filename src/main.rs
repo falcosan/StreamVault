@@ -12,6 +12,7 @@ mod sync;
 mod time;
 #[cfg(feature = "tv")]
 mod tv;
+mod update;
 mod watch;
 
 #[cfg(feature = "desktop")]

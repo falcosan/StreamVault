@@ -1,37 +1,15 @@
 use super::download::{Download, Status};
-use super::{play_download, reveal, update};
+use super::{play_download, reveal};
 use crate::app::{AppState, Screen};
 use crate::gui::poster::card_background;
-use crate::gui::{BackButton, CLOSE_ICON, PLAY_ICON, count};
+use crate::gui::{BackButton, CLOSE_ICON, PLAY_ICON, UPDATE_ICON, count};
 use crate::providers::{Episode, MediaEntry};
 use dioxus::prelude::*;
 
 const FOLDER_ICON: &str = include_str!("../../assets/img/vector/folder.svg");
 const TRASH_ICON: &str = include_str!("../../assets/img/vector/trash.svg");
 const DOWNLOAD_ICON: &str = include_str!("../../assets/img/vector/download.svg");
-const UPDATE_ICON: &str = include_str!("../../assets/img/vector/update.svg");
 const CHECK_ICON: &str = include_str!("../../assets/img/vector/check.svg");
-
-#[component]
-pub fn NavTools() -> Element {
-    let app = use_context::<AppState>();
-    let updating = *app.device.updating.read();
-    let update = updating || *app.device.update_available.read();
-    rsx! {
-        if update {
-            button {
-                class: if updating { "update-btn updating" } else { "update-btn" },
-                aria_label: if updating { "Updating" } else { "Install update" },
-                disabled: updating,
-                onclick: move |_| update::install(app),
-                span { class: "update-icon", dangerous_inner_html: UPDATE_ICON }
-                if !updating {
-                    span { class: "update-dot" }
-                }
-            }
-        }
-    }
-}
 
 #[component]
 pub fn EntryActions(entry: MediaEntry, season: Option<u32>, episode: Option<Episode>) -> Element {

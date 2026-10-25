@@ -1,6 +1,6 @@
-use super::LOGO;
+use super::{LOGO, UPDATE_ICON};
 use crate::app::{AppState, Screen};
-use crate::platform::{NAV, NavTools, focus};
+use crate::platform::{NAV, focus, install_update};
 use dioxus::prelude::*;
 
 const SEARCH_ICON: &str = include_str!("../../assets/img/vector/search.svg");
@@ -56,7 +56,29 @@ pub fn Navbar() -> Element {
                     span { class: "search-icon", dangerous_inner_html: SEARCH_ICON }
                 }
             }
-            NavTools {}
+            UpdateButton {}
+        }
+    }
+}
+
+#[component]
+fn UpdateButton() -> Element {
+    let app = use_context::<AppState>();
+    let update = app.device.update;
+    let installing = *update.installing.read();
+    if !installing && !*update.available.read() {
+        return VNode::empty();
+    }
+    rsx! {
+        button {
+            class: if installing { "update-btn updating" } else { "update-btn" },
+            aria_label: if installing { "Updating" } else { "Install update" },
+            disabled: installing,
+            onclick: move |_| install_update(app),
+            span { class: "update-icon", dangerous_inner_html: UPDATE_ICON }
+            if !installing {
+                span { class: "update-dot" }
+            }
         }
     }
 }

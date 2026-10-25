@@ -33,12 +33,12 @@ curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/
 **TV**
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/deploy-tv.sh" | bash
+curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/tv/deploy.sh" | bash
 ```
 
 Run it on a Mac on the same network as the TV. It finds the TVs, asks which one if there are several, installs every tool it needs and puts StreamVault on the TV. When the TV needs something only you can do, such as switching on Developer Mode, it tells you exactly what and carries on by itself.
 
-No Rust, SDK or Java to set up beforehand: the scripts fetch what is missing. Run either command again to update.
+No Rust, SDK or Java to set up beforehand: the scripts fetch what is missing. Both apps then update themselves from their update icon; running either command again also updates.
 
 ## Why StreamVault
 
@@ -47,7 +47,7 @@ No Rust, SDK or Java to set up beforehand: the scripts fetch what is missing. Ru
 - **Continue Watching everywhere.** Progress and track choices follow you across Mac, TV and the StreamingCommunity site in your browser, stored in your own Google Drive.
 - **Downloads on the Mac.** Save movies and episodes with the tracks you want: [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) fetches them, [FFmpeg](https://ffmpeg.org/) merges video and audio into MP4, subtitles sit alongside as `.vtt`.
 - **The TV stands alone.** Catalogue, playback and sync run on the TV itself: no server, and no Mac once it is installed.
-- **Native and light.** One Rust codebase built with [Dioxus](https://dioxuslabs.com/) for every screen; the Mac app updates itself.
+- **Native and light.** One Rust codebase built with [Dioxus](https://dioxuslabs.com/) for every screen; the Mac and TV apps update themselves.
 
 ## Supported TVs
 
@@ -68,7 +68,7 @@ Optional and private: a small Google Apps Script keeps one JSON file in your Dri
 ```bash
 cargo run                  # run the Mac app
 ./scripts/package.sh       # build dist/StreamVault.app
-./scripts/deploy-tv.sh     # build and install on a TV
+./scripts/tv/deploy.sh     # build and install on a TV
 ./scripts/update.sh        # upgrade the dependencies in Cargo.toml and Cargo.lock
 ```
 
