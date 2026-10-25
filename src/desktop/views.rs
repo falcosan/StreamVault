@@ -17,29 +17,7 @@ pub fn NavTools() -> Element {
     let app = use_context::<AppState>();
     let updating = *app.device.updating.read();
     let update = updating || *app.device.update_available.read();
-    let active: Vec<u8> = app
-        .device
-        .downloads
-        .read()
-        .iter()
-        .filter(|d| d.status.is_active())
-        .map(|d| percent(&d.status))
-        .collect();
-    let downloads = !active.is_empty() && *app.screen.read() != Screen::Downloads;
-    let progress = average(&active);
-    let label = format!("{} in progress", count(active.len(), "download"));
     rsx! {
-        if downloads {
-            button {
-                class: "dl-indicator",
-                style: "--progress: {progress}%;",
-                aria_label: "{label}",
-                title: "{label}",
-                onclick: move |_| app.navigate(Screen::Downloads),
-                span { class: "dl-ring" }
-                span { class: "dl-indicator-count", "{active.len()}" }
-            }
-        }
         if update {
             button {
                 class: if updating { "update-btn updating" } else { "update-btn" },
@@ -84,7 +62,7 @@ pub fn EntryActions(entry: MediaEntry, season: Option<u32>, episode: Option<Epis
         None | Some(Status::Failed(_)) => {
             app.device.download(app, &entry, season, episode.as_ref())
         }
-        Some(Status::Completed) => app.play(entry.clone(), season, episode.clone(), 0.0),
+        Some(Status::Completed) => app.play(entry.clone(), season, episode.clone()),
         Some(_) => app.navigate(Screen::Downloads),
     };
     let icon = match glyph {
@@ -331,11 +309,6 @@ fn percent(status: &Status) -> u8 {
     }
 }
 
-fn average(percents: &[u8]) -> u8 {
-    let total: usize = percents.iter().map(|&p| usize::from(p)).sum();
-    u8::try_from(total / percents.len().max(1)).unwrap_or(100)
-}
-
 fn thumbnail(download: &Download) -> Option<&str> {
     download
         .episode
@@ -409,8 +382,6 @@ mod tests {
         assert_eq!(percent(&Status::Muxing), 100);
         assert_eq!(percent(&Status::Completed), 100);
         assert_eq!(percent(&Status::Queued), 0);
-        assert_eq!(average(&[20, 60, 100]), 60);
-        assert_eq!(average(&[]), 0);
     }
 
     #[test]

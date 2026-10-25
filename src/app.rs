@@ -307,13 +307,8 @@ impl AppState {
         Ok(())
     }
 
-    pub fn play(
-        self,
-        entry: MediaEntry,
-        season: Option<u32>,
-        episode: Option<Episode>,
-        start: f64,
-    ) {
+    pub fn play(self, entry: MediaEntry, season: Option<u32>, episode: Option<Episode>) {
+        let start = watch::resume_time(&self.watch.peek(), &entry, season, episode.as_ref());
         self.start(
             self.device
                 .local(Playback::new(entry, season, episode, start)),
@@ -322,7 +317,7 @@ impl AppState {
 
     pub fn play_episode(self, season: u32, episode: Episode) {
         if let Some(entry) = self.details.entry.peek().clone() {
-            self.play(entry, Some(season), Some(episode), 0.0);
+            self.play(entry, Some(season), Some(episode));
         }
     }
 
@@ -397,7 +392,7 @@ impl AppState {
         };
         let next = next_episode(&self.details.episodes.peek(), current.number).cloned();
         if let Some(next) = next {
-            return self.play(playback.entry, Some(season), Some(next), 0.0);
+            return self.play(playback.entry, Some(season), Some(next));
         }
         let Some(next_season) = watch::next_season(&self.details.seasons.peek(), season) else {
             return;

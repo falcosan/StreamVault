@@ -1,6 +1,14 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+
+pub fn scratch_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("sv_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
 
 pub async fn serve(responses: &'static [(u16, &'static str)]) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -23,4 +31,14 @@ pub async fn serve(responses: &'static [(u16, &'static str)]) -> (String, Arc<Mu
         }
     });
     (url, paths)
+}
+
+#[cfg(target_os = "macos")]
+pub fn run_js(script: &str) -> serde_json::Value {
+    let output = std::process::Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", script])
+        .output()
+        .unwrap();
+    serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&output.stderr)))
 }

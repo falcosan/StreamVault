@@ -11,7 +11,6 @@ pub use remote::{focus_key, restore as restore_focus};
 use std::time::Duration;
 pub use storage::{load_replica, save_replica};
 use wasm_bindgen::prelude::*;
-use web_sys::{ScrollBehavior, ScrollToOptions};
 
 pub const NAV: &[(Screen, &str)] = &[];
 const CSS: &str = include_str!("../../assets/style/tv.css");
@@ -99,13 +98,7 @@ fn handle(app: AppState, key: Key) -> bool {
         return player(app, key);
     }
     match key {
-        Key::Move(direction) => {
-            let moved = remote::navigate(direction);
-            if remote::is_focused(".navbar *") {
-                scroll_content_to_top();
-            }
-            moved
-        }
+        Key::Move(direction) => remote::navigate(direction),
         Key::Select if remote::is_focused("#search-go") => remote::focus("#search-input"),
         Key::Select => remote::activate(),
         Key::Back => app.back() || remote::exit(),
@@ -204,16 +197,4 @@ fn pause_when_hidden(app: AppState) {
     let _ = document
         .add_event_listener_with_callback("visibilitychange", listener.as_ref().unchecked_ref());
     listener.forget();
-}
-
-fn scroll_content_to_top() {
-    let content = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.query_selector(".content").ok().flatten());
-    if let Some(content) = content {
-        let options = ScrollToOptions::new();
-        options.set_top(0.0);
-        options.set_behavior(ScrollBehavior::Instant);
-        content.scroll_to_with_scroll_to_options(&options);
-    }
 }

@@ -4,6 +4,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::{
     Document, Element, FocusOptions, HtmlElement, KeyboardEvent, MutationObserver,
     MutationObserverInit, ScrollBehavior, ScrollIntoViewOptions, ScrollLogicalPosition,
+    ScrollToOptions,
 };
 
 const MEDIA_KEYS: [&str; 6] = [
@@ -17,6 +18,7 @@ const MEDIA_KEYS: [&str; 6] = [
 const FOCUSABLE: &str = "button:not([disabled]), input[type='range']:not([disabled])";
 const RESTORABLE: &str = "[data-focus]";
 const EDITABLE: &str = "input:not([type='range'])";
+const CONTENT: &str = ".content";
 
 #[wasm_bindgen]
 extern "C" {
@@ -318,11 +320,34 @@ fn reveal(target: &Element) {
     let focus = FocusOptions::new();
     focus.set_prevent_scroll(true);
     let _ = element.focus_with_options(&focus);
+    let content_at_top = document()
+        .and_then(|document| document.query_selector(CONTENT).ok().flatten())
+        .filter(|content| shown_from_top(content, target));
+    if let Some(content) = &content_at_top {
+        let options = ScrollToOptions::new();
+        options.set_top(0.0);
+        options.set_behavior(ScrollBehavior::Instant);
+        content.scroll_to_with_scroll_to_options(&options);
+    }
     let scroll = ScrollIntoViewOptions::new();
     scroll.set_behavior(ScrollBehavior::Instant);
-    scroll.set_block(ScrollLogicalPosition::Center);
+    scroll.set_block(if content_at_top.is_some() {
+        ScrollLogicalPosition::Nearest
+    } else {
+        ScrollLogicalPosition::Center
+    });
     scroll.set_inline(ScrollLogicalPosition::Nearest);
     element.scroll_into_view_with_scroll_into_view_options(&scroll);
+}
+
+fn shown_from_top(content: &Element, target: &Element) -> bool {
+    if !content.contains(Some(target)) {
+        return true;
+    }
+    let bottom = target.get_bounding_client_rect().bottom()
+        - content.get_bounding_client_rect().top()
+        + f64::from(content.scroll_top());
+    bottom <= f64::from(content.client_height())
 }
 
 #[cfg(test)]

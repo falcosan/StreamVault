@@ -96,7 +96,7 @@ fn PlayButton(entry: MediaEntry, resume: Option<WatchItem>) -> Element {
             onclick: move |_| match (&resume, &first) {
                 (Some(item), _) => app.resume(item.clone()),
                 (None, Some((season, episode))) => app.play_episode(*season, episode.clone()),
-                (None, None) => app.play(entry.clone(), None, None, 0.0),
+                (None, None) => app.play(entry.clone(), None, None),
             },
             span { class: "play-icon", dangerous_inner_html: PLAY_ICON }
             "{label}"
@@ -129,8 +129,7 @@ fn Episodes(entry: MediaEntry, resume: Option<WatchItem>) -> Element {
     let progress = |episode: &Episode| {
         resume
             .as_ref()
-            .filter(|item| item.season == Some(season) && item.started())
-            .filter(|item| item.episode.as_ref().map(|e| e.number) == Some(episode.number))
+            .filter(|item| item.started() && item.is_for(&entry, Some(season), Some(episode)))
             .map(WatchItem::progress_pct)
     };
 

@@ -1,6 +1,6 @@
 use super::{BackButton, PLAY_ICON, focus};
 use crate::app::{AppState, Playback};
-use crate::player::{Menu, OSD_SECONDS, SEEK_SECONDS, clock};
+use crate::player::{Menu, OSD_SECONDS, SEEK_SECONDS, clock, offset_label};
 use dioxus::prelude::*;
 
 const PAUSE_ICON: &str = include_str!("../../assets/img/vector/pause.svg");
@@ -17,7 +17,9 @@ pub fn PlayerView() -> Element {
     let start = playback.as_ref().map_or(0.0, |p| p.start);
     let tracks = playback.as_ref().map(Playback::tracks).unwrap_or_default();
     let status = *player.status.read();
-    let time = player.scrub.read().unwrap_or(status.time);
+    let scrub = *player.scrub.read();
+    let time = scrub.unwrap_or(status.time);
+    let offset = scrub.and_then(|target| offset_label(target, status.time));
     let loading = url.is_none() || status.waiting;
     let percent = if status.duration > 0.0 {
         time / status.duration * 100.0
@@ -60,6 +62,9 @@ pub fn PlayerView() -> Element {
             }
             if loading {
                 div { class: "player-spinner", role: "progressbar", aria_label: "Loading" }
+            }
+            if let Some(offset) = offset {
+                div { class: "player-offset", aria_hidden: true, "{offset}" }
             }
             div {
                 class: "player-osd {phase}",

@@ -2,8 +2,6 @@ mod config;
 mod download;
 mod media;
 mod storage;
-#[cfg(test)]
-mod test_support;
 mod update;
 mod views;
 
@@ -229,8 +227,7 @@ fn play_download(app: AppState, download: Download) {
         return app.report("File not found", download.file.display());
     }
     app.prepare_details(&download.entry, None);
-    let playback = Playback::new(download.entry, download.season, download.episode, 0.0);
-    app.start(with_file(playback, download.file));
+    app.play(download.entry, download.season, download.episode);
 }
 
 fn reveal(app: AppState, file: PathBuf) {
@@ -268,8 +265,8 @@ fn served<'a>(playback: &'a Playback, path: &str) -> Option<&'a Path> {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::scratch_dir;
     use super::*;
+    use crate::check::scratch_dir;
 
     #[test]
     fn local_playback_gets_a_fresh_media_url() {

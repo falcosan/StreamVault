@@ -574,10 +574,13 @@ gives focus to the first `[data-focus]` element whenever nothing is focused
 
 ### 10.4 Scroll the focus into view
 
-Focus uses `preventScroll` and is followed by an instant
-`scrollIntoView({ block: "center" })`, so the focused tile is always centred.
-When focus enters the navbar the content scrolls back to the top. Smooth
-scrolling was measured and dropped (§12.1).
+Focus uses `preventScroll` and is followed by an instant scroll. When the
+focused element would be on screen with the page at the top (the navbar, a
+details hero with its Play button and season chips, the first catalogue rows),
+the page goes to the top, so a title's header stays whole until focus moves
+down to its episodes; anything further down is centred with
+`scrollIntoView({ block: "center" })`. Smooth scrolling was measured and
+dropped (§12.1).
 
 ### 10.5 Visible focus ring
 
@@ -731,6 +734,16 @@ first `canplay` it is on, while paused it is off, and while playing it is on
 only when the video is seeking or has less than `HAVE_FUTURE_DATA`. Before,
 it was set by `waiting` and cleared only by `playing`, so a seek while paused
 left it spinning until playback resumed.
+
+Presses in the same direction while a scrub is pending accelerate it: from the
+fifth each counts three times, from the tenth six (`acceleration` in
+`player.rs`), so holding the key crosses an episode in seconds. While the
+scrub is a second or more away from the playing position, the middle of the
+screen shows the distance (`+30 s`, `−1:30`). The last 20 s of an episode
+(`watch::ending`, the margin after which Continue Watching moves on to the
+next episode) start the next one while playing, and `AppState::play` starts
+every title at its Continue Watching position, so an episode or movie opened
+from its page or from Downloads resumes instead of restarting.
 
 ### 12.3 Sync between macOS, TV and the browser userscript
 

@@ -91,7 +91,7 @@ fn content_type(file: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desktop::test_support::scratch_dir;
+    use crate::check::scratch_dir;
 
     fn request(path: &str, range: Option<&str>) -> Request<Vec<u8>> {
         let mut builder = Request::builder().uri(format!("dioxus://index.html{path}"));

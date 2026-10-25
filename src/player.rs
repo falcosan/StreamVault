@@ -2,6 +2,7 @@ use crate::app::{AppState, cancel, restart};
 use crate::gui::focus;
 use crate::prefs::PlayerPrefs;
 use crate::time::{now_ms, sleep};
+use crate::watch;
 use dioxus::core::Task;
 use dioxus::document::{Eval, EvalError};
 use dioxus::prelude::*;
@@ -145,6 +146,7 @@ pub struct Player {
     pub tracks: Signal<Tracks>,
     pub scrub: Signal<Option<f64>>,
     pending: CopyValue<Option<Task>>,
+    streak: CopyValue<(bool, u32)>,
     generation: CopyValue<u32>,
     last_input: CopyValue<u64>,
     channel: CopyValue<Option<Eval>>,
@@ -159,6 +161,7 @@ impl Player {
             status: Signal::default(),
             tracks: Signal::default(),
             pending: CopyValue::default(),
+            streak: CopyValue::default(),
             generation: CopyValue::default(),
             last_input: CopyValue::default(),
             channel: CopyValue::default(),
@@ -194,6 +197,12 @@ impl Player {
                     if status.paused || saved != Some(tick) {
                         saved = Some(tick);
                         app.progress(status.time, status.duration);
+                    }
+                    if !status.paused
+                        && watch::ending(status.time, status.duration)
+                        && app.has_next()
+                    {
+                        app.play_next();
                     }
                 }
                 Event::Tracks(tracks) => self.tracks.set(tracks),
@@ -241,9 +250,17 @@ impl Player {
         self.send(Command::Toggle);
     }
 
-    pub fn seek(self, by: f64) {
+    pub fn seek(mut self, by: f64) {
+        let forward = by > 0.0;
+        let (direction, presses) = *self.streak.peek();
+        let presses = if direction == forward && self.pending.peek().is_some() {
+            presses.saturating_add(1)
+        } else {
+            1
+        };
+        self.streak.set((forward, presses));
         let from = self.scrub.peek().unwrap_or(self.status.peek().time);
-        self.scrub_to(from + by);
+        self.scrub_to(from + by * acceleration(presses));
     }
 
     pub fn scrub_to(mut self, time: f64) {
@@ -337,6 +354,27 @@ fn settled(target: f64, time: f64) -> bool {
     (time - target).abs() < SCRUB_TOLERANCE
 }
 
+fn acceleration(presses: u32) -> f64 {
+    match presses {
+        0..=4 => 1.0,
+        5..=9 => 3.0,
+        _ => 6.0,
+    }
+}
+
+pub fn offset_label(target: f64, time: f64) -> Option<String> {
+    if settled(target, time) {
+        return None;
+    }
+    let sign = if target > time { '+' } else { '−' };
+    let seconds = (target - time).abs().round();
+    Some(if seconds < 60.0 {
+        format!("{sign}{seconds} s")
+    } else {
+        format!("{sign}{}", clock(seconds))
+    })
+}
+
 pub fn clock(seconds: f64) -> String {
     let total = if seconds.is_finite() {
         seconds.max(0.0) as u64
@@ -378,6 +416,22 @@ mod tests {
         assert_eq!(scrub_target(40.0, 100.0), Some(40.0));
         assert_eq!(scrub_target(130.0, 100.0), Some(100.0));
         assert_eq!(scrub_target(40.0, 0.0), None);
+    }
+
+    #[test]
+    fn repeated_presses_seek_further_each_time() {
+        assert_eq!(
+            [1, 4, 5, 9, 10, 40].map(acceleration),
+            [1.0, 1.0, 3.0, 3.0, 6.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn the_offset_reads_in_seconds_then_minutes() {
+        assert_eq!(offset_label(40.0, 10.3).as_deref(), Some("+30 s"));
+        assert_eq!(offset_label(10.0, 100.0).as_deref(), Some("−1:30"));
+        assert_eq!(offset_label(200.0, 10.0).as_deref(), Some("+3:10"));
+        assert_eq!(offset_label(10.4, 10.0), None);
     }
 
     #[test]
@@ -493,13 +547,13 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     mod script {
-        use crate::js_test::run;
+        use crate::check::run_js;
         use serde_json::{Value, json};
 
         const TRACKS: &str = r#"[{ language: "eng", label: "English [CC]" }, { language: "forced-ita", label: "Italian [Forced]" }, { language: "ita", label: "Italian" }]"#;
 
         fn eval(expression: &str) -> Value {
-            run(&format!(
+            run_js(&format!(
                 "var HTMLMediaElement = {{ HAVE_FUTURE_DATA: 3 }};{}JSON.stringify({expression});",
                 include_str!("../assets/js/player.js")
             ))

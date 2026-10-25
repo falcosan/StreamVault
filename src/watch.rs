@@ -25,9 +25,30 @@ impl WatchItem {
         self.current_time > 0.0
     }
 
-    fn episode_number(&self) -> Option<u32> {
-        self.episode.as_ref().map(|e| e.number)
+    pub fn is_for(
+        &self,
+        entry: &MediaEntry,
+        season: Option<u32>,
+        episode: Option<&Episode>,
+    ) -> bool {
+        self.entry.key_at(self.season, self.episode.as_ref()) == entry.key_at(season, episode)
     }
+}
+
+pub fn ending(time: f64, duration: f64) -> bool {
+    duration > 0.0 && duration - time <= END_MARGIN
+}
+
+pub fn resume_time(
+    items: &[WatchItem],
+    entry: &MediaEntry,
+    season: Option<u32>,
+    episode: Option<&Episode>,
+) -> f64 {
+    items
+        .iter()
+        .find(|item| item.is_for(entry, season, episode))
+        .map_or(0.0, |item| item.current_time)
 }
 
 pub fn upsert(items: &mut Vec<WatchItem>, item: WatchItem) {
@@ -43,14 +64,13 @@ pub fn record(items: &mut Vec<WatchItem>, item: WatchItem, episodes: &[Episode])
     if item.current_time < 1.0 || item.duration <= 0.0 {
         return false;
     }
-    if item.duration - item.current_time > END_MARGIN {
+    if !ending(item.current_time, item.duration) {
         upsert(items, item);
         return true;
     }
     let same_episode = items
         .iter()
-        .find(|i| i.entry.key() == item.entry.key())
-        .is_some_and(|i| i.episode_number() == item.episode_number());
+        .any(|i| i.is_for(&item.entry, item.season, item.episode.as_ref()));
     same_episode && finish(items, &item, episodes)
 }
 
@@ -190,6 +210,18 @@ mod tests {
     }
 
     #[test]
+    fn record_near_end_of_another_season_is_ignored() {
+        let mut items = vec![series_at(1, 30.0)];
+        let later = WatchItem {
+            season: Some(2),
+            ..series_at(1, 90.0)
+        };
+        let episodes = [Episode::numbered(1, ""), Episode::numbered(2, "")];
+        assert!(!record(&mut items, later, &episodes));
+        assert_eq!(items, [series_at(1, 30.0)]);
+    }
+
+    #[test]
     fn record_near_end_without_saved_item_is_ignored() {
         let mut items = Vec::new();
         assert!(!record(&mut items, movie_at(1, 90.0), &[]));
@@ -217,6 +249,35 @@ mod tests {
             &[Episode::numbered(1, ""), Episode::numbered(2, "")]
         ));
         assert_eq!(items[0].episode.as_ref().unwrap().number, 2);
+    }
+
+    #[test]
+    fn a_title_resumes_only_at_the_episode_it_was_left_at() {
+        let items = [series_at(3, 600.0), movie_at(2, 45.0)];
+        let show = entry(1, MediaType::Series);
+        let at = |number| resume_time(&items, &show, Some(1), Some(&Episode::numbered(number, "")));
+        assert_eq!(at(3), 600.0);
+        assert_eq!(at(4), 0.0);
+        assert_eq!(
+            resume_time(&items, &show, Some(2), Some(&Episode::numbered(3, ""))),
+            0.0
+        );
+        assert_eq!(
+            resume_time(&items, &entry(2, MediaType::Movie), None, None),
+            45.0
+        );
+        assert_eq!(
+            resume_time(&items, &entry(9, MediaType::Movie), None, None),
+            0.0
+        );
+    }
+
+    #[test]
+    fn the_last_seconds_of_a_known_duration_are_its_ending() {
+        assert!(!ending(79.0, 100.0));
+        assert!(ending(80.0, 100.0));
+        assert!(ending(100.0, 100.0));
+        assert!(!ending(0.0, 0.0));
     }
 
     #[test]

@@ -95,7 +95,7 @@ fn modified(path: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desktop::test_support::scratch_dir;
+    use crate::check::scratch_dir;
     use crate::providers::MediaEntry;
     use serde_json::json;
 

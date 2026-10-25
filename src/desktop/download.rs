@@ -64,9 +64,7 @@ impl Download {
         season: Option<u32>,
         episode: Option<&Episode>,
     ) -> bool {
-        self.entry.key() == entry.key()
-            && self.season == season
-            && self.episode.as_ref().map(|e| e.number) == episode.map(|e| e.number)
+        self.entry.key_at(self.season, self.episode.as_ref()) == entry.key_at(season, episode)
     }
 
     pub fn restored(self) -> Option<Self> {
@@ -582,7 +580,7 @@ fn sanitize_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desktop::test_support::scratch_dir;
+    use crate::check::scratch_dir;
     use std::os::unix::process::ExitStatusExt;
 
     #[test]

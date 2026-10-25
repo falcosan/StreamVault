@@ -616,7 +616,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     mod server {
         use super::*;
-        use crate::js_test::run;
+        use crate::check::run_js;
 
         const SCRIPT: &str = include_str!("../assets/js/google_apps_script.gs");
         const DAY: u64 = 24 * 60 * 60 * 1000;
@@ -637,7 +637,7 @@ mod tests {
             }
 
             fn post(&mut self, body: &str) -> Response {
-                let result = run(&format!(
+                let result = run_js(&format!(
                     r#"{SCRIPT}
                     var store = {{ content: {content}, props: {{ TOKEN: "token", FILE_ID: "f" }} }};
                     var PropertiesService = {{ getScriptProperties: () => ({{
@@ -682,7 +682,7 @@ mod tests {
         #[test]
         fn limits_match_the_script() {
             assert_eq!(
-                run(&format!(
+                run_js(&format!(
                     "{SCRIPT}\nJSON.stringify([MAX_CHANGES, TOMBSTONE_TTL_MS]);"
                 )),
                 json!([MAX_CHANGES, TOMBSTONE_TTL_MS])

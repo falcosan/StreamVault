@@ -382,7 +382,7 @@ impl Provider for StreamingCommunity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http_test::serve;
+    use crate::check::serve;
 
     fn provider() -> StreamingCommunity {
         StreamingCommunity {

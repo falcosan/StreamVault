@@ -161,8 +161,7 @@ svg {
   display: flex;
 }
 
-.update-btn,
-.dl-indicator {
+.update-btn {
   position: relative;
   display: flex;
   align-items: center;
@@ -174,20 +173,13 @@ svg {
   border: none;
   border-radius: 50%;
   background: none;
-  cursor: pointer;
-}
-
-.update-btn {
   color: var(--text2);
-}
-
-.update-btn:hover,
-.dl-indicator:hover {
-  background: var(--surface2);
+  cursor: pointer;
 }
 
 .update-btn:hover {
   color: var(--accent);
+  background: var(--surface2);
 }
 
 .update-btn.updating {
@@ -934,6 +926,21 @@ svg {
   animation: spin 1s linear infinite;
 }
 
+.player-offset {
+  position: absolute;
+  top: 36%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 8px 20px;
+  border-radius: 999px;
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: white;
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
 .player-osd {
   position: absolute;
   inset: 0;
@@ -1488,26 +1495,9 @@ svg {
   background: var(--surface2);
 }
 
-.dl-icon-button .dl-ring,
-.dl-indicator .dl-ring {
+.dl-icon-button .dl-ring {
   width: 20px;
   height: 20px;
-}
-
-.dl-indicator-count {
-  position: absolute;
-  top: -1px;
-  right: -3px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 999px;
-  color: var(--accent-text);
-  background: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 15px;
-  text-align: center;
 }
 
 .dl-empty {
@@ -1627,9 +1617,15 @@ svg {
   *,
   ::before,
   ::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .dl-item {
+    animation: none;
+  }
+
+  .continue-row {
+    scroll-behavior: auto;
   }
 
   .poster-card:hover,

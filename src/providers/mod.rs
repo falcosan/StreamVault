@@ -327,7 +327,7 @@ fn field(name: &str, value: &str) -> Regex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http_test::serve;
+    use crate::check::serve;
 
     struct Fake {
         name: &'static str,

@@ -71,6 +71,14 @@ impl MediaEntry {
         (self.provider, self.id)
     }
 
+    pub fn key_at(
+        &self,
+        season: Option<u32>,
+        episode: Option<&Episode>,
+    ) -> (usize, u64, Option<u32>, Option<u32>) {
+        (self.provider, self.id, season, episode.map(|e| e.number))
+    }
+
     pub fn is_movie(&self) -> bool {
         self.media_type == MediaType::Movie
     }

@@ -84,7 +84,7 @@ fn is_newer(remote: &str, local: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http_test::serve;
+    use crate::check::serve;
 
     #[tokio::test]
     async fn manifest_fetch_fails_on_http_errors() {

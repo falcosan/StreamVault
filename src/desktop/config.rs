@@ -212,7 +212,7 @@ fn replace_file(path: &Path, fill: impl FnOnce(&Path) -> io::Result<()>) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desktop::test_support::scratch_dir;
+    use crate::check::scratch_dir;
 
     #[test]
     fn defaults_match_documented_values() {
