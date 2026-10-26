@@ -162,8 +162,9 @@ impl Device {
     }
 
     fn delete_download(mut self, app: AppState, file: PathBuf) {
+        let config = self.config.read().clone();
         spawn_forever(async move {
-            if let Err(e) = download::delete(&file).await {
+            if let Err(e) = download::delete(&config, &file).await {
                 return app.report("Cannot delete download", e);
             }
             self.downloads

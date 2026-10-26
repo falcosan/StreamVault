@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env::consts::EXE_SUFFIX;
 use std::ffi::OsStr;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -15,6 +16,14 @@ use uuid::Uuid;
 
 const ERROR_LINES: usize = 5;
 const SAVE_PATTERN: &str = "<SaveName>.<Language>.<Id>";
+const ASSETS: &str = "assets";
+const SUBTITLES: &str = "subtitles";
+const SYSTEM_FILES: [&str; 3] = [".DS_Store", "Thumbs.db", "desktop.ini"];
+
+enum Pass {
+    Media,
+    Subtitles,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Status {
@@ -120,8 +129,9 @@ pub fn local_file(
     season: Option<u32>,
     episode: Option<&Episode>,
 ) -> Option<PathBuf> {
-    let file = target(config, entry, season, episode);
-    file.is_file().then_some(file)
+    targets(config, entry, season, episode)
+        .into_iter()
+        .find(|file| file.is_file())
 }
 
 pub fn subtitles(video: &Path) -> Vec<Subtitle> {
@@ -129,10 +139,10 @@ pub fn subtitles(video: &Path) -> Vec<Subtitle> {
     else {
         return Vec::new();
     };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut subtitles: Vec<(u32, Subtitle)> = entries
+    let mut subtitles: Vec<(u32, Subtitle)> = [subtitle_dir(video), dir.to_path_buf()]
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|file| file.extension().is_some_and(|ext| ext == "vtt"))
@@ -146,6 +156,10 @@ pub fn subtitles(video: &Path) -> Vec<Subtitle> {
         .into_iter()
         .map(|(_, subtitle)| subtitle)
         .collect()
+}
+
+fn subtitle_dir(video: &Path) -> PathBuf {
+    video.with_file_name(ASSETS).join(SUBTITLES)
 }
 
 fn sidecar(name: &str, file: &Path) -> Option<(String, u32)> {
@@ -164,7 +178,17 @@ fn target(
     season: Option<u32>,
     episode: Option<&Episode>,
 ) -> PathBuf {
-    let (title, dir) = if let (Some(season), Some(episode)) = (season, episode) {
+    let [file, _] = targets(config, entry, season, episode);
+    file
+}
+
+fn targets(
+    config: &AppConfig,
+    entry: &MediaEntry,
+    season: Option<u32>,
+    episode: Option<&Episode>,
+) -> [PathBuf; 2] {
+    let (title, dir, legacy) = if let (Some(season), Some(episode)) = (season, episode) {
         let title = config
             .output
             .map_episode_name
@@ -172,21 +196,22 @@ fn target(
             .replace("%(season)", &format!("{season:02}"))
             .replace("%(episode)", &format!("{:02}", episode.number))
             .replace("%(show_name)", &entry.name);
-        let dir = config
+        let season_dir = config
             .serie_dir()
             .join(sanitize_filename(&entry.name))
             .join(format!("S{season:02}"));
-        (title, dir)
+        (
+            title.clone(),
+            season_dir.join(sanitize_filename(&title)),
+            season_dir,
+        )
     } else {
         let title = entry.display_title();
         let dir = config.movie_dir().join(sanitize_filename(&title));
-        (title, dir)
+        (title, dir.clone(), dir)
     };
-    dir.join(format!(
-        "{}.{}",
-        sanitize_filename(&title),
-        config.process.extension
-    ))
+    let file = format!("{}.{}", sanitize_filename(&title), config.process.extension);
+    [dir.join(&file), legacy.join(file)]
 }
 
 pub async fn run(
@@ -228,7 +253,7 @@ async fn fetch(
         .await
         .map_err(|e| format!("Cannot create tracks dir: {e}"))?;
     let ffmpeg = find_binary("ffmpeg");
-    let mut child = downloader(config, stream, name, &tracks, &tmp, &ffmpeg)
+    let mut child = downloader(config, stream, name, &tracks, &tmp, &ffmpeg, Pass::Media)
         .spawn()
         .map_err(|e| format!("Failed to start N_m3u8DL-RE: {e}"))?;
 
@@ -252,16 +277,24 @@ async fn fetch(
                 errors.push(line.to_owned());
             }
         }),
+        async {
+            if let Some(status) =
+                download_subtitles(config, stream, name, &tracks, work, &ffmpeg).await
+                && !status.as_ref().is_ok_and(ExitStatus::success)
+            {
+                warn!("subtitle download failed: {status:?}");
+            }
+        },
     );
 
     let exit = child
         .wait()
         .await
         .map_err(|e| format!("Process error: {e}"))?;
-    let (media, subtitles) = scan_tracks(&tracks, config.process.merge_subtitle).await;
-    if !exit.success() && media.is_empty() {
+    if !exit.success() {
         return Err(exit_message(exit, &errors));
     }
+    let (media, subtitles) = scan_tracks(&tracks).await;
     if !muxing {
         report(Status::Muxing);
     }
@@ -334,6 +367,28 @@ async fn each_line(source: Option<impl AsyncRead + Unpin>, mut handle: impl FnMu
     }
 }
 
+async fn download_subtitles(
+    config: &AppConfig,
+    stream: &StreamUrl,
+    name: &OsStr,
+    tracks: &Path,
+    work: &Path,
+    ffmpeg: &Path,
+) -> Option<std::io::Result<ExitStatus>> {
+    if !config.process.merge_subtitle {
+        return None;
+    }
+    let tmp = work.join("subtitles");
+    let mut command = downloader(config, stream, name, tracks, &tmp, ffmpeg, Pass::Subtitles);
+    Some(
+        command
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await,
+    )
+}
+
 fn downloader(
     config: &AppConfig,
     stream: &StreamUrl,
@@ -341,6 +396,7 @@ fn downloader(
     tracks: &Path,
     tmp: &Path,
     ffmpeg: &Path,
+    pass: Pass,
 ) -> Command {
     let settings = &config.download;
     let mut cmd = os::command(find_binary("N_m3u8DL-RE"));
@@ -361,7 +417,6 @@ fn downloader(
             "--write-meta-json",
             "false",
             "--binary-merge",
-            "--del-after-done",
             "--auto-subtitle-fix",
             "false",
             "--check-segments-count",
@@ -379,17 +434,22 @@ fn downloader(
     if !settings.max_speed.is_empty() {
         cmd.arg("--max-speed").arg(&settings.max_speed);
     }
-    cmd.arg("--select-video")
-        .arg(&settings.select_video)
-        .arg("--select-audio")
-        .arg(&settings.select_audio)
-        .arg("--select-subtitle")
-        .arg(&settings.select_subtitle);
-    if !config.process.merge_audio {
-        cmd.args(["--drop-audio", "all"]);
-    }
-    if !config.process.merge_subtitle {
-        cmd.args(["--drop-subtitle", "all"]);
+    match pass {
+        Pass::Media => {
+            cmd.args(["--del-after-done", "true"])
+                .arg("--select-video")
+                .arg(&settings.select_video)
+                .arg("--select-audio")
+                .arg(&settings.select_audio);
+            if !config.process.merge_audio {
+                cmd.args(["--drop-audio", "all"]);
+            }
+        }
+        Pass::Subtitles => {
+            cmd.args(["--del-after-done", "false"])
+                .arg("--select-subtitle")
+                .arg(&settings.select_subtitle);
+        }
     }
     for (key, value) in &stream.headers {
         cmd.arg("--header").arg(format!("{key}: {value}"));
@@ -462,7 +522,7 @@ async fn reset_dir(dir: &Path) -> std::io::Result<()> {
     tokio::fs::create_dir_all(dir).await
 }
 
-async fn scan_tracks(dir: &Path, with_subtitles: bool) -> (Vec<PathBuf>, Vec<PathBuf>) {
+async fn scan_tracks(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut media = Vec::new();
     let mut subtitles = Vec::new();
     if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
@@ -473,7 +533,7 @@ async fn scan_tracks(dir: &Path, with_subtitles: bool) -> (Vec<PathBuf>, Vec<Pat
                     let size = entry.metadata().await.map_or(0, |m| m.len());
                     media.push((path, size));
                 }
-                Some("vtt") if with_subtitles => subtitles.push(path),
+                Some("vtt") => subtitles.push(path),
                 _ => {}
             }
         }
@@ -482,9 +542,43 @@ async fn scan_tracks(dir: &Path, with_subtitles: bool) -> (Vec<PathBuf>, Vec<Pat
     (media.into_iter().map(|(path, _)| path).collect(), subtitles)
 }
 
-pub async fn delete(video: &Path) -> std::io::Result<()> {
+pub async fn delete(config: &AppConfig, video: &Path) -> std::io::Result<()> {
     missing_ok(tokio::fs::remove_file(video).await)?;
-    remove_subtitles(video).await
+    remove_subtitles(video).await?;
+    let roots = [config.serie_dir(), config.movie_dir()];
+    if !roots.iter().any(|root| video.starts_with(root)) {
+        return Ok(());
+    }
+    let subtitles = subtitle_dir(video);
+    for dir in subtitles
+        .ancestors()
+        .take_while(|dir| !roots.iter().any(|root| root == dir))
+    {
+        if !remove_if_empty(dir).await? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+async fn remove_if_empty(dir: &Path) -> std::io::Result<bool> {
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(true),
+        Err(e) => return Err(e),
+    };
+    let mut clutter = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        if !SYSTEM_FILES.iter().any(|name| entry.file_name() == *name) {
+            return Ok(false);
+        }
+        clutter.push(entry.path());
+    }
+    for file in clutter {
+        tokio::fs::remove_file(file).await?;
+    }
+    tokio::fs::remove_dir(dir).await?;
+    Ok(true)
 }
 
 async fn remove_subtitles(video: &Path) -> std::io::Result<()> {
@@ -496,9 +590,13 @@ async fn remove_subtitles(video: &Path) -> std::io::Result<()> {
 
 async fn save_subtitles(files: &[PathBuf], video: &Path) -> std::io::Result<()> {
     remove_subtitles(video).await?;
+    let dir = subtitle_dir(video);
+    if !files.is_empty() {
+        tokio::fs::create_dir_all(&dir).await?;
+    }
     for file in files {
         if let Some(name) = file.file_name() {
-            move_file(file, &video.with_file_name(name)).await?;
+            move_file(file, &dir.join(name)).await?;
         }
     }
     Ok(())
@@ -571,6 +669,7 @@ fn sanitize_filename(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::check::scratch_dir;
+    use crate::providers::MediaType;
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
     #[cfg(windows)]
@@ -610,7 +709,7 @@ mod tests {
         assert!(
             download
                 .file
-                .ends_with("Medias/Serie/Breaking_Bad/S02/Mandala S02E05.mp4")
+                .ends_with("Medias/Serie/Breaking_Bad/S02/Mandala S02E05/Mandala S02E05.mp4")
         );
         assert_eq!(download.season, Some(2));
         assert_eq!(download.episode, Some(Episode::numbered(5, "Mandala")));
@@ -627,7 +726,11 @@ mod tests {
             Some(1),
             Some(&Episode::numbered(3, "Tabula Rasa")),
         );
-        assert!(named.file.ends_with("Lost - Tabula Rasa S01E03.mkv"));
+        assert!(
+            named
+                .file
+                .ends_with("Lost - Tabula Rasa S01E03/Lost - Tabula Rasa S01E03.mkv")
+        );
     }
 
     #[test]
@@ -795,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn local_file_finds_only_existing_downloads() {
+    fn local_file_finds_downloads_in_the_new_and_the_old_layout() {
         let root = scratch_dir("local_file");
         let mut config = AppConfig::default();
         config.output.root_path = root.to_string_lossy().into_owned();
@@ -805,13 +908,16 @@ mod tests {
         };
         let pilot = Episode::numbered(1, "Pilot");
         assert_eq!(local_file(&config, &show, Some(1), Some(&pilot)), None);
-        let download = Download::new(&config, &show, Some(1), Some(&pilot));
-        std::fs::create_dir_all(download.file.parent().unwrap()).unwrap();
-        std::fs::write(&download.file, "video").unwrap();
-        assert_eq!(
-            local_file(&config, &show, Some(1), Some(&pilot)),
-            Some(download.file)
-        );
+        let [file, legacy] = targets(&config, &show, Some(1), Some(&pilot));
+        assert_eq!(legacy.parent(), file.parent().and_then(Path::parent));
+        for path in [&legacy, &file] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "video").unwrap();
+            assert_eq!(
+                local_file(&config, &show, Some(1), Some(&pilot)).as_ref(),
+                Some(path)
+            );
+        }
         assert_eq!(local_file(&config, &show, None, None), None);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -864,28 +970,63 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tracks_left_out_of_the_merge_are_never_downloaded() {
-        let stream = StreamUrl {
+    fn stream() -> StreamUrl {
+        StreamUrl {
             url: "https://cdn.example/master.m3u8".into(),
             headers: Vec::new(),
-        };
-        let args = |config: &AppConfig| {
-            let tracks = Path::new("tracks");
-            downloader(config, &stream, OsStr::new("Ep"), tracks, tracks, tracks)
-                .as_std()
-                .get_args()
-                .map(OsStr::to_string_lossy)
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
+        }
+    }
+
+    fn downloader_args(config: &AppConfig, pass: Pass) -> String {
+        let tracks = Path::new("tracks");
+        downloader(
+            config,
+            &stream(),
+            OsStr::new("Ep"),
+            tracks,
+            tracks,
+            tracks,
+            pass,
+        )
+        .as_std()
+        .get_args()
+        .map(OsStr::to_string_lossy)
+        .collect::<Vec<_>>()
+        .join(" ")
+    }
+
+    #[tokio::test]
+    async fn tracks_left_out_of_the_merge_are_never_downloaded() {
         let mut config = AppConfig::default();
-        assert!(!args(&config).contains("--drop-"));
+        assert!(!downloader_args(&config, Pass::Media).contains("--drop-audio"));
         config.process.merge_audio = false;
         config.process.merge_subtitle = false;
-        let dropped = args(&config);
-        assert!(dropped.contains("--drop-audio all"));
-        assert!(dropped.contains("--drop-subtitle all"));
+        assert!(downloader_args(&config, Pass::Media).contains("--drop-audio all"));
+        let dir = Path::new("tracks");
+        assert!(
+            download_subtitles(&config, &stream(), OsStr::new("Ep"), dir, dir, dir)
+                .await
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn subtitles_download_apart_so_the_progress_shows_video_and_audio() {
+        let mut config = AppConfig::default();
+        config.download.select_subtitle = "lang=ita".into();
+        let media = downloader_args(&config, Pass::Media);
+        assert!(media.contains("--select-video best --select-audio all"));
+        assert!(!media.contains("--select-subtitle"));
+        let subtitles = downloader_args(&config, Pass::Subtitles);
+        assert!(subtitles.contains("--select-subtitle lang=ita"));
+        assert!(!subtitles.contains("--select-video") && !subtitles.contains("--select-audio"));
+    }
+
+    #[test]
+    fn only_the_media_run_deletes_its_segments_as_it_goes() {
+        let config = AppConfig::default();
+        assert!(downloader_args(&config, Pass::Media).contains("--del-after-done true"));
+        assert!(downloader_args(&config, Pass::Subtitles).contains("--del-after-done false"));
     }
 
     #[test]
@@ -965,7 +1106,10 @@ mod tests {
                 .replace("..", ".");
             dir.join(format!("{name}.vtt"))
         };
+        let assets = subtitle_dir(&video);
+        std::fs::create_dir_all(&assets).unwrap();
         for file in [
+            assets.join("Dr. House S01E01.eng.1.vtt"),
             sidecar("ita", "11"),
             sidecar("forced-ita", "10"),
             sidecar("", "2"),
@@ -982,6 +1126,7 @@ mod tests {
         assert_eq!(
             found,
             [
+                (assets.join("Dr. House S01E01.eng.1.vtt"), "eng".into()),
                 (sidecar("", "2"), String::new()),
                 (sidecar("forced-ita", "10"), "forced-ita".into()),
                 (sidecar("ita", "11"), "ita".into()),
@@ -1006,21 +1151,29 @@ mod tests {
         assert_eq!(
             subtitles(&video),
             [Subtitle {
-                file: out.join("Ep.ita.3.vtt"),
+                file: out.join("assets/subtitles/Ep.ita.3.vtt"),
                 language: "ita".into()
             }]
         );
         assert_eq!(
-            std::fs::read_to_string(out.join("Ep.ita.3.vtt")).unwrap(),
+            std::fs::read_to_string(out.join("assets/subtitles/Ep.ita.3.vtt")).unwrap(),
             "new"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn library(name: &str) -> (PathBuf, AppConfig) {
+        let root = scratch_dir(name);
+        let mut config = AppConfig::default();
+        config.output.root_path = root.to_string_lossy().into_owned();
+        (root, config)
+    }
+
     #[tokio::test]
     async fn delete_removes_the_video_and_only_its_subtitles() {
-        let dir = scratch_dir("delete");
-        let video = dir.join("Ep.mp4");
+        let (root, config) = library("delete");
+        let season = config.serie_dir().join("Lost/S01");
+        std::fs::create_dir_all(&season).unwrap();
         for file in [
             "Ep.mp4",
             "Ep.ita.3.vtt",
@@ -1028,25 +1181,63 @@ mod tests {
             "Other.mp4",
             "Other.ita.1.vtt",
         ] {
-            std::fs::write(dir.join(file), "x").unwrap();
+            std::fs::write(season.join(file), "x").unwrap();
         }
-        delete(&video).await.unwrap();
-        let mut left: Vec<_> = std::fs::read_dir(&dir)
+        delete(&config, &season.join("Ep.mp4")).await.unwrap();
+        let mut left: Vec<_> = std::fs::read_dir(&season)
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect();
         left.sort();
         assert_eq!(left, ["Other.ita.1.vtt", "Other.mp4"]);
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
-    async fn delete_of_a_missing_video_succeeds() {
-        let dir = scratch_dir("delete_missing");
-        std::fs::write(dir.join("Ep.ita.3.vtt"), "x").unwrap();
-        delete(&dir.join("Ep.mp4")).await.unwrap();
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-        let _ = std::fs::remove_dir_all(&dir);
+    async fn delete_of_a_missing_video_removes_what_is_left_of_it() {
+        let (root, config) = library("delete_missing");
+        let season = config.serie_dir().join("Lost/S01");
+        std::fs::create_dir_all(&season).unwrap();
+        std::fs::write(season.join("Ep.ita.3.vtt"), "x").unwrap();
+        delete(&config, &season.join("Ep.mp4")).await.unwrap();
+        assert!(!config.serie_dir().join("Lost").exists() && config.serie_dir().exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_deleted_episode_or_movie_takes_its_folders_with_it() {
+        let (root, config) = library("delete_folders");
+        let show = MediaEntry {
+            name: "Lost".into(),
+            ..Default::default()
+        };
+        let movie = MediaEntry {
+            name: "Inception".into(),
+            year: Some("2010".into()),
+            media_type: MediaType::Movie,
+            ..Default::default()
+        };
+        let pilot = Episode::numbered(1, "Pilot");
+        let videos = [
+            target(&config, &show, Some(1), Some(&pilot)),
+            target(&config, &movie, None, None),
+        ];
+        for video in &videos {
+            let subtitles = subtitle_dir(video);
+            std::fs::create_dir_all(&subtitles).unwrap();
+            std::fs::write(video, "x").unwrap();
+            std::fs::write(subtitles.join(".DS_Store"), "x").unwrap();
+            std::fs::write(video.with_file_name(".DS_Store"), "x").unwrap();
+            let name = video.file_stem().unwrap().to_string_lossy();
+            std::fs::write(subtitles.join(format!("{name}.ita.3.vtt")), "x").unwrap();
+        }
+        std::fs::write(config.serie_dir().join("Lost/S01/Thumbs.db"), "x").unwrap();
+        for video in &videos {
+            delete(&config, video).await.unwrap();
+        }
+        assert_eq!(std::fs::read_dir(config.serie_dir()).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(config.movie_dir()).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1065,10 +1256,9 @@ mod tests {
         std::fs::write(dir.join("large.ts"), [0u8; 8]).unwrap();
         std::fs::write(dir.join("it.vtt"), "WEBVTT").unwrap();
         std::fs::write(dir.join("notes.txt"), "x").unwrap();
-        let (media, subtitles) = scan_tracks(&dir, true).await;
+        let (media, subtitles) = scan_tracks(&dir).await;
         assert_eq!(media, [dir.join("large.ts"), dir.join("small.ts")]);
         assert_eq!(subtitles, [dir.join("it.vtt")]);
-        assert_eq!(scan_tracks(&dir, false).await.1, Vec::<PathBuf>::new());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1085,7 +1275,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_tracks_on_missing_dir_is_empty() {
-        let (media, subtitles) = scan_tracks(Path::new("/nonexistent/sv"), true).await;
+        let (media, subtitles) = scan_tracks(Path::new("/nonexistent/sv")).await;
         assert!(media.is_empty() && subtitles.is_empty());
     }
 

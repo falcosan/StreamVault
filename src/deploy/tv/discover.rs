@@ -104,7 +104,7 @@ async fn probes(session: &Session, wanted: Option<&str>) -> Vec<Probe> {
     let open = open_ports(&hosts(wanted), &ports).await;
     let probes = join_all(
         open.iter()
-            .map(|(ip, ports)| probe(&session.http, *ip, ports)),
+            .map(|(ip, ports)| probe(&session.lan, *ip, ports)),
     )
     .await;
     attached.chain(probes.into_iter().flatten()).collect()

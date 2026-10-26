@@ -8,7 +8,7 @@ Config is stored in JSON. On first launch, StreamVault creates a default config 
 | **State** (watch progress, player prefs, sync replica, download list) | `~/Library/Application Support/StreamVault/state` | same                                        | `%APPDATA%\StreamVault\state` |
 | **Downloads** (`root_path`)                                           | `iCloud Drive/Contents/Video/StreamVault/Medias`  | `~/Medias`                                  | `%USERPROFILE%\Medias`        |
 
-`root_path` (default `Medias`) is relative to that base, with movies and series in `movie_folder_name` and `serie_folder_name` (`Movie`, `Serie`). State is per device and never stored in iCloud Drive; enable `sync.json` to share it across devices. Downloads run two at a time (the rest wait their turn), are assembled in `~/Library/Caches/StreamVault` (Windows: `%LOCALAPPDATA%\StreamVault`), and only the finished file is moved into place.
+`root_path` (default `Medias`) is relative to that base, with movies and series in `movie_folder_name` and `serie_folder_name` (`Movie`, `Serie`). Each download gets its own folder, `Movie/<title>/` or `Serie/<show>/S01/<episode>/`, holding the video (with every audio language) and `assets/subtitles/`; downloads made before this layout stay where they are and still play. Deleting a download removes its video, its subtitles and every folder of its own that is left empty, up to the show or movie folder. State is per device and never stored in iCloud Drive; enable `sync.json` to share it across devices. Downloads run two at a time (the rest wait their turn), are assembled in `~/Library/Caches/StreamVault` (Windows: `%LOCALAPPDATA%\StreamVault`), and only the finished file is moved into place.
 
 Main sections:
 

@@ -1,6 +1,6 @@
 use super::{
     Episode, Http, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl,
-    domain, fetch_json, fetch_text, items, non_blank, send, uint, vixcloud_stream, year,
+    domain, fetch_json, fetch_text, fetch_vixcloud, items, non_blank, send, uint, year,
 };
 use async_trait::async_trait;
 use percent_encoding::percent_decode_str;
@@ -232,14 +232,17 @@ impl Provider for AnimeUnity {
                 .map(|ep| ep.id)
                 .ok_or_else(|| ProviderError::StreamExtraction("No episodes".into()))?,
         };
-        let embed = self
-            .authed(self.client.get(format!("{}/embed-url/{id}", self.base)))
-            .await?;
-        let embed = fetch_text(embed).await?.trim().to_owned();
-        if !embed.starts_with("http") {
-            return Err(ProviderError::StreamExtraction("Empty embed URL".into()));
-        }
-        vixcloud_stream(&fetch_text(self.client.get(&embed)).await?)
+        fetch_vixcloud(&self.client, async || {
+            let embed = self
+                .authed(self.client.get(format!("{}/embed-url/{id}", self.base)))
+                .await?;
+            let embed = fetch_text(embed).await?.trim().to_owned();
+            if !embed.starts_with("http") {
+                return Err(ProviderError::StreamExtraction("Empty embed URL".into()));
+            }
+            Ok(embed)
+        })
+        .await
     }
 }
 

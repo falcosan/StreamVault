@@ -58,7 +58,6 @@ New-Item -ItemType Directory $temp | Out-Null
 try {
   Invoke-WebRequest $installer -OutFile "$temp\install.exe" -UseBasicParsing
   & "$temp\install.exe" $device
-  if ($LASTEXITCODE) { throw "The $device install failed." }
 } finally {
   Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
 }

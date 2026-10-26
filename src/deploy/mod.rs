@@ -169,6 +169,7 @@ struct Session {
     out: PathBuf,
     scratch: PathBuf,
     http: reqwest::Client,
+    lan: reqwest::Client,
     log: PathBuf,
     cleanup: RefCell<Vec<Box<dyn FnOnce()>>>,
 }
@@ -191,12 +192,17 @@ impl Session {
             .connect_timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| e.to_string())?;
+        let lan = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .map_err(|e| e.to_string())?;
         Ok(Self {
             log,
             source,
             out,
             scratch,
             http,
+            lan,
             cleanup: RefCell::default(),
         })
     }

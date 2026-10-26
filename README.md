@@ -58,7 +58,7 @@ Nothing to set up beforehand and nothing to compile: the script downloads a read
 - **Everything in one place.** StreamingCommunity's catalogue, and one search across StreamingCommunity, RaiPlay, the Discovery channels and, on the computer, AnimeUnity.
 - **Built for the remote.** Every screen works with the D-pad; seeking follows your thumb instantly, and the audio and subtitle menus sit right under the progress bar.
 - **Continue Watching everywhere.** Progress and track choices follow you across computer, TV and the StreamingCommunity site in your browser, stored in your own Google Drive.
-- **Downloads on the computer.** Save movies and episodes with the tracks you want: [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) fetches them, [FFmpeg](https://ffmpeg.org/) merges video and audio into MP4, subtitles sit alongside as `.vtt`.
+- **Downloads on the computer.** Save movies and episodes with the tracks you want: [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) fetches them, [FFmpeg](https://ffmpeg.org/) merges video and every audio language into one MP4, subtitles sit alongside in `assets/subtitles` as `.vtt`.
 - **The TV stands alone.** Catalogue, playback and sync run on the TV itself: no server, and no computer once it is installed.
 - **Native and light.** One Rust codebase built with [Dioxus](https://dioxuslabs.com/) for every screen; the desktop and TV apps update themselves.
 

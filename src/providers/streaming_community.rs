@@ -1,6 +1,6 @@
 use super::{
     Episode, Http, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl,
-    domain, fetch_json, fetch_text, items, non_blank, uint, vixcloud_stream, year,
+    domain, fetch_json, fetch_text, fetch_vixcloud, items, non_blank, uint, year,
 };
 use async_trait::async_trait;
 use dioxus::logger::tracing::warn;
@@ -298,18 +298,20 @@ impl Provider for StreamingCommunity {
         episode: Option<&Episode>,
     ) -> ProviderResult<StreamUrl> {
         let lang = Self::lang(entry);
-        let mut iframe = self
-            .client
-            .get(format!("{}/{lang}/iframe/{}", self.base, entry.id));
-        if let Some(ep) = episode {
-            iframe = iframe.query(&[
-                ("episode_id", ep.id.to_string()),
-                ("next_episode", "1".into()),
-            ]);
-        }
-        let src = iframe_src(&fetch_text(iframe).await?)
-            .ok_or_else(|| ProviderError::Parse("No iframe src found".into()))?;
-        vixcloud_stream(&fetch_text(self.client.get(src)).await?)
+        fetch_vixcloud(&self.client, async || {
+            let mut iframe = self
+                .client
+                .get(format!("{}/{lang}/iframe/{}", self.base, entry.id));
+            if let Some(ep) = episode {
+                iframe = iframe.query(&[
+                    ("episode_id", ep.id.to_string()),
+                    ("next_episode", "1".into()),
+                ]);
+            }
+            iframe_src(&fetch_text(iframe).await?)
+                .ok_or_else(|| ProviderError::Parse("No iframe src found".into()))
+        })
+        .await
     }
 
     async fn catalog(&self) -> ProviderResult<Vec<MediaEntry>> {

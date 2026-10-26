@@ -45,7 +45,7 @@ pub async fn deploy(
         "On the TV: Apps, type 1 2 3 4 5, set Developer mode On with Host PC IP {host}, then restart the TV."
     );
     wait_until(&developer, || async move {
-        developer_mode(&session.http, ip, host).await.then_some(())
+        developer_mode(&session.lan, ip, host).await.then_some(())
     })
     .await;
     let serial = format!("{ip}:{SDB}");

@@ -269,6 +269,20 @@ pub fn stable_hash(text: &str) -> u64 {
         .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)))
 }
 
+async fn fetch_vixcloud(
+    http: &Http,
+    embed: impl AsyncFn() -> ProviderResult<String>,
+) -> ProviderResult<StreamUrl> {
+    let player = match fetch_text(http.get(embed().await?)).await {
+        Ok(player) => player,
+        Err(e) => {
+            warn!("vixcloud embed failed, retrying with a new link: {e}");
+            fetch_text(http.get(embed().await?)).await?
+        }
+    };
+    vixcloud_stream(&player)
+}
+
 fn vixcloud_stream(player: &str) -> ProviderResult<StreamUrl> {
     let url = vixcloud_playlist(&scripts(player))
         .ok_or_else(|| ProviderError::StreamExtraction("No HLS params in script".into()))?;
@@ -542,6 +556,24 @@ mod tests {
         assert_eq!(year("Prima-2001"), None);
         assert_eq!(year("202"), None);
         assert_eq!(year(""), None);
+    }
+
+    #[tokio::test]
+    async fn an_expired_vixcloud_link_is_fetched_again_once() {
+        const PLAYER: &str = "<script>window.masterPlaylist = { params: { 'token': 't', 'expires': 'e' }, url: 'https://v.co/p/1' }</script>";
+        let (url, requests) = serve(&[(410, ""), (200, PLAYER), (410, ""), (410, "")]).await;
+        let http = Http::new(Duration::from_secs(1));
+        let links = std::cell::Cell::new(0);
+        let embed = async || {
+            links.set(links.get() + 1);
+            Ok::<_, ProviderError>(url.clone())
+        };
+        assert_eq!(
+            fetch_vixcloud(&http, &embed).await.unwrap().url,
+            "https://v.co/p/1?token=t&expires=e"
+        );
+        assert!(fetch_vixcloud(&http, &embed).await.is_err());
+        assert_eq!((links.get(), requests.lock().unwrap().len()), (4, 4));
     }
 
     #[test]
