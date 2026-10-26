@@ -6,7 +6,7 @@ use std::fmt::Display;
 use std::future::Future;
 use std::time::Duration;
 
-const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const CHECK_INTERVAL: Duration = Duration::from_hours(1);
 
 #[derive(Clone, Copy, Default)]
 pub struct Update {

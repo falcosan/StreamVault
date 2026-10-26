@@ -1,10 +1,10 @@
-use crate::sync::{Replica, SyncConfig};
+use crate::settings::{SYNC_FILE, SyncConfig};
+use crate::sync::Replica;
 use dioxus::core::spawn_forever;
 use dioxus::logger::tracing::warn;
 use wasm_bindgen::prelude::*;
 
 const REPLICA_KEY: &str = "replica";
-const SYNC_FILE: &str = "sync.json";
 
 #[wasm_bindgen(module = "/assets/js/storage.js")]
 extern "C" {

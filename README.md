@@ -5,12 +5,13 @@
 <h1 align="center">StreamVault</h1>
 
 <p align="center">
-  <strong>Your streaming catalogue, on your Mac and on your TV.</strong><br />
+  <strong>Your streaming catalogue, on your computer and on your TV.</strong><br />
   Browse, watch and download in one native app, then pick up on the big screen right where you left off.
 </p>
 
 <p align="center">
   <img alt="macOS" src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" />
+  <img alt="Windows" src="https://img.shields.io/badge/Windows-0078D4" />
   <img alt="Samsung TV" src="https://img.shields.io/badge/Samsung_TV-1428A0?logo=samsung&logoColor=white" />
   <img alt="Android TV" src="https://img.shields.io/badge/Android_TV-3DDC84?logo=android&logoColor=white" />
   <img alt="Fire TV" src="https://img.shields.io/badge/Fire_TV-FF9900" />
@@ -22,32 +23,44 @@
 
 ## Install in two commands
 
-**Mac**
+One script, `scripts/install`, for both computers: it takes `desktop` or `tv` and works out the system by itself. A Mac runs it in Terminal, Windows in PowerShell.
+
+**Desktop app**
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/macos/package.sh" | bash
+curl -fsSL https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/install | bash -s desktop
 ```
 
-`StreamVault.app` appears in the current folder, ready to drag into Applications. The source, the build and, when Rust is not already installed, Rust itself stay in `~/Library/Caches/StreamVault`, so updates rebuild only what changed; delete that folder to free the space.
+```powershell
+iex "& { $(irm https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/install) } desktop"
+```
+
+On a Mac, `StreamVault.app` comes ready-built from the latest release, with FFmpeg and N_m3u8DL-RE inside, and appears in the current folder, ready to drag into Applications.
+
+On Windows, StreamVault installs for your user, without administrator rights, and appears in the Start menu; Settings › Apps uninstalls it. The app comes ready-built from the latest release, with FFmpeg and N_m3u8DL-RE next to it.
 
 **TV**
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/tv/deploy.sh" | bash
+curl -fsSL https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/install | bash -s tv
 ```
 
-Run it on a Mac on the same network as the TV. It finds the TVs, asks which one if there are several, installs every tool it needs and puts StreamVault on the TV. When the TV needs something only you can do, such as switching on Developer Mode, it tells you exactly what and carries on by itself.
+```powershell
+iex "& { $(irm https://raw.githubusercontent.com/falcosan/StreamVault/main/scripts/install) } tv"
+```
 
-No Rust, SDK or Java to set up beforehand: the scripts fetch what is missing. Both apps then update themselves from their update icon; running either command again also updates.
+Run it on a computer on the same network as the TV. It finds the TVs, asks which one if there are several, installs every tool it needs and puts StreamVault on the TV. When the TV needs something only you can do, such as switching on Developer Mode, it tells you exactly what and carries on by itself. Whatever it installed for the run is removed when it ends.
+
+Nothing to set up beforehand and nothing to compile: the script downloads a ready-built installer from the latest release, which fetches whatever the TV needs and removes it at the end. The apps then update themselves from their update icon in seconds; running a command again also updates.
 
 ## Why StreamVault
 
-- **Everything in one place.** StreamingCommunity's catalogue, and one search across StreamingCommunity, RaiPlay, the Discovery channels and, on the Mac, AnimeUnity.
+- **Everything in one place.** StreamingCommunity's catalogue, and one search across StreamingCommunity, RaiPlay, the Discovery channels and, on the computer, AnimeUnity.
 - **Built for the remote.** Every screen works with the D-pad; seeking follows your thumb instantly, and the audio and subtitle menus sit right under the progress bar.
-- **Continue Watching everywhere.** Progress and track choices follow you across Mac, TV and the StreamingCommunity site in your browser, stored in your own Google Drive.
-- **Downloads on the Mac.** Save movies and episodes with the tracks you want: [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) fetches them, [FFmpeg](https://ffmpeg.org/) merges video and audio into MP4, subtitles sit alongside as `.vtt`.
-- **The TV stands alone.** Catalogue, playback and sync run on the TV itself: no server, and no Mac once it is installed.
-- **Native and light.** One Rust codebase built with [Dioxus](https://dioxuslabs.com/) for every screen; the Mac and TV apps update themselves.
+- **Continue Watching everywhere.** Progress and track choices follow you across computer, TV and the StreamingCommunity site in your browser, stored in your own Google Drive.
+- **Downloads on the computer.** Save movies and episodes with the tracks you want: [N_m3u8DL-RE](https://github.com/nilaoda/N_m3u8DL-RE) fetches them, [FFmpeg](https://ffmpeg.org/) merges video and audio into MP4, subtitles sit alongside as `.vtt`.
+- **The TV stands alone.** Catalogue, playback and sync run on the TV itself: no server, and no computer once it is installed.
+- **Native and light.** One Rust codebase built with [Dioxus](https://dioxuslabs.com/) for every screen; the desktop and TV apps update themselves.
 
 ## Supported TVs
 
@@ -61,18 +74,18 @@ LG webOS, Hisense VIDAA, Philips Titan OS and Roku cannot run it: [docs/TV.md](d
 
 ## Sync
 
-Optional and private: a small Google Apps Script keeps one JSON file in your Drive, protected by your own token. Put its address and token in `sync.json` on the Mac and every device you install from it stays in step; installing on someone else's TV, you answer no and it stays on its own. Setup takes four steps: [docs/CONFIGURATION.md](docs/CONFIGURATION.md#sync).
+Optional and private: a small Google Apps Script keeps one JSON file in your Drive, protected by your own token. Put its address and token in `sync.json` on your computer and every device you install from it stays in step; installing on someone else's TV, you answer no and it stays on its own. Setup takes four steps: [docs/CONFIGURATION.md](docs/CONFIGURATION.md#sync).
 
 ## Build from source
 
 ```bash
-cargo run                  # run the Mac app
-./scripts/macos/package.sh # build dist/StreamVault.app for the Mac app
-./scripts/tv/deploy.sh     # build and install on a TV
-./scripts/update.sh        # upgrade the dependencies in Cargo.toml and Cargo.lock
+cargo run                          # run the desktop app
+scripts/install desktop            # build StreamVault.app from this clone into the current folder
+scripts/install tv                 # build this clone and install it on a TV
+./scripts/update.sh                # upgrade the dependencies in Cargo.toml and Cargo.lock
 ```
 
-The Mac app needs macOS 13 or later. With `cargo run`, downloads use the `N_m3u8DL-RE` and `ffmpeg` found in `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` or `~/.local/bin`; the packaged app ships its own.
+The Mac app needs macOS 13 or later, the Windows app 64-bit Windows 10 or 11. With `cargo run`, downloads use the `N_m3u8DL-RE` and `ffmpeg` found in `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` or `~/.local/bin` (on Windows, in `PATH`); the packaged app ships its own.
 
 Settings, download options and file locations: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 

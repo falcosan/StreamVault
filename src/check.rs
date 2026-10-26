@@ -2,11 +2,11 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "app", target_os = "macos"))]
 const JSC: &str =
     "/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc";
 
-#[cfg(any(feature = "desktop", target_os = "macos"))]
+#[cfg(any(feature = "desktop", feature = "deploy", target_os = "macos"))]
 pub fn scratch_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("sv_{name}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -36,7 +36,7 @@ pub async fn serve(responses: &'static [(u16, &'static str)]) -> (String, Arc<Mu
     (url, requests)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "app", target_os = "macos"))]
 pub fn run_js(script: &str) -> serde_json::Value {
     let runner = format!(
         "Promise.resolve((0, eval)({})).then(print, (e) => print(e?.stack ?? e));",

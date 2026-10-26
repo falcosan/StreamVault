@@ -1,4 +1,5 @@
 use crate::prefs::PlayerPrefs;
+use crate::settings::SyncConfig;
 use crate::time::sleep;
 use crate::watch::WatchItem;
 use dioxus::prelude::*;
@@ -21,20 +22,6 @@ const PULL_TICKS: u32 = 6;
 const BACKOFF: Duration = Duration::from_secs(60);
 const TIMEOUT: Duration = Duration::from_secs(30);
 const VISIBLE: &str = "document.addEventListener('visibilitychange', () => document.hidden || dioxus.send(true)); await new Promise(() => {});";
-
-#[derive(Default, Deserialize)]
-#[serde(default)]
-pub struct SyncConfig {
-    pub enabled: bool,
-    pub endpoint: String,
-    pub token: String,
-}
-
-impl SyncConfig {
-    fn is_active(&self) -> bool {
-        self.enabled && !self.endpoint.trim().is_empty() && !self.token.trim().is_empty()
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Change {
@@ -532,19 +519,6 @@ mod tests {
         assert!(!replica.record_prefs(&prefs, 2_000));
         assert!(!replica.is_dirty());
         assert_eq!(replica.prefs(), Some(prefs));
-    }
-
-    #[test]
-    fn config_needs_the_flag_an_endpoint_and_a_token() {
-        let config = |enabled, endpoint: &str, token: &str| SyncConfig {
-            enabled,
-            endpoint: endpoint.into(),
-            token: token.into(),
-        };
-        assert!(config(true, "https://x", "t").is_active());
-        assert!(!config(false, "https://x", "t").is_active());
-        assert!(!config(true, " ", "t").is_active());
-        assert!(!config(true, "https://x", "").is_active());
     }
 
     #[tokio::test]

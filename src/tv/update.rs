@@ -48,7 +48,7 @@ mod tests {
     use crate::check::{run_js, scratch_dir};
     use serde_json::{Value, json};
 
-    const BOOT: &str = include_str!("../../resources/tv/boot.js");
+    const BOOT: &str = include_str!("../../assets/js/boot.js");
 
     fn boot(name: &str, failures: &str, stored: &Value, then: &str) -> Value {
         let dir = scratch_dir(name);

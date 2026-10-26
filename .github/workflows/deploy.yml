@@ -58,15 +58,58 @@ jobs:
       - name: Sign the TV update
         env:
           TV_UPDATE_KEY: ${{ secrets.TV_UPDATE_KEY }}
-        run: scripts/tv/bundle.sh target/dx/streamvault/release/web/public target/release/tv
+        run: scripts/bundle.sh tv target/dx/streamvault/release/web/public target/release/tv
 
       - name: Attach the TV update
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ needs.release.outputs.tag }}" target/release/tv/* --clobber
 
+  windows:
+    needs: release
+    if: needs.release.outputs.pending == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Build the Windows app and installer
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          rustup toolchain install stable --profile minimal --target x86_64-pc-windows-msvc
+          cargo build --release --locked --target x86_64-pc-windows-msvc
+          Move-Item target/x86_64-pc-windows-msvc/release/streamvault.exe StreamVault-windows-x64.exe
+          cargo build --release --locked --no-default-features --features deploy --target x86_64-pc-windows-msvc
+          Move-Item target/x86_64-pc-windows-msvc/release/streamvault.exe StreamVault-install-windows-x64.exe
+
+      - name: Attach the Windows app and installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.release.outputs.tag }}" StreamVault-windows-x64.exe StreamVault-install-windows-x64.exe --clobber
+
+  macos:
+    needs: release
+    if: needs.release.outputs.pending == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Build the Mac app and installer
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin
+          cargo build --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
+          lipo -create -output StreamVault-macos target/{aarch64,x86_64}-apple-darwin/release/streamvault
+          cargo build --release --locked --no-default-features --features deploy --target aarch64-apple-darwin --target x86_64-apple-darwin
+          lipo -create -output StreamVault-install-macos target/{aarch64,x86_64}-apple-darwin/release/streamvault
+          codesign --force --sign - StreamVault-macos StreamVault-install-macos
+
+      - name: Attach the Mac app and installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.release.outputs.tag }}" StreamVault-macos StreamVault-install-macos --clobber
+
   publish:
-    needs: [release, tv]
+    needs: [release, tv, windows, macos]
     if: needs.release.outputs.pending == 'true'
     runs-on: ubuntu-latest
     steps:

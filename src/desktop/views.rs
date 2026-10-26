@@ -1,5 +1,5 @@
 use super::download::{Download, Status};
-use super::{play_download, reveal};
+use super::{os, play_download, reveal};
 use crate::app::{AppState, Screen};
 use crate::gui::poster::card_background;
 use crate::gui::{BackButton, CLOSE_ICON, PLAY_ICON, UPDATE_ICON, count};
@@ -205,8 +205,8 @@ fn DownloadItem(download: Download) -> Element {
                         rsx! {
                             button {
                                 class: "dl-action",
-                                aria_label: "Show {title} in Finder",
-                                title: "Show in Finder",
+                                aria_label: "Show {title} in {os::FILE_MANAGER}",
+                                title: "Show in {os::FILE_MANAGER}",
                                 onclick: move |_| reveal(app, shown.clone()),
                                 span { class: "dl-glyph", dangerous_inner_html: FOLDER_ICON }
                             }

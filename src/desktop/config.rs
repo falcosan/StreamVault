@@ -1,3 +1,4 @@
+use crate::folders::{config_dir, icloud_dir, local_dir};
 use dioxus::logger::tracing::warn;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -135,10 +136,6 @@ impl AppConfig {
     }
 }
 
-pub fn config_dir() -> PathBuf {
-    icloud_dir().unwrap_or_else(local_dir)
-}
-
 pub fn state_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -155,23 +152,6 @@ fn migrate_legacy(legacy: &Path, dir: &Path) {
     for name in [WATCH_FILE, PREFS_FILE] {
         migrate_file(&legacy.join(name), &dir.join(name));
     }
-}
-
-fn icloud_dir() -> Option<PathBuf> {
-    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    DIR.get_or_init(|| {
-        let drive = dirs::home_dir()?.join("Library/Mobile Documents/com~apple~CloudDocs");
-        drive
-            .is_dir()
-            .then(|| drive.join("Contents/Video/StreamVault"))
-    })
-    .clone()
-}
-
-fn local_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("StreamVault")
 }
 
 fn migrate_file(from: &Path, to: &Path) {

@@ -1,9 +1,11 @@
 use super::config::{AppConfig, missing_ok};
+use super::os;
 use crate::app::Subtitle;
 use crate::providers::{Episode, MediaEntry, StreamUrl};
 use dioxus::logger::tracing::warn;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env::consts::EXE_SUFFIX;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -341,7 +343,7 @@ fn downloader(
     ffmpeg: &Path,
 ) -> Command {
     let settings = &config.download;
-    let mut cmd = Command::new(find_binary("N_m3u8DL-RE"));
+    let mut cmd = os::command(find_binary("N_m3u8DL-RE"));
     cmd.kill_on_drop(true)
         .arg(&stream.url)
         .arg("--save-name")
@@ -400,7 +402,7 @@ async fn mux(ffmpeg: &Path, output: &Path, media: &[PathBuf]) -> Result<(), Stri
     if media.is_empty() {
         return Err("No .ts files found after download".into());
     }
-    let mut cmd = Command::new(ffmpeg);
+    let mut cmd = os::command(ffmpeg);
     cmd.kill_on_drop(true).arg("-y");
     for input in media {
         cmd.arg("-i").arg(input);
@@ -530,19 +532,12 @@ fn exit_message(exit: ExitStatus, errors: &[String]) -> String {
 }
 
 fn find_binary(name: &str) -> PathBuf {
-    let bundled = bundled_bin_dir().map(|dir| dir.join(name));
-    let home = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".local/bin")
-        .join(name);
-    bundled
+    let name = format!("{name}{EXE_SUFFIX}");
+    bundled_bin_dir()
         .into_iter()
-        .chain(
-            ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
-                .map(|dir| Path::new(dir).join(name)),
-        )
-        .chain([home])
-        .find(|p| is_executable(p))
+        .chain(os::bin_dirs())
+        .map(|dir| dir.join(&name))
+        .find(|p| os::is_executable(p))
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
@@ -554,11 +549,6 @@ fn bundled_bin_dir() -> Option<PathBuf> {
         .into_iter()
         .chain([dir.join("bin")])
         .find(|p| p.is_dir())
-}
-
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 fn sanitize_filename(name: &str) -> String {
@@ -581,7 +571,10 @@ fn sanitize_filename(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::check::scratch_dir;
+    #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
 
     #[test]
     fn movie_download_lives_in_its_own_folder() {
@@ -845,7 +838,7 @@ mod tests {
     fn find_binary_falls_back_to_bare_name() {
         assert_eq!(
             find_binary("not_a_real_binary_xyz"),
-            PathBuf::from("not_a_real_binary_xyz")
+            PathBuf::from(format!("not_a_real_binary_xyz{EXE_SUFFIX}"))
         );
     }
 
