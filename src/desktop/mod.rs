@@ -1,15 +1,19 @@
 mod config;
 mod download;
+#[cfg(not(windows))]
+mod macos;
 mod media;
 mod storage;
 mod update;
 mod views;
+#[cfg(windows)]
+mod windows;
 
 use crate::app::{AppState, Playback, Screen};
 use crate::providers::{Episode, MediaEntry};
-use crate::sync::SyncConfig;
+use crate::settings::SyncConfig;
 use crate::update::Update;
-use config::{AppConfig, config_dir};
+use config::AppConfig;
 use dioxus::core::{Task, spawn_forever};
 use dioxus::desktop::{
     Config, LogicalSize, WindowBuilder, tao, use_asset_handler, use_wry_event_handler,
@@ -24,6 +28,11 @@ use tokio::sync::Semaphore;
 pub use update::install as install_update;
 use uuid::Uuid;
 pub use views::{DownloadsView, EntryActions};
+
+#[cfg(not(windows))]
+use macos as os;
+#[cfg(windows)]
+use windows as os;
 
 pub const NAV: &[(Screen, &str)] = &[(Screen::Downloads, "Downloads")];
 const MAX_DOWNLOADS: usize = 2;
@@ -43,7 +52,7 @@ pub fn launch(app: fn() -> Element) {
 }
 
 pub async fn sync_config() -> SyncConfig {
-    storage::load(&config_dir().join("sync.json"))
+    storage::load(&crate::folders::sync_file())
 }
 
 pub fn focus(selector: &str) {
@@ -60,7 +69,11 @@ pub fn restore_focus(_: Option<String>) {}
 
 #[component]
 pub fn Head() -> Element {
-    VNode::empty()
+    rsx! {
+        if let Some(hls) = os::HLS {
+            document::Script { "{hls}" }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -238,21 +251,18 @@ fn play_download(app: AppState, download: Download) {
 
 fn reveal(app: AppState, file: PathBuf) {
     spawn_forever(async move {
-        let revealed = tokio::process::Command::new("open")
-            .arg("-R")
-            .arg(&file)
-            .status()
-            .await
-            .is_ok_and(|s| s.success());
-        if !revealed {
-            app.report("Cannot show in Finder", file.display());
+        if !os::reveal(&file).await {
+            app.report(
+                &format!("Cannot show in {}", os::FILE_MANAGER),
+                file.display(),
+            );
         }
     });
 }
 
 fn with_file(playback: Playback, file: PathBuf) -> Playback {
     Playback {
-        url: Some(media::url(Uuid::new_v4())),
+        url: Some(media::url(Uuid::new_v4(), &file)),
         subtitles: download::subtitles(&file),
         file: Some(file),
         ..playback

@@ -8,8 +8,11 @@ use uuid::Uuid;
 pub const ROUTE: &str = "media";
 const CHUNK: u64 = 4 * 1024 * 1024;
 
-pub fn url(id: Uuid) -> String {
-    format!("/{ROUTE}/{id}")
+pub fn url(id: Uuid, file: &Path) -> String {
+    match file.extension() {
+        Some(extension) => format!("/{ROUTE}/{id}.{}", extension.to_string_lossy()),
+        None => format!("/{ROUTE}/{id}"),
+    }
 }
 
 pub fn requested_range(request: &Request<Vec<u8>>) -> Option<String> {
@@ -99,6 +102,16 @@ mod tests {
             builder = builder.header(header::RANGE, range);
         }
         builder.body(Vec::new()).unwrap()
+    }
+
+    #[test]
+    fn media_urls_keep_the_file_extension() {
+        let id = Uuid::nil();
+        assert_eq!(
+            url(id, Path::new("/a/Film (2020).mkv")),
+            format!("/media/{id}.mkv")
+        );
+        assert_eq!(url(id, Path::new("/a/film")), format!("/media/{id}"));
     }
 
     #[test]

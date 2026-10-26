@@ -160,7 +160,7 @@
         const manifest = await signed(text, signature);
         if (manifest.shell > SHELL)
           throw new Error(
-            `StreamVault ${manifest.version} needs a new installation: run scripts/tv/deploy.sh on your Mac`,
+            `StreamVault ${manifest.version} needs a new installation: run the TV install again from your computer`,
           );
         const files = {};
         for (const { name } of manifest.files)

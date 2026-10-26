@@ -32,7 +32,8 @@ platform feature (`dioxus-desktop` → `dioxus-web`) and a networked data source
 ```
 StreamVault/            one crate, one device feature per build
 ├── src/
-│   ├── main.rs         picks the device module (`desktop` or `tv`) as `platform`
+│   ├── main.rs         picks the device module (`desktop` or `tv`) as `platform`,
+│   │                   or runs the installer (`deploy`)
 │   ├── app.rs          AppState + App root, shared by every device
 │   ├── player.rs       player controller (state + channel to player.js)
 │   ├── gui/            the views (home_view, search_view, details_view,
@@ -40,22 +41,34 @@ StreamVault/            one crate, one device feature per build
 │   ├── providers/      StreamingCommunity, RaiPlay, Aurora, AnimeUnity, models
 │   ├── search.rs  watch.rs  prefs.rs  time.rs
 │   ├── sync.rs         replica + sync loop against the Apps Script endpoint
+│   ├── settings.rs     sync.json (desktop, TV and deploy)
+│   ├── folders.rs      where the desktop app keeps its files (desktop, deploy)
 │   ├── update.rs       update state and flow; each device supplies the source
+│   ├── release.rs      the GitHub releases: the desktop update check and the
+│   │                   files the installer downloads
 │   ├── check.rs        test helpers: local HTTP server, JavaScriptCore runner,
 │   │                   scratch dirs
-│   ├── desktop/        macOS only: window, files, downloads, local media,
-│   │                   update from package.sh, Downloads view
-│   └── tv/             TVs only: remote focus engine, IndexedDB storage,
-│                       remote key handling, update through boot.js
+│   ├── desktop/        computers: window, files, downloads, local media,
+│   │                   update, Downloads view; macos.rs and windows.rs
+│   ├── tv/             TVs only: remote focus engine, IndexedDB storage,
+│   │                   remote key handling, update through boot.js
+│   ├── deploy/         the installer, `desktop` or `tv`, each device with
+│   │                   macos.rs and windows.rs for the computer it runs on:
+│   │                   desktop/ (StreamVault.app on macOS, a per-user
+│   │                   install on Windows, from the release or this clone),
+│   │                   tv/ (discover the TV, get the bundle, then tizen or
+│   │                   android: install the tools, sign, install, launch)
+│   └── build.rs        Windows: the app icon as an exe resource, from the logo
 ├── assets/             style.css and player.js for every device; tv.css
-│                       (10-foot overlay), storage.js and hls.js for the TV
-├── resources/          packaging: macos/ (Info.plist, icon), tv/
-│                       (tizen/config.xml, android/ manifest + WebView host,
-│                       boot.js update loader)
-├── scripts/            macos/package.sh (build the macOS app), update.sh
-│                       (dependencies), tv/ (deploy.sh: find the TV, install the
-│                       tools, build, sign, install, launch; bundle.sh: signed TV
-│                       update)
+│                       (10-foot overlay), storage.js and boot.js (the update
+│                       loader) for the TV, hls.js for the TV and Windows
+├── resources/          packaging: desktop/macos/ (Info.plist, AppIcon.icns),
+│                       tv/ (tizen/config.xml, android/ manifest, WebView host
+│                       and banner)
+├── scripts/            install (`desktop` or `tv`: one file that bash and
+│                       PowerShell both run; it downloads the release's
+│                       installer, or builds it from a clone), update.sh
+│                       (dependencies), bundle.sh (`tv`: the signed TV update)
 ├── .github/workflows/  deploy.yml (one release per version, a job per device)
 └── index.html          boot page of the web build (viewport 960, dark background)
 ```
@@ -231,8 +244,8 @@ dx build --release --platform web --debug-symbols false
 `dx` 0.7.10 keeps DWARF debug sections in release WASM unless
 `--debug-symbols false` is passed (4.7 MB instead of 3 MB).
 
-The sync endpoint and token are not in the WASM: `scripts/tv/deploy.sh` reads
-them from the macOS `sync.json` (or `STREAMVAULT_SYNC_URL`,
+The sync endpoint and token are not in the WASM: the TV deploy reads them from
+the desktop app's `sync.json` (or `STREAMVAULT_SYNC_URL`,
 `STREAMVAULT_SYNC_TOKEN`), asks first, so a TV in someone else's home can be
 installed without them, and writes them into the package as `sync.json`, which
 the app reads when it starts. The same bundle therefore serves every TV, which
@@ -245,7 +258,7 @@ the updates of §13.6 rely on.
 > starts.
 >
 > **Gotcha.** `dx` does **not** clean old content-hashed bundles between builds;
-> `public/assets/` accumulates stale `.wasm`/`.js`. `scripts/tv/deploy.sh`
+> `public/assets/` accumulates stale `.wasm`/`.js`. The TV deploy
 > deletes the output directory before every build and stages from scratch.
 
 ---
@@ -291,20 +304,15 @@ as are `web.service` (there is no `<tizen:service>`) and `network.public`
 Chromium 96 (§13.4), which Samsung ships from Tizen 8.
 
 The build adds the `version` attribute from `Cargo.toml`, the only place the
-version is written, as the macOS and Android packages do, and rasterises the
-icon from the vector logo with the native tool, so the app logo stays its only
-source:
-
-```bash
-sips -s format png --resampleHeightWidth 512 512 assets/img/vector/logo.svg \
-     --out <stage>/icon.png
-```
+version is written, as the macOS and Android packages do, and uses the app
+logo `assets/img/raster/logo_raster_small.png` as the icon, so it stays its
+only source.
 
 Package + sign:
 
 ```bash
 # stages dx output + resources/tv/tizen/config.xml + the icon, then signs
-scripts/tv/deploy.sh   # → target/tv/StreamVault.wgt, then installs it
+scripts/install tv   # → target/tv/StreamVault.wgt, then installs it
 ```
 
 This produces `author-signature.xml` + `signature1.xml` inside the `.wgt` and
@@ -622,9 +630,8 @@ search button.
 
 `prelaunch.support=true` kept the web app **resident** between opens, so
 re-opening the tile could show the previous build. The flag is now removed and
-`scripts/tv/deploy.sh` kills the running instance (`was_kill`) before
-installing and launches with `was_execute`. This was _not_ why the remote
-failed (§10.7).
+the TV deploy kills the running instance (`was_kill`) before installing and
+launches with `was_execute`. This was _not_ why the remote failed (§10.7).
 
 ### 10.7 What actually broke — found with DevTools on the TV
 
@@ -657,16 +664,16 @@ them (verified: 1280×720, Italian/English audio, 37 subtitle tracks), because
 every host involved answers `access-control-allow-origin: *`.
 
 hls.js 1.7.3 is vendored (`assets/js/hls.min.js`, verified against the npm
-`sha512` integrity, Apache-2.0) so playback never depends on a CDN; only the TV
-loads it. `assets/js/player.js` is the one player for every device: Rust talks
-to it through a long-lived `document::eval` channel (commands in, status and
-track events out), which works the same in the macOS webview and in the TV's
-WASM. It attaches hls.js when present and plain `src` otherwise (macOS plays
-HLS natively, and progressive files everywhere), starts at the resume position,
-applies the audio/subtitle preference and retries a fatal media error once
-before reporting it. Each `<video>` is its own Dioxus component keyed by URL,
-so the session is detached exactly when the episode changes or the player
-closes, and the last position is saved at that moment.
+`sha512` integrity, Apache-2.0) so playback never depends on a CDN; the TV and
+the Windows app load it (§14.1). `assets/js/player.js` is the one player for
+every device: Rust talks to it through a long-lived `document::eval` channel
+(commands in, status and track events out), which works the same in the macOS
+webview and in the TV's WASM. It attaches hls.js when present and plain `src`
+otherwise (macOS plays HLS natively, and progressive files everywhere), starts
+at the resume position, applies the audio/subtitle preference and retries a
+fatal media error once before reporting it. Each `<video>` is its own Dioxus
+component keyed by URL, so the session is detached exactly when the episode
+changes or the player closes, and the last position is saved at that moment.
 
 CDP screenshots show the video area white: the TV composites video on a
 hardware plane underneath the web layer.
@@ -826,13 +833,13 @@ userscript at the same time. The old document is migrated on first use.
 
 The same web bundle runs on Android in a WebView, wrapped by one Java class
 (`resources/tv/android/MainActivity.java`) and built without Gradle: `aapt2`
-links the manifest, icon and banner (both rasterised from the logo SVG with
-`sips`, the banner padded to 320×180) and the
-bundle as assets, `javac` + `d8` compile the activity (D8 backports `Map.of`
-and `String.join` down to API 21), `zipalign` and `apksigner` finish it with
-`~/.android/debug.keystore`, so every build updates the previous one in place.
-Verified on Android TV emulators (Android 16 / WebView 143 and Android 12 /
-WebView 91) driven with `adb shell input keyevent`.
+links the manifest, the icon (`assets/img/raster/logo_raster_small.png`), the
+banner (`banner.xml`, a 320×180 dp layer list centring the icon on its own
+background) and the bundle as assets, `javac` + `d8` compile the activity (D8
+backports `Map.of` and `String.join` down to API 21), `zipalign` and `apksigner`
+finish it with `~/.android/debug.keystore`, so every build updates the previous
+one in place. Verified on Android TV emulators (Android 16 / WebView 143 and
+Android 12 / WebView 91) driven with `adb shell input keyevent`.
 
 ### 13.1 Serving the bundle
 
@@ -884,45 +891,58 @@ updated from the Play Store.
 
 ### 13.5 Finding the TV and installing everything
 
-`scripts/tv/deploy.sh` pings every address of the local networks (at most a
-/22 per interface) so the ARP table lists the live hosts, then probes those in
-parallel: Samsung's control API (port 8001, `OS: Tizen`), ADB (5555) or the
-Android TV remote service (6466), Roku's ECP (8060), LG's SSAP (3000 + 3001)
+The deploy is the same crate built with the `deploy` feature (`src/deploy/`, run
+by `scripts/install tv`), so it shares the version, `sync.json`'s location and
+format, `reqwest` and `tokio` with the app and runs unchanged on macOS and
+Windows. It tries a TCP connection to every address of the local networks (at
+most a /22 per interface, 400 ms each, 200 at a time so the sockets stay under
+macOS's default limit of 256 open files) on the ports that tell the TVs apart:
+Samsung's control API (8001, then `OS: Tizen` from `/api/v2/`), ADB (5555) or
+the Android TV remote service (6466), Roku's ECP (8060), LG's SSAP (3000 + 3001)
 and Hisense's MQTT (36669). Android devices already on `adb` (USB, emulators)
-are listed too. One TV is used directly; with several, it asks.
+are listed too. One TV is used directly; with several, it asks; `TV=<address>`
+checks only that address.
 
-Missing tools are installed without questions: Rust and `dx` (the release
-binary, avoiding the OpenSSL build of §3.3) and a Temurin JDK into
-`~/Library/Caches/StreamVault`, the Android command-line tools and packages into
-`ANDROID_HOME`, Tizen Studio as in §3.1 with only `cert-add-on` and
-`TV-SAMSUNG-Extension-Tools` (3.0 GB instead of 4.1: `TV-SAMSUNG-Public` only
-adds the TV emulator; the certificate tools are identical and the CLI signs with
-the same profile). Each path was run from an empty `HOME`. What only the owner
-can do is waited for, with instructions: Developer Mode on Samsung (checked
-through port 8001, then `sdb`), debugging allowed on Android (pairing code read
-from the terminal for wireless debugging), and the Samsung account sign-in for a
-new TV's certificate.
+Missing tools are installed without questions into a temporary folder: `dx` (the
+release binary, avoiding the OpenSSL build of §3.3, with its own tools in
+`DX_HOME`), a Temurin JDK and the Android command-line tools and packages (an
+`ANDROID_HOME` that already has them is used as it is, and its `adb` always, so
+a running adb server is never replaced), Tizen Studio as in §3.1 with only
+`cert-add-on` and `TV-SAMSUNG-Extension-Tools` (3.0 GB instead of 4.1:
+`TV-SAMSUNG-Public` only adds the TV emulator; the certificate tools are
+identical and the CLI signs with the same profile). When the run ends, also on
+an error, it stops the adb and sdb servers it started and removes all of it, the
+Rust target it added and a Tizen Studio it installed with its data;
+`scripts/install` removes the installer it downloaded, or the Rust toolchain it
+fetched to build one from a clone. What only the owner can do is waited for,
+with instructions: Developer Mode on Samsung (checked through port 8001, then
+`sdb`), debugging allowed on Android (pairing code read from the terminal for
+wireless debugging), and the Samsung account sign-in for a new TV's certificate.
 
 The certificate is created the way Certificate Manager does it (its constants
 and the files it left in `~/SamsungCertificate` match; TizenBrew Installer
 automates the same flow): the browser opens Samsung's sign-in for the Tizen
 SDK (`serviceID=v285zxnl3h`, redirect to `localhost:4794/signin/callback`),
 which posts `code` = JSON with `access_token`, `userId` and `inputEmailID`;
-`sdb shell 0 getduid` gives the device id; two 2048-bit keys and SHA-512 CSRs
-(author `CN=StreamVault`; distributor `CN=TizenSDK`, the e-mail and the SAN
-URIs `URN:tizen:packageid=` and `URN:tizen:deviceid=<DUID>`) go to
+`sdb shell 0 getduid` gives the device id; Tizen Studio's own `keytool` makes
+two 2048-bit keys in PKCS#12 stores (the format its Java 8 reads; OpenSSL 3's
+defaults it does not) and SHA-512 requests (author `CN=StreamVault`;
+distributor `CN=TizenSDK` with the e-mail and the SAN URIs
+`URN:tizen:packageid=` and `URN:tizen:deviceid=<DUID>`), which go to
 `svdca.samsungqbe.com/apis/v3/authors` and `/distributors` (`platform=VD`,
 `privilege_level=Public`, `developer_type=Individual`); the distributor answer
-is the device profile with the certificate inside. PKCS#12 files with
-Samsung's CA from the Certificate Manager plugin (LibreSSL's defaults, which
-the CLI's Java 8 reads) become profile `streamvault-<DUID>`, and the device
-profile is pushed to `/home/owner/share/tmp/sdk_tools/`, as _Permit to install
-applications_ does. The script signs with the per-TV profile if it exists, else
-with the active one, and creates a per-TV certificate only when there is no
-profile or the TV rejects the active one's certificate. Checked
-with a local CA standing in for Samsung (profile registered, `.wgt` signed,
-the user's `profiles.xml` restored byte for byte); the real sign-in and
-issuance need the account owner.
+is the device profile with the certificate inside. Each answer is imported over
+Samsung's CA from the Certificate Manager plugin, the stores and their password
+stay in `~/SamsungCertificate/streamvault-<DUID>` and become profile
+`streamvault-<DUID>` (registered again from there when Tizen Studio is new), and
+the device profile is pushed to `/home/owner/share/tmp/sdk_tools/`, as _Permit
+to install applications_ does. The deploy signs with the per-TV profile if it
+exists, else with the active one, and creates a per-TV certificate only when
+there is no profile or the TV rejects the active one's certificate. Checked
+with a local CA standing in for Samsung: both signatures of the `.wgt` carry
+the issued certificates, the distributor subject and SAN are those of the
+OpenSSL requests before, and the user's `profiles.xml` and keychain were
+restored; the real sign-in and issuance need the account owner.
 
 LG webOS, VIDAA and Roku are reported and skipped (Titan OS exposes nothing to
 probe for, and cannot run it either): installed webOS
@@ -946,13 +966,13 @@ context), and no Content-Security-Policy.
   of the `Cargo.toml` version is already published. Otherwise it opens (or
   resumes) a draft release `v<version>`, a job per device attaches its files,
   and the last job publishes it as the latest release. The `tv` job builds the
-  bundle; `scripts/tv/bundle.sh` lists its files with their SHA-256 in
+  bundle; `scripts/bundle.sh tv` lists its files with their SHA-256 in
   `tv.json` and signs it as `tv.sig` with `TV_UPDATE_KEY` (converted from DER
   to the raw `r‖s` form WebCrypto verifies). It refuses a build with more than
   one WASM, since `dx` keeps old bundles in its output directory. Signed
   updates are what Tauri's updater requires ("This cannot be disabled"), with
   the public key in the app and the private key only where releases are built.
-- `scripts/tv/deploy.sh` replaces the module script of `index.html` with
+- The TV deploy replaces the module script of `index.html` with
   `boot.js`, which knows the installed version and entry. `boot.js` starts the
   stored update when its signature and hashes verify: hls.js as a classic
   `blob:` script, then the entry module with its WASM path replaced by a
@@ -978,7 +998,96 @@ context), and no Content-Security-Policy.
 
 ---
 
-## 14. Gotchas & lessons — quick reference
+## 14. Windows
+
+### 14.1 The desktop app
+
+The desktop module runs on Windows unchanged except for what `windows.rs` holds
+next to `macos.rs`: File Explorer for _Show in_ (`explorer /select,"…"`, whose
+exit code is 1 even when it works), `N_m3u8DL-RE.exe` and `ffmpeg.exe` from
+`bin\` beside the executable or from `PATH`, console programs started with
+`CREATE_NO_WINDOW` (the release build uses the Windows subsystem, so each
+download would otherwise open a console window), hls.js, and the update: the app
+runs `StreamVault-install-windows-x64.exe` instead of
+`StreamVault-install-macos` and starts its own executable again, since Windows
+needs no LaunchServices step (gotcha 34 is macOS only). WebView2 is Edge, which
+unlike Chrome 142+ and the macOS web view plays no HLS itself, so the app
+inlines hls.js into the page (`document::Script`, as the binary has no asset
+folder) and `player.js` attaches it. hls.js fetches over CORS, and every stream
+host answers `access-control-allow-origin: *` for the app's origin (checked for
+vixcloud, which serves StreamingCommunity and AnimeUnity, and RaiPlay's CDN);
+the same inlined script played a StreamingCommunity stream in the macOS app
+(both audio tracks, 12 subtitle tracks, no error). A downloaded file is served
+at `/media/<id>.<extension>`, so `player.js` still plays it natively: without
+the extension hls.js took it for a playlist and failed with
+`manifestParsingError`.
+
+`scripts/install` is one file for both systems: bash runs its first half and
+reads the PowerShell half as a heredoc, PowerShell reads the bash half as a
+block comment (opened by the escaped `#` of the `echo` on line 2 and closed on
+the heredoc line) and runs the rest. Each half takes `desktop` or `tv`,
+downloads `StreamVault-install-macos` or `StreamVault-install-windows-x64.exe`
+from the latest release into a temporary folder and runs it from the current
+folder; from a clone, bash builds it with `cargo run` instead, fetching Rust
+first when it is missing. Everything else is the installer in `src/deploy`,
+for both devices and both systems, and the temporary folder goes when it ends.
+
+The installer knows which of the two it is from `CARGO_MANIFEST_DIR`, which
+`cargo run` sets and a downloaded binary lacks. Built from a clone, it builds
+the app and the TV bundle from that source; downloaded, it fetches the files of
+its own version from `releases/download/v<version>/`, so an installer always
+installs the release it came with. The resources it packages (`Info.plist`, the
+icons, `config.xml`, the Android manifest, `MainActivity.java`, the banner and
+`boot.js`) are compiled into it, so it needs no source.
+
+The `windows` job of `deploy.yml` builds `StreamVault-windows-x64.exe` and the
+installer on `windows-latest` with MSVC and the C runtime linked statically
+(`RUSTFLAGS`, with an explicit `--target` so build scripts are not affected), so
+a clean Windows needs no Visual C++ redistributable. The `macos` job builds
+`StreamVault-macos` and `StreamVault-install-macos` for arm64 and x86_64, joins
+each pair with `lipo` and signs them ad hoc: files downloaded with `curl` or by
+the installer carry no quarantine attribute, so Gatekeeper does not stop them
+without a Developer ID. `src/build.rs` makes the executable's icon from the app
+logo `assets/img/raster/logo_raster_small.png` at 16 to 256 px, as resource
+32512, which `dioxus-desktop` also loads for the window and taskbar icon;
+`image` and `embed-resource` are build dependencies of the `desktop` feature
+only. `resources/desktop/macos/AppIcon.icns` keeps the macOS icon shape, so it
+stays a macOS resource.
+
+`install desktop` is `src/deploy/desktop/`. On macOS it takes the release
+binary, assembles `StreamVault.app` (`Info.plist` with the `Cargo.toml`
+version, the icon, FFmpeg 7.1 and N_m3u8DL-RE 0.5.1 in `Resources/bin`), signs
+it ad hoc and replaces the one in the current folder. On Windows it installs
+the WebView2 runtime when it is missing (its `pv` in the registry), the
+executable, FFmpeg 7.1 (the gyan.dev essentials build) and
+N_m3u8DL-RE 0.5.1 into `%LOCALAPPDATA%\Programs\StreamVault`, with a Start menu
+shortcut (WScript.Shell) and a per-user uninstall entry (`reg add`); a running
+executable is renamed aside, which Windows allows, so an update replaces it in
+place.
+
+Both desktop apps check the latest release (`HEAD /releases/latest`, which
+redirects to `/releases/tag/v<version>`) and update by downloading their
+installer from it with `reqwest` and running it with `desktop`, from the folder
+that holds the app; it takes seconds since nothing is compiled. No shell takes
+part, and a file a program writes itself carries neither the quarantine
+attribute nor the Mark of the Web, so neither Gatekeeper nor SmartScreen stops
+it.
+
+### 14.2 The TV deploy
+
+The deploy (§13.5) is the same code on both computers. The released Windows
+installer is built with MSVC by the `windows` job; built from a clone with
+`stable-x86_64-pc-windows-gnu`, which links with its own linker, it needs
+nothing of Visual Studio, which is also why the `deploy` feature compiles no C:
+it uses `reqwest` with native TLS (SChannel on Windows, the Security framework
+on macOS) where the app uses rustls with aws-lc, and the app's own dependencies
+are optional behind the `app` feature. Archives are unpacked with the system
+`tar` (bsdtar on both), Tizen Studio comes from its CLI installer
+(`web-cli_Tizen_Studio_6.1_windows-64.exe --accept-license <dir>`, the same
+installer jar as the macOS image), and the Android and Tizen tools are their
+`.bat`/`.exe` forms.
+
+## 15. Gotchas & lessons — quick reference
 
 | #   | Symptom                                                      | Root cause                                                                                                                                                          | Fix                                                                           |
 | --- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
@@ -1016,10 +1125,16 @@ context), and no Content-Security-Policy.
 | 32  | first key after opening a series is lost                     | the focus observer saw only added nodes, and _Play_ was still disabled                                                                                              | observe `disabled` too                                                        |
 | 33  | seek distance drifts while scrubbing                         | measured from the playing position, which keeps moving                                                                                                              | measure from where the scrub started                                          |
 | 34  | the updated Mac app reopens behind the other windows         | the old app spawned its own binary, which skipped LaunchServices and inherited the old `XPC_SERVICE_NAME`; any process with that name crashes once the job is gone  | wait for the old app to quit, then `open -n` without the XPC variables        |
+| 35  | the Windows app does not start on a clean PC                 | Rust's MSVC binaries load `vcruntime140.dll` by default                                                                                                             | link the C runtime statically (`+crt-static`)                                 |
+| 36  | a console window per download on Windows                     | a GUI-subsystem app starting a console program gets it a new console                                                                                                | `CREATE_NO_WINDOW` for every child process                                    |
+| 37  | Tizen's Java rejects a PKCS#12 ("password was incorrect")    | OpenSSL 3 protects it with PBKDF2 and an HMAC-SHA-256 MAC, which Java 8 cannot read                                                                                 | make the keys with Tizen Studio's own `keytool`                               |
+| 38  | `tizen package` crashes asking for a password                | on macOS the profile passwords are in the login keychain (service `certificate-manager`), absent under another `HOME`                                               | run it with the user's `HOME`                                                 |
+| 39  | the deploy cannot build on Windows without Visual Studio     | rustls with aws-lc (the app's TLS) compiles C                                                                                                                       | `deploy` uses native TLS and the GNU toolchain; app crates are optional       |
+| 40  | the deploy misses TVs when run from Terminal                 | macOS gives a process 256 open files; 512 connections at once fail with `EMFILE`, which reads as closed                                                             | scan 200 at a time                                                            |
 
 ---
 
-## 15. Current status
+## 16. Current status
 
 **Done**
 
@@ -1039,18 +1154,33 @@ context), and no Content-Security-Policy.
 - Android TV, Google TV and Fire TV build from the same bundle; catalogue,
   search, details, HLS playback, remote, Back/exit and persistence verified
   on Android TV emulators (§13).
-- `scripts/tv/deploy.sh` finds the TV, installs every missing tool and waits
-  for the TV-side steps (§13.5).
+- The TV deploy finds the TV, installs every missing tool, waits for the
+  TV-side steps and removes what it installed (§13.5); on macOS the Android
+  build from an empty `HOME` and the Samsung certificate with a local CA were
+  run through it.
 - Installed TVs update themselves from the signed releases `deploy.yml`
   publishes (§13.6), verified on the Samsung with a signed test release and in
   the browser against the published v1.1.2.
-- The macOS app updates from its update icon: it rebuilds through
-  `scripts/macos/package.sh` and reopens through LaunchServices once the old
-  instance has quit (gotcha 34); the 1.1.1 → 1.1.2 update ran on the Mac, the
-  relaunch was verified on its own.
+- The desktop apps update from their update icon: they run the installer of
+  the latest release (§14.1), and the Mac app reopens through LaunchServices
+  once the old instance has quit (gotcha 34). On the Mac, against a local copy
+  of a release, the update code fetched the installer, which installed a
+  signed app with its tools and no quarantine in 10 s, and that app started;
+  the relaunch was verified on its own.
+- `scripts/install` runs the installer each release publishes (§14.1): the
+  commands of the `macos` job, run on the Mac, gave a universal, signed app and
+  installer whose two slices start, and the desktop and TV installs ran in
+  release mode against a local copy of a release, without Rust and from an
+  empty `HOME`.
 
 **Open**
 
+- The Windows app and installer pass clippy and build from the Mac with the
+  GNU cross toolchain (a GUI executable with the icon group 32512, and a
+  console installer), but have not run on a Windows PC yet, and the `windows`
+  and `macos` jobs of `deploy.yml` have not run on GitHub yet. The inlined
+  hls.js the Windows app streams with played in the macOS app, not yet in
+  WebView2.
 - On the TV, AnimeUnity's cookie-based login cannot work under browser header
   rules (§9.1). Its search failed with HTTP 405 until `domains.json` followed the
   site's move to `animeunity.co` (the old domain's 301 turned the POST into a GET).
@@ -1061,7 +1191,7 @@ context), and no Content-Security-Policy.
 
 ---
 
-## 16. Reproducible command reference
+## 17. Reproducible command reference
 
 ```bash
 # ── toolchain ───────────────────────────────────────────────────────────────
@@ -1078,8 +1208,8 @@ TV=$(arp -a | grep -i e0:3:6b:70:4e:bd | grep -oE '([0-9]+\.){3}[0-9]+' | head -
 sdb start-server && sdb connect "$TV:26101" && sdb devices
 
 # ── find the TV, install the tools, build, sign, install and launch ────────
-scripts/tv/deploy.sh                 # asks when several TVs are found
-TV=192.168.68.66 scripts/tv/deploy.sh
+scripts/install tv                   # asks when several TVs are found
+TV=192.168.68.66 scripts/install tv
 
 # ── Android: debug the page (debuggable builds only) ────────────────────────
 adb forward tcp:9222 localabstract:webview_devtools_remote_$(adb shell pidof local.streamvault)
