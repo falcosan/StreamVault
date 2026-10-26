@@ -4,6 +4,7 @@ use tokio::process::Command;
 
 pub const FILE_MANAGER: &str = "File Explorer";
 pub const INSTALLER: &str = "StreamVault-install-windows-x64.exe";
+pub const HLS: Option<&str> = Some(include_str!("../../assets/js/hls.min.js"));
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub fn command(program: impl AsRef<OsStr>) -> Command {
@@ -46,6 +47,11 @@ mod tests {
         let relaunch = relaunch();
         assert_eq!(relaunch.get_program(), std::env::current_exe().unwrap());
         assert_eq!(relaunch.get_args().count(), 0);
+    }
+
+    #[test]
+    fn webview2_streams_hls_through_hls_js() {
+        assert!(HLS.is_some_and(|script| script.contains(".Hls=")));
     }
 
     #[test]

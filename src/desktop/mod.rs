@@ -69,7 +69,11 @@ pub fn restore_focus(_: Option<String>) {}
 
 #[component]
 pub fn Head() -> Element {
-    VNode::empty()
+    rsx! {
+        if let Some(hls) = os::HLS {
+            document::Script { "{hls}" }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

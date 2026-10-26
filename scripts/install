@@ -29,7 +29,7 @@ rust() {
   cargo --version &>/dev/null || die "cargo not found after setup"
 }
 
-[[ "$(uname -s)" == Darwin ]] || die "On Windows, run it from PowerShell."
+[[ "$(uname -s)" == Darwin ]] || die "Run it on macOS, or in PowerShell on Windows."
 [[ "${1:-}" == desktop || "${1:-}" == tv ]] || die "Usage: install desktop|tv"
 temp="$(mktemp -d)"
 trap 'rm -rf "$temp"' EXIT

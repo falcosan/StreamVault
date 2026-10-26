@@ -60,8 +60,8 @@ StreamVault/            one crate, one device feature per build
 │   │                   android: install the tools, sign, install, launch)
 │   └── build.rs        Windows: the app icon as an exe resource, from the logo
 ├── assets/             style.css and player.js for every device; tv.css
-│                       (10-foot overlay), storage.js, hls.js and boot.js (the
-│                       update loader) for the TV
+│                       (10-foot overlay), storage.js and boot.js (the update
+│                       loader) for the TV, hls.js for the TV and Windows
 ├── resources/          packaging: desktop/macos/ (Info.plist, AppIcon.icns),
 │                       tv/ (tizen/config.xml, android/ manifest, WebView host
 │                       and banner)
@@ -665,14 +665,14 @@ them (verified: 1280×720, Italian/English audio, 37 subtitle tracks), because
 every host involved answers `access-control-allow-origin: *`.
 
 hls.js 1.7.3 is vendored (`assets/js/hls.min.js`, verified against the npm
-`sha512` integrity, Apache-2.0) so playback never depends on a CDN; only the TV
-loads it. `assets/js/player.js` is the one player for every device: Rust talks
-to it through a long-lived `document::eval` channel (commands in, status and
-track events out), which works the same in the macOS webview and in the TV's
-WASM. It attaches hls.js when present and plain `src` otherwise (macOS plays
-HLS natively, and progressive files everywhere), starts at the resume position,
-applies the audio/subtitle preference and retries a fatal media error once
-before reporting it. Each `<video>` is its own Dioxus component keyed by URL,
+`sha512` integrity, Apache-2.0) so playback never depends on a CDN; the TV and
+the Windows app load it (§14.1). `assets/js/player.js` is the one player for
+every device: Rust talks to it through a long-lived `document::eval` channel
+(commands in, status and track events out), which works the same in the macOS
+webview and in the TV's WASM. It attaches hls.js when present and plain `src`
+otherwise (macOS plays HLS natively, and progressive files everywhere), starts
+at the resume position, applies the audio/subtitle preference and retries a
+fatal media error once before reporting it. Each `<video>` is its own Dioxus component keyed by URL,
 so the session is detached exactly when the episode changes or the player
 closes, and the last position is saved at that moment.
 
@@ -1009,10 +1009,17 @@ holds next to `macos.rs`: File Explorer for _Show in_ (`explorer /select,"…"`,
 whose exit code is 1 even when it works), `N_m3u8DL-RE.exe` and `ffmpeg.exe`
 from `bin\` beside the executable or from `PATH`, console programs started
 with `CREATE_NO_WINDOW` (the release build uses the Windows subsystem, so each
-download would otherwise open a console window), and the update: the app
-runs `StreamVault-install-windows-x64.exe` instead of `StreamVault-install-macos`
-and starts its own executable again, since Windows needs no LaunchServices step
-(gotcha 34 is macOS only).
+download would otherwise open a console window), hls.js, and the update: the
+app runs `StreamVault-install-windows-x64.exe` instead of
+`StreamVault-install-macos` and starts its own executable again, since Windows
+needs no LaunchServices step (gotcha 34 is macOS only). WebView2 is Edge, which
+unlike Chrome 142+ and the macOS web view plays no HLS itself, so the app
+inlines hls.js into the page (`document::Script`, as the binary has no asset
+folder) and `player.js` attaches it. hls.js fetches over CORS, and every
+stream host answers `access-control-allow-origin: *` for the app's origin
+(checked for vixcloud, which serves StreamingCommunity and AnimeUnity, and
+RaiPlay's CDN); the same inlined script played a StreamingCommunity stream in
+the macOS app (both audio tracks, 12 subtitle tracks, no error).
 
 `scripts/install` is one file for both systems: bash runs its first half and
 reads the PowerShell half as a heredoc, PowerShell reads the bash half as a
@@ -1170,8 +1177,9 @@ Android and Tizen tools are their `.bat`/`.exe` forms.
 - The Windows app and installer pass clippy and build from the Mac with the
   GNU cross toolchain (a GUI executable with the icon group 32512, and a
   console installer), but have not run on a Windows PC yet, and the `windows`
-  and `macos` jobs of `deploy.yml` have not run on GitHub yet.
-
+  and `macos` jobs of `deploy.yml` have not run on GitHub yet. The inlined
+  hls.js the Windows app streams with played in the macOS app, not yet in
+  WebView2.
 - On the TV, AnimeUnity's cookie-based login cannot work under browser header
   rules (§9.1). Its search failed with HTTP 405 until `domains.json` followed the
   site's move to `animeunity.co` (the old domain's 301 turned the POST into a GET).

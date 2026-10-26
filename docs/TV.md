@@ -19,9 +19,9 @@ own module.
   (`remote.rs`), IndexedDB storage (`storage.rs`), and the update check and
   install through `boot.js` (`update.rs`).
 - `assets/` — shared stylesheet and player; `style/tv.css` holds the TV-only
-  overrides, `js/hls.min.js` and `js/storage.js` are loaded only by the TV, and
-  `js/boot.js` is the loader that starts the installed app or a downloaded
-  update.
+  overrides, `js/storage.js` is loaded only by the TV, `js/hls.min.js` by the
+  TV and the Windows app, and `js/boot.js` is the loader that starts the
+  installed app or a downloaded update.
 - `index.html` — boot page: 960×540 layout viewport (scaled to the screen by
   the TV) and the dark background shown while the WASM loads.
 - `resources/tv/` — Tizen manifest (`tizen/config.xml`) and the Android host
@@ -103,8 +103,8 @@ missing. It:
   answers in advance;
 - installs what is missing: from a clone, on macOS the Command Line Tools and
   for the build the `wasm32-unknown-unknown` target and the `dx` of the
-  `dioxus` version in `Cargo.lock`; for Android a JDK and the SDK build tools (an SDK in
-  `ANDROID_HOME`, default `~/Library/Android/sdk` or
+  `dioxus` version in `Cargo.lock`; for Android a JDK and the SDK build tools
+  (an SDK in `ANDROID_HOME`, default `~/Library/Android/sdk` or
   `%LOCALAPPDATA%\Android\Sdk`, is used when it already has them); for
   Samsung Tizen Studio (about 3 GB, into `TIZEN_HOME`, default
   `~/tizen-studio` or `C:\tizen-studio`);
@@ -151,12 +151,11 @@ TV and Fire TV alike, because what changes between versions is the web bundle
 - Publishing: pushing a new `version` in `Cargo.toml` to `main` runs
   `.github/workflows/deploy.yml`. It opens a draft GitHub release `v<version>`,
   runs one job per computer or device (`tv`, `windows` and `macos`) that
-  attaches its files,
-  and publishes the release once every job has finished, so a TV never sees a
-  half-uploaded version; another device is another job. The `windows` and
-  `macos` jobs attach the desktop app and the installer that `scripts/install`
-  downloads. The `tv` job builds the bundle and
-  runs `scripts/bundle.sh tv`, which writes `tv.json` (version, files and their
+  attaches its files, and publishes the release once every job has finished,
+  so a TV never sees a half-uploaded version; another device is another job.
+  The `windows` and `macos` jobs attach the desktop app and the installer that
+  `scripts/install` downloads. The `tv` job builds the bundle and runs
+  `scripts/bundle.sh tv`, which writes `tv.json` (version, files and their
   SHA-256) and signs it as `tv.sig` with the ECDSA P-256 key in the repository
   secret `TV_UPDATE_KEY`, as Tauri and Sparkle sign their updates.
 - Who needs what: every installed TV updates from this repository's releases,
@@ -202,10 +201,10 @@ five steps a second on any remote. The distance from where the seek started
 shows in the middle of the screen while it moves (on the computer also while
 dragging the bar). In the last 20 seconds of an episode the next one starts by
 itself, and an episode or movie played from its page resumes where Continue
-Watching left it. The spinner only shows while the first frames load or while playback
-is stalled, never while paused. The audio/subtitle choice is saved as the
-player preference (the same one the desktop app uses), applied to every title and
-synced.
+Watching left it. The spinner only shows while the first frames load or while
+playback is stalled, never while paused. The audio/subtitle choice is saved as
+the player preference (the same one the desktop app uses), applied to every
+title and synced.
 
 ## Notes
 
