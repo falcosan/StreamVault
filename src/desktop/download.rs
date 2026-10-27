@@ -414,9 +414,8 @@ fn downloader(
         .arg(ffmpeg)
         .args([
             "--no-log",
-            "--write-meta-json",
-            "false",
             "--binary-merge",
+            "--del-after-done",
             "--auto-subtitle-fix",
             "false",
             "--check-segments-count",
@@ -436,8 +435,7 @@ fn downloader(
     }
     match pass {
         Pass::Media => {
-            cmd.args(["--del-after-done", "true"])
-                .arg("--select-video")
+            cmd.arg("--select-video")
                 .arg(&settings.select_video)
                 .arg("--select-audio")
                 .arg(&settings.select_audio);
@@ -446,9 +444,7 @@ fn downloader(
             }
         }
         Pass::Subtitles => {
-            cmd.args(["--del-after-done", "false"])
-                .arg("--select-subtitle")
-                .arg(&settings.select_subtitle);
+            cmd.arg("--select-subtitle").arg(&settings.select_subtitle);
         }
     }
     for (key, value) in &stream.headers {
@@ -1023,10 +1019,11 @@ mod tests {
     }
 
     #[test]
-    fn only_the_media_run_deletes_its_segments_as_it_goes() {
+    fn both_runs_keep_the_meta_json_that_holds_their_shared_temp_folder() {
         let config = AppConfig::default();
-        assert!(downloader_args(&config, Pass::Media).contains("--del-after-done true"));
-        assert!(downloader_args(&config, Pass::Subtitles).contains("--del-after-done false"));
+        for pass in [Pass::Media, Pass::Subtitles] {
+            assert!(!downloader_args(&config, pass).contains("--write-meta-json"));
+        }
     }
 
     #[test]

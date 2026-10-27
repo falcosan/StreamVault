@@ -23,6 +23,9 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use streaming_community::StreamingCommunity;
 
+const DOMAINS_URL: &str =
+    "https://raw.githubusercontent.com/falcosan/StreamVault/main/assets/js/domains.json";
+const DOMAINS_TIMEOUT: Duration = Duration::from_secs(5);
 const ATTEMPTS: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_millis(400);
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
@@ -83,14 +86,29 @@ pub trait Provider {
     }
 }
 
+#[derive(Deserialize)]
+struct Domain {
+    full_url: String,
+}
+
+type Domains = HashMap<String, Domain>;
+
 #[derive(Clone)]
 pub struct Providers(Arc<[Arc<dyn Provider>]>);
 
 impl Providers {
-    pub fn new(timeout: Duration) -> Self {
-        let shared = Http::new(timeout);
+    pub async fn load(timeout: Duration) -> Self {
+        let http = Http::new(timeout);
+        let domains = domains(&http, DOMAINS_URL).await;
+        Self::with(http, &domains)
+    }
+
+    fn with(shared: Http, domains: &Domains) -> Self {
         let list: Vec<Arc<dyn Provider>> = vec![
-            Arc::new(StreamingCommunity::new(shared.clone())),
+            Arc::new(StreamingCommunity::new(
+                shared.clone(),
+                domain(domains, "streamingcommunity"),
+            )),
             Arc::new(RaiPlay::new(shared.clone())),
             Arc::new(Aurora::new(shared.clone(), "nove", "Nove")),
             Arc::new(Aurora::new(shared.clone(), "realtime", "RealTime")),
@@ -101,7 +119,7 @@ impl Providers {
                 "discoverychannelit",
                 "Discovery",
             )),
-            Arc::new(AnimeUnity::new(shared)),
+            Arc::new(AnimeUnity::new(shared, domain(domains, "animeunity"))),
         ];
         Self(list.into())
     }
@@ -230,16 +248,25 @@ async fn send(request: RequestBuilder) -> ProviderResult<Response> {
     Ok(request.send().await?.error_for_status()?)
 }
 
-fn domain(key: &str) -> String {
-    #[derive(Deserialize)]
-    struct Domain {
-        full_url: String,
+async fn domains(http: &Http, url: &str) -> Domains {
+    let mut domains = built_in_domains();
+    let fetched = fetch_json(http.client.get(url).timeout(DOMAINS_TIMEOUT))
+        .await
+        .and_then(|value| Ok(serde_json::from_value::<Domains>(value)?));
+    match fetched {
+        Ok(fetched) => domains.extend(fetched),
+        Err(e) => warn!("domains fetch failed, using the built-in ones: {e}"),
     }
-    static DOMAINS: LazyLock<HashMap<String, Domain>> = LazyLock::new(|| {
-        serde_json::from_str(include_str!("../../assets/js/domains.json"))
-            .expect("assets/js/domains.json must be valid")
-    });
-    DOMAINS
+    domains
+}
+
+fn built_in_domains() -> Domains {
+    serde_json::from_str(include_str!("../../assets/js/domains.json"))
+        .expect("assets/js/domains.json must be valid")
+}
+
+fn domain(domains: &Domains, key: &str) -> String {
+    domains
         .get(key)
         .map(|d| d.full_url.trim_end_matches('/').to_owned())
         .unwrap_or_default()
@@ -448,7 +475,7 @@ mod tests {
 
     #[test]
     fn provider_order_is_stable_because_indices_are_persisted() {
-        let names: Vec<_> = Providers::new(Duration::from_secs(1))
+        let names: Vec<_> = Providers::with(Http::new(Duration::from_secs(1)), &built_in_domains())
             .0
             .iter()
             .map(|p| p.name())
@@ -521,12 +548,37 @@ mod tests {
 
     #[test]
     fn embedded_domains_resolve_to_https_without_trailing_slash() {
+        let domains = built_in_domains();
         for key in ["streamingcommunity", "animeunity"] {
-            let url = domain(key);
+            let url = domain(&domains, key);
             assert!(url.starts_with("https://"), "{key}: {url}");
             assert!(!url.ends_with('/'), "{key}: {url}");
         }
-        assert_eq!(domain("missing"), "");
+        assert_eq!(domain(&domains, "missing"), "");
+    }
+
+    #[tokio::test]
+    async fn domains_from_the_repo_win_and_the_built_in_ones_fill_the_gaps() {
+        let (url, _) = serve(&[
+            (
+                200,
+                r#"{"streamingcommunity":{"full_url":"https://sc.new/"}}"#,
+            ),
+            (404, ""),
+        ])
+        .await;
+        let (http, built_in) = (Http::new(Duration::from_secs(1)), built_in_domains());
+        let fetched = domains(&http, &url).await;
+        assert_eq!(domain(&fetched, "streamingcommunity"), "https://sc.new");
+        assert_eq!(
+            domain(&fetched, "animeunity"),
+            domain(&built_in, "animeunity")
+        );
+        let unavailable = domains(&http, &url).await;
+        assert_eq!(
+            domain(&unavailable, "streamingcommunity"),
+            domain(&built_in, "streamingcommunity")
+        );
     }
 
     #[test]

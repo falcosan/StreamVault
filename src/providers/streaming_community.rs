@@ -1,6 +1,6 @@
 use super::{
     Episode, Http, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl,
-    domain, fetch_json, fetch_text, fetch_vixcloud, items, non_blank, uint, year,
+    fetch_json, fetch_text, fetch_vixcloud, items, non_blank, uint, year,
 };
 use async_trait::async_trait;
 use dioxus::logger::tracing::warn;
@@ -60,8 +60,7 @@ impl Browse {
 }
 
 impl StreamingCommunity {
-    pub fn new(client: Http) -> Self {
-        let base = domain("streamingcommunity");
+    pub fn new(client: Http, base: String) -> Self {
         Self {
             client,
             cdn: base.replacen("://", "://cdn.", 1),
@@ -401,9 +400,11 @@ mod tests {
 
     #[test]
     fn cdn_prefixes_the_site_host() {
-        let provider = StreamingCommunity::new(Http::new(std::time::Duration::from_secs(1)));
-        let host = provider.base.split_once("://").unwrap().1;
-        assert_eq!(provider.cdn, format!("https://cdn.{host}"));
+        let provider = StreamingCommunity::new(
+            Http::new(std::time::Duration::from_secs(1)),
+            "https://streamingcommunity.test".into(),
+        );
+        assert_eq!(provider.cdn, "https://cdn.streamingcommunity.test");
     }
 
     #[test]

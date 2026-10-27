@@ -1,6 +1,6 @@
 use super::{
     Episode, Http, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl,
-    domain, fetch_json, fetch_text, fetch_vixcloud, items, non_blank, send, uint, year,
+    fetch_json, fetch_text, fetch_vixcloud, items, non_blank, send, uint, year,
 };
 use async_trait::async_trait;
 use percent_encoding::percent_decode_str;
@@ -41,10 +41,10 @@ pub struct AnimeUnity {
 }
 
 impl AnimeUnity {
-    pub fn new(client: Http) -> Self {
+    pub fn new(client: Http, base: String) -> Self {
         Self {
             client,
-            base: domain("animeunity"),
+            base,
             auth: Mutex::new(None),
         }
     }

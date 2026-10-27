@@ -11,11 +11,13 @@ use crate::time::now_ms;
 use crate::watch::{self, WatchItem};
 use dioxus::core::{Task, spawn_forever};
 use dioxus::prelude::*;
+use futures::future::{FutureExt, LocalBoxFuture, Shared};
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 const CSS: &str = include_str!("../assets/style/style.css");
 const LOAD_MORE_THRESHOLD: f64 = 1200.0;
@@ -132,7 +134,7 @@ pub struct AppState {
     pub prefs: Signal<PlayerPrefs>,
     pub device: Device,
     replica: CopyValue<Replica>,
-    providers: CopyValue<Providers>,
+    providers: CopyValue<Shared<LocalBoxFuture<'static, Providers>>>,
 }
 
 impl AppState {
@@ -157,7 +159,7 @@ impl AppState {
             watch: Signal::default(),
             prefs: Signal::default(),
             replica: CopyValue::new(Replica::default()),
-            providers: CopyValue::new(Providers::new(device.timeout())),
+            providers: CopyValue::new(load_providers(device.timeout())),
             device,
         }
     }
@@ -197,20 +199,21 @@ impl AppState {
         self.search.results.set(Vec::new());
         self.navigate(Screen::Search);
         restart(self.search.task, async move {
-            let found = self.providers().search(&query).await;
+            let found = self.providers().await.search(&query).await;
             self.search.results.set(search::rank(found, &query));
             self.search.busy.set(false);
         });
     }
 
-    pub fn reload(self) {
+    pub fn reload(mut self) {
+        self.providers.set(load_providers(self.device.timeout()));
         spawn_forever(self.load_catalog());
     }
 
     async fn load_catalog(mut self) {
         self.error.set(None);
         self.catalog.loading.set(true);
-        let entries = self.providers().catalog().await;
+        let entries = self.providers().await.catalog().await;
         self.catalog.items.set(entries);
         self.catalog.done.set(false);
         self.catalog.loading.set(false);
@@ -233,7 +236,7 @@ impl AppState {
                 .iter()
                 .map(MediaEntry::key)
                 .collect();
-            match self.providers().catalog_more(&mut seen).await {
+            match self.providers().await.catalog_more(&mut seen).await {
                 Some(fresh) => self.catalog.items.write().extend(fresh),
                 None => self.catalog.done.set(true),
             }
@@ -266,7 +269,7 @@ impl AppState {
         self.details.episodes.set(Vec::new());
         self.details.loading.set(true);
         restart(self.details.task, async move {
-            let episodes = async { self.provider(&entry)?.episodes(&entry, season).await };
+            let episodes = async { self.provider(&entry).await?.episodes(&entry, season).await };
             match episodes.await {
                 Ok(episodes) => self.details.episodes.set(episodes),
                 Err(e) => self.report("Failed to load episodes", e),
@@ -292,7 +295,7 @@ impl AppState {
         entry: &MediaEntry,
         preferred: Option<u32>,
     ) -> ProviderResult<()> {
-        let provider = self.provider(entry)?;
+        let provider = self.provider(entry).await?;
         let seasons = provider.seasons(entry).await?;
         let pick = preferred
             .filter(|p| seasons.contains(p))
@@ -404,7 +407,12 @@ impl AppState {
         }
         restart(self.stream_task, async move {
             let entry = playback.entry;
-            let episodes = async { self.provider(&entry)?.episodes(&entry, next_season).await };
+            let episodes = async {
+                self.provider(&entry)
+                    .await?
+                    .episodes(&entry, next_season)
+                    .await
+            };
             let episodes = match episodes.await {
                 Ok(episodes) => episodes,
                 Err(e) => return self.report("Failed to load next season", e),
@@ -465,7 +473,7 @@ impl AppState {
 
     async fn queue_next(self, item: WatchItem, season: u32) -> ProviderResult<()> {
         let entry = &item.entry;
-        let provider = self.provider(entry)?;
+        let provider = self.provider(entry).await?;
         let episodes = provider.episodes(entry, season).await?;
         if self.update_watch(|items| watch::finish(items, &item, &episodes)) {
             return Ok(());
@@ -517,15 +525,19 @@ impl AppState {
         season: Option<u32>,
         episode: Option<&Episode>,
     ) -> ProviderResult<StreamUrl> {
-        self.provider(entry)?.stream(entry, season, episode).await
+        self.provider(entry)
+            .await?
+            .stream(entry, season, episode)
+            .await
     }
 
-    fn provider(self, entry: &MediaEntry) -> ProviderResult<Arc<dyn Provider>> {
-        self.providers.read().get(entry.provider)
+    async fn provider(self, entry: &MediaEntry) -> ProviderResult<Arc<dyn Provider>> {
+        self.providers().await.get(entry.provider)
     }
 
-    fn providers(self) -> Providers {
-        self.providers.read().clone()
+    async fn providers(self) -> Providers {
+        let providers = self.providers.read().clone();
+        providers.await
     }
 
     fn end_session(self) {
@@ -596,6 +608,10 @@ fn visit(history: &mut Vec<(Screen, Option<String>)>, from: (Screen, Option<Stri
 pub fn restart(mut slot: CopyValue<Option<Task>>, future: impl Future<Output = ()> + 'static) {
     cancel(slot);
     slot.set(Some(spawn_forever(future)));
+}
+
+fn load_providers(timeout: Duration) -> Shared<LocalBoxFuture<'static, Providers>> {
+    Providers::load(timeout).boxed_local().shared()
 }
 
 pub fn cancel(mut slot: CopyValue<Option<Task>>) {

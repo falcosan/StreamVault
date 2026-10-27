@@ -1,6 +1,6 @@
 [package]
 name = "streamvault"
-version = "1.1.6"
+version = "1.1.7"
 edition = "2024"
 build = "src/build.rs"
 
@@ -66,8 +66,17 @@ serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde", "js"], optional = true }
 dioxus = { version = "0.7", optional = true }
 dioxus-desktop = { version = "0.7", features = ["fullscreen"], optional = true }
-reqwest = { version = "0.13", default-features = false, features = ["json", "query", "form", "charset", "http2", "system-proxy"], optional = true }
-futures = { version = "0.3", default-features = false, features = ["std"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "query",
+  "form",
+  "charset",
+  "http2",
+  "system-proxy",
+], optional = true }
+futures = { version = "0.3", default-features = false, features = [
+  "std",
+], optional = true }
 web-time = { version = "1", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
@@ -98,7 +107,10 @@ gloo-timers = { version = "0.4", features = ["futures"] }
 
 [build-dependencies]
 embed-resource = { version = "3", optional = true }
-image = { version = "0.25", default-features = false, features = ["ico", "png"], optional = true }
+image = { version = "0.25", default-features = false, features = [
+  "ico",
+  "png",
+], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "net", "io-util", "test-util"] }

@@ -504,6 +504,13 @@ over the LAN (and that macOS's application firewall blocked until the unsigned
 binary was allowed with `socketfilterfw`). That made the TV useless without the
 Mac, so the service was removed.
 
+StreamingCommunity and AnimeUnity move domain often, so the apps read
+`assets/js/domains.json` from this repository's `main` branch when they start
+and on _Retry_, and every request to the providers waits for it (GitHub serves
+it with a 5-minute cache): a new domain needs a commit, not a release. The copy
+built into the app is used when the file cannot be fetched (5 s timeout) and
+fills any site the file leaves out.
+
 ### 9.1 Why the providers can run in the webview
 
 A CDP test from inside the installed widget fetched sites that send no CORS
@@ -1134,7 +1141,7 @@ installer jar as the macOS image), and the Android and Tizen tools are their
 | 41  | a download reaches 100% at once, then takes minutes          | N_m3u8DL-RE draws one progress row per track in a 24-line panel; with 26 subtitle tracks the video and audio rows are cut off                                       | download the subtitles in a second run alongside                              |
 | 42  | Windows: _No supported TV found_ on a work PC                | the system proxy, as many work PCs have, also took the requests to the TV, and it cannot reach the home network                                                     | requests to the local network skip the proxy                                  |
 | 43  | _Failed to get stream_ (410 Gone) in a Windows VM            | the embed link expires 10 s after it is issued; the first connection to vixcloud took longer (likely Windows' online revocation check, up to 10 s)                  | fetch a new link once when the embed page fails                               |
-| 44  | the subtitle run crashes now and then as it ends             | N_m3u8DL-RE removes each finished track's temporary folder, then the parent once empty; two tracks finishing together race on the parent                            | the subtitle run keeps its temporary files; the app deletes the work folder   |
+| 44  | a download fails now and then as its tracks finish           | with `--write-meta-json false` the tracks' shared temporary folder empties as they end; two tracks ending together both delete it and N_m3u8DL-RE crashes           | keep the default `meta.json`, which holds that folder until the run ends      |
 
 ---
 
