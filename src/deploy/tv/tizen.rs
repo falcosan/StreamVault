@@ -126,7 +126,7 @@ impl Studio {
         let home = std::env::var_os("TIZEN_HOME").map_or_else(os::tizen_home, PathBuf::from);
         let installed = home.join("sdk.info").is_file();
         if !installed {
-            say("Installing Tizen Studio (about 3 GB)…");
+            say("Installing Tizen Studio…");
             os::install_tizen_studio(session, STUDIO, &home).await?;
             session
                 .run(
