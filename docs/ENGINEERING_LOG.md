@@ -914,42 +914,67 @@ Missing tools are installed without questions into a temporary folder: `dx` (the
 release binary, avoiding the OpenSSL build of §3.3, with its own tools in
 `DX_HOME`), a Temurin JDK and the Android command-line tools and packages (an
 `ANDROID_HOME` that already has them is used as it is, and its `adb` always, so
-a running adb server is never replaced), Tizen Studio as in §3.1 with only
-`cert-add-on` and `TV-SAMSUNG-Extension-Tools` (3.0 GB instead of 4.1:
-`TV-SAMSUNG-Public` only adds the TV emulator; the certificate tools are
-identical and the CLI signs with the same profile). When the run ends, also on
-an error, it stops the adb and sdb servers it started and removes all of it, the
-Rust target it added and a Tizen Studio it installed with its data;
-`scripts/install` removes the installer it downloaded, or the Rust toolchain it
-fetched to build one from a clone. What only the owner can do is waited for,
-with instructions: Developer Mode on Samsung (checked through port 8001, then
-`sdb`), debugging allowed on Android (pairing code read from the terminal for
-wireless debugging), and the Samsung account sign-in for a new TV's certificate.
+a running adb server is never replaced). Samsung needs no tool at all (below).
+When the run ends, also on an error, it stops the adb server it started and
+removes all of it and the Rust target it added; `scripts/install` removes the
+installer it downloaded, or the Rust toolchain it fetched to build one from a
+clone. What only the owner can do is waited for, with instructions: Developer
+Mode on Samsung (checked through port 8001, then `sdb`), debugging allowed on
+Android (pairing code read from the terminal for wireless debugging), and the
+Samsung account sign-in for a new TV's certificate.
 
-The certificate is created the way Certificate Manager does it (its constants
-and the files it left in `~/SamsungCertificate` match; TizenBrew Installer
-automates the same flow): the browser opens Samsung's sign-in for the Tizen
-SDK (`serviceID=v285zxnl3h`, redirect to `localhost:4794/signin/callback`),
-which posts `code` = JSON with `access_token`, `userId` and `inputEmailID`;
-`sdb shell 0 getduid` gives the device id; Tizen Studio's own `keytool` makes
-two 2048-bit keys in PKCS#12 stores (the format its Java 8 reads; OpenSSL 3's
-defaults it does not) and SHA-512 requests (author `CN=StreamVault`;
-distributor `CN=TizenSDK` with the e-mail and the SAN URIs
-`URN:tizen:packageid=` and `URN:tizen:deviceid=<DUID>`), which go to
-`svdca.samsungqbe.com/apis/v3/authors` and `/distributors` (`platform=VD`,
-`privilege_level=Public`, `developer_type=Individual`); the distributor answer
-is the device profile with the certificate inside. Each answer is imported over
-Samsung's CA from the Certificate Manager plugin, the stores and their password
-stay in `~/SamsungCertificate/streamvault-<DUID>` and become profile
-`streamvault-<DUID>` (registered again from there when Tizen Studio is new), and
-the device profile is pushed to `/home/owner/share/tmp/sdk_tools/`, as _Permit
-to install applications_ does. The deploy signs with the per-TV profile if it
-exists, else with the active one, and creates a per-TV certificate only when
-there is no profile or the TV rejects the active one's certificate. Checked
-with a local CA standing in for Samsung: both signatures of the `.wgt` carry
-the issued certificates, the distributor subject and SAN are those of the
-OpenSSL requests before, and the user's `profiles.xml` and keychain were
-restored; the real sign-in and issuance need the account owner.
+Samsung installs need neither Tizen Studio (3 GB downloaded, installed and
+removed on every run until 1.1.7) nor Java: the installer does in Rust what
+TizenBrew does in JavaScript, after Samsung's own `webIDE-common-tizentv`.
+
+- **sdb** (`tizen/sdb.rs`): the TV's port 26101 speaks the ADB wire protocol
+  (24-byte little-endian header with a byte-sum checksum and the command's
+  complement, `CNXN` with `host::`, no authentication or TLS). The shell
+  commands `0 getduid` (the device id), `0 was_kill`,
+  `0 vd_appinstall <app id> <path>` and `0 was_execute` replace
+  `tizen install` and `tizen run`; `sync:` with `SEND`, `DATA` (each within the
+  payload size the TV announced), `DONE` and `QUIT` pushes the package to
+  `/home/owner/share/tmp/sdk_tools/`. Every `WRTE` waits for its `OKAY`.
+  `vd_appinstall` prints `install completed` or
+  `install failed[…], reason: …`, then `spend time for wascmd is […]ms`, and
+  closes.
+- **Signing** (`tizen/widget.rs`): `author-signature.xml`, then
+  `signature1.xml` over every file plus the author signature, with SHA-256
+  references (URIs encoded as `encodeURIComponent` does, `/` included, as
+  Samsung's signer writes them), the `#prop` object referenced through C14N
+  1.1 and `SignedInfo` signed with RSA-SHA256 after exclusive C14N, which for
+  XML this code writes itself is the element with the `xmldsig` namespace on
+  it. The `#prop` digest is computed, not copied: it equals the constant in
+  Samsung's signer (and TizenBrew's SHA-512 one). SHA-256 is the algorithm the
+  W3C widget signature specification makes mandatory, so every Tizen release
+  verifies it. Signature values and certificates are base64 in lines of 76
+  characters (gotcha 45).
+- **Certificate** (`tizen/certificate.rs`): the sign-in is that of
+  Certificate Manager (`serviceID=v285zxnl3h`, redirect to
+  `localhost:4794/signin/callback`, `code` = JSON with `access_token`,
+  `userId` and `inputEmailID`). Two RSA-2048 keys give SHA-512 requests shaped
+  like `keytool`'s (author `CN=StreamVault`; distributor `CN=TizenSDK` with the
+  e-mail as IA5String and the SAN URIs `URN:tizen:packageid=` and
+  `URN:tizen:deviceid=<DUID>`; both with a Subject Key Identifier) for
+  `svdca.samsungqbe.com/apis/v3/authors` and `/distributors` (`platform=VD`,
+  `privilege_level=Public`, `developer_type=Individual`). Samsung signs authors
+  with _Samsung VD Author CA_ and distributors with _VD DEVELOPER Public CA
+  Class_; both CA certificates come from Samsung's certificate extension 2.0.75
+  and live in `resources/tv/tizen/`, so nothing is downloaded (TizenBrew
+  downloads the 44 MB extension for them). The key and `[leaf, CA]` are stored
+  as `author.p12` and `distributor.p12` with their password in
+  `~/SamsungCertificate/streamvault-<DUID>`; the folder is replaced only once
+  both certificates arrived. Stores written by Tizen Studio's Java 8
+  (3DES keys, RC2-40 certificates, SHA-1 MAC) still load, so TVs installed
+  before keep their author and update in place. Both answers are PEM, as
+  TizenBrew reads them; no device profile comes back to push.
+
+All of it is Rust without C (`rsa`, `x509-cert`, `p12-keystore`, `zip` with
+zlib-rs), so §14.2 holds. With the stores Tizen Studio left for the Samsung it
+signed a package that OpenSSL verifies (both signatures, every digest), and on
+2026-10-29 `scripts/install tv`'s path installed and launched 1.1.7 on the
+Samsung with them: no Tizen Studio, Java or sign-in, and the app updated in
+place. Its requests match `keytool`'s field for field.
 
 LG webOS, VIDAA and Roku are reported and skipped (Titan OS exposes nothing to
 probe for, and cannot run it either): installed webOS
@@ -1089,10 +1114,8 @@ nothing of Visual Studio, which is also why the `deploy` feature compiles no C:
 it uses `reqwest` with native TLS (SChannel on Windows, the Security framework
 on macOS) where the app uses rustls with aws-lc, and the app's own dependencies
 are optional behind the `app` feature. Archives are unpacked with the system
-`tar` (bsdtar on both), Tizen Studio comes from its CLI installer
-(`web-cli_Tizen_Studio_6.1_windows-64.exe --accept-license <dir>`, the same
-installer jar as the macOS image), and the Android and Tizen tools are their
-`.bat`/`.exe` forms.
+`tar` (bsdtar on both), and the Android tools are their `.bat`/`.exe` forms;
+Samsung installs use no external tool on either.
 
 ## 15. Gotchas & lessons — quick reference
 
@@ -1142,6 +1165,7 @@ installer jar as the macOS image), and the Android and Tizen tools are their
 | 42  | Windows: _No supported TV found_ behind a system proxy       | a system proxy, as many work PCs have, also gets the requests to the TV, and it cannot reach the home network                                                       | requests to the local network skip the proxy                                  |
 | 43  | _Failed to get stream_ (410 Gone) in a Windows VM            | the embed link expires 10 s after it is issued; the first connection to vixcloud took longer (likely Windows' online revocation check, up to 10 s)                  | fetch a new link once when the embed page fails                               |
 | 44  | a download fails now and then as its tracks finish           | with `--write-meta-json false` the tracks' shared temporary folder empties as they end; two tracks ending together both delete it and N_m3u8DL-RE crashes           | keep the default `meta.json`, which holds that folder until the run ends      |
+| 45  | _Invalid format of certificate in signature_ (118, -12)      | the TV decodes `X509Certificate` with a line-based base64 reader; one 1,800-character line fails although XML allows it                                             | write signature values and certificates in lines of 76 characters             |
 
 ---
 
@@ -1167,8 +1191,9 @@ installer jar as the macOS image), and the Android and Tizen tools are their
   on Android TV emulators (§13).
 - The TV deploy finds the TV, installs every missing tool, waits for the
   TV-side steps and removes what it installed (§13.5); on macOS the Android
-  build from an empty `HOME` and the Samsung certificate with a local CA were
-  run through it.
+  build from an empty `HOME` was run through it, and the Samsung install runs
+  without Tizen Studio: sdb, signing and `vd_appinstall` in Rust installed and
+  launched 1.1.7 on the Samsung with its existing certificate.
 - Installed TVs update themselves from the signed releases `deploy.yml`
   publishes (§13.6), verified on the Samsung with a signed test release and in
   the browser against the published v1.1.2.
@@ -1186,6 +1211,9 @@ installer jar as the macOS image), and the Android and Tizen tools are their
 
 **Open**
 
+- A new Samsung certificate made without Tizen Studio (§13.5) has not been
+  issued yet: its requests match `keytool`'s, but the sign-in needs the account
+  owner and only the existing certificate was used on the TV.
 - The Windows app and installer pass clippy and build from the Mac with the
   GNU cross toolchain (a GUI executable with the icon group 32512, and a
   console installer), but have not run on a Windows PC yet, and the `windows`

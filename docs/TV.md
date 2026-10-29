@@ -105,40 +105,38 @@ missing. It:
   for the build the `wasm32-unknown-unknown` target and the `dx` of the
   `dioxus` version in `Cargo.lock`; for Android a JDK and the SDK build tools
   (an SDK in `ANDROID_HOME`, default `~/Library/Android/sdk` or
-  `%LOCALAPPDATA%\Android\Sdk`, is used when it already has them); for
-  Samsung Tizen Studio (about 3 GB, into `TIZEN_HOME`, default
-  `~/tizen-studio` or `C:\tizen-studio`);
+  `%LOCALAPPDATA%\Android\Sdk`, is used when it already has them); Samsung
+  needs nothing, as the installer itself signs and talks to the TV;
 - waits, with instructions, until the TV is ready: Developer Mode on Samsung,
   debugging allowed on Android (it asks for the pairing code when the TV shows
   one);
-- packages and signs `StreamVault.wgt` (with the Samsung certificate profile
-  below) or `StreamVault.apk` (with `~/.android/debug.keystore`, created if
+- packages and signs `StreamVault.wgt` (with the Samsung certificate below)
+  or `StreamVault.apk` (with `~/.android/debug.keystore`, created if
   missing, so updates keep the app data), both with the version of
   `Cargo.toml`, then installs and launches it; from a clone the packages stay
   in `target/tv/`.
 
 When it ends, successfully or not, it removes everything it installed: Rust,
-the Rust target, `dx` and its tools, the JDK, the Android SDK and Tizen Studio
-with its data. It keeps only the keys later installs need to update the app:
+the Rust target, `dx` and its tools, the JDK and the Android SDK. It keeps
+only the keys later installs need to update the app:
 `~/.android/debug.keystore` and `~/SamsungCertificate`.
 
 Samsung TVs only install apps signed with a Samsung certificate issued to a
-Samsung account for that TV's device id. The deploy uses the profile
-`streamvault-<device id>`, registers it again from
-`~/SamsungCertificate/streamvault-<device id>` when Tizen Studio was installed
-afresh, else uses the active one; when there is none, or the TV rejects the
-active one's certificate, it creates the certificate as Certificate Manager
-does: it opens the Samsung sign-in in the browser, takes the answer on
-`localhost:4794`, reads the device id over `sdb`, makes the keys and requests
-with Tizen Studio's `keytool`, sends them to Samsung, stores the result and its
-password in `~/SamsungCertificate/streamvault-<device id>`, registers the
-profile, allows the TV to install with it and retries. Build output goes to
+Samsung account for that TV's device id. Like TizenBrew, the installer needs no
+Tizen Studio: it talks `sdb` to the TV itself, reads the device id and signs the
+package the way Samsung's own signer does, with the certificate in
+`~/SamsungCertificate/streamvault-<device id>`, including one an earlier
+version made. When there is none, or the TV rejects its certificate, it opens
+the Samsung sign-in in the browser, takes the answer on `localhost:4794`, makes
+the keys and requests, sends them to Samsung, stores the certificates with
+Samsung's authorities (shipped in the repository) and their password in that
+folder, and installs again. Build output and the TV's answers go to
 `streamvault-tv.log` in the temporary folder.
 
 The sync settings go into the package as `sync.json`, never into the WASM, so
 run it again when `sync.json` changes. `STREAMVAULT_SYNC_URL`,
-`STREAMVAULT_SYNC_TOKEN`, `SYNC`, `TV`, `ANDROID_HOME`, `TIZEN_HOME` and
-`JAVA_HOME` override the defaults.
+`STREAMVAULT_SYNC_TOKEN`, `SYNC`, `TV`, `ANDROID_HOME` and `JAVA_HOME`
+override the defaults.
 
 ## Updates
 

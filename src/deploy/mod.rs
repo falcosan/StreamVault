@@ -248,19 +248,6 @@ impl Session {
             .map(|()| stdout)
     }
 
-    async fn transcript(&self, command: &mut Command) -> Result<String, String> {
-        let output = command
-            .stdin(Stdio::null())
-            .output()
-            .await
-            .map_err(|e| format!("Cannot run {}: {e}", describe(command)))?;
-        let text = [output.stdout, output.stderr]
-            .map(|bytes| String::from_utf8_lossy(&bytes).replace('\r', ""))
-            .concat();
-        self.append(&text)?;
-        Ok(text)
-    }
-
     async fn download(&self, url: &str, name: &str) -> Result<PathBuf, String> {
         let path = self.scratch.join(name);
         let mut failure = String::new();
@@ -350,10 +337,10 @@ mod tests {
     #[test]
     fn files_are_found_anywhere_under_a_directory() {
         let dir = scratch_dir("deploy_find");
-        write(&dir.join("a/b/org.tizen.common.cert_1.0.jar"), "").unwrap();
-        write(&dir.join("a/other.jar"), "").unwrap();
-        let found = find(&dir, &|name| name.starts_with("org.tizen.common.cert_"));
-        assert_eq!(found, Some(dir.join("a/b/org.tizen.common.cert_1.0.jar")));
+        write(&dir.join("ffmpeg-8/LICENSE"), "").unwrap();
+        write(&dir.join("ffmpeg-8/bin/ffmpeg"), "").unwrap();
+        let found = find(&dir, &|name| name == "ffmpeg");
+        assert_eq!(found, Some(dir.join("ffmpeg-8/bin/ffmpeg")));
         assert_eq!(find(&dir, &|name| name == "missing"), None);
         remove(&dir);
     }
