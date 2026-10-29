@@ -38,6 +38,8 @@ StreamVault/            one crate, one device feature per build
 │   ├── player.rs       player controller (state + channel to player.js)
 │   ├── gui/            the views (home_view, search_view, details_view,
 │   │                   player_view) and their parts (navbar, poster)
+│   ├── i18n/           the interface text, one file per language (en, it),
+│   │                   chosen from the system or TV language
 │   ├── providers/      StreamingCommunity, RaiPlay, Aurora, AnimeUnity, models
 │   ├── search.rs  watch.rs  prefs.rs  time.rs
 │   ├── sync.rs         replica + sync loop against the Apps Script endpoint
@@ -1234,6 +1236,19 @@ Samsung installs use no external tool on either.
   outside Italy, and its homepages carry no `X-REALM-DPLAY` token, so videos of
   that realm cannot play.
 - Downloads stay a desktop feature.
+- The interface is English or Italian: it follows the system language (else
+  English), read with `sys-locale` (`navigator.languages` on the TV), until one
+  is picked in the navbar's language menu; the pick stays on that device
+  (`state/language.json` on computers, IndexedDB on TVs) and reloads the
+  catalogue, the open details and the search. StreamingCommunity's catalogue,
+  details and episodes follow it: every title and season page is read in that
+  language, and opening a title refreshes its name and plot from it. Until a
+  viewer picks an audio track, playback picks the interface language, then
+  English, else keeps the stream's default; a pick is kept as before. The TV
+  build, run in Chrome with each language as the browser's, showed home,
+  search, details and player in that language, and the menu switched it by
+  mouse and by remote keys and kept it across a reload; the Samsung's own
+  language has not been read yet.
 
 ---
 

@@ -2,7 +2,6 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-pub const FILE_MANAGER: &str = "File Explorer";
 pub const INSTALLER: &str = "StreamVault-install-windows-x64.exe";
 pub const HLS: Option<&str> = Some(include_str!("../../assets/js/hls.min.js"));
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;

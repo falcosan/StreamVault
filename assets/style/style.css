@@ -161,14 +161,15 @@ svg {
   display: flex;
 }
 
-.update-btn {
+.language {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  margin-left: 8px;
+}
+
+.language-btn,
+.update-btn {
   width: 32px;
   height: 32px;
-  margin-left: 8px;
   padding: 0;
   border: none;
   border-radius: 50%;
@@ -177,9 +178,38 @@ svg {
   cursor: pointer;
 }
 
+.language-btn:hover,
+.language-btn[aria-expanded="true"],
 .update-btn:hover {
   color: var(--accent);
   background: var(--surface2);
+}
+
+.language-btn {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+}
+
+.language-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 11;
+}
+
+.update-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 8px;
 }
 
 .update-btn.updating {
@@ -1064,7 +1094,7 @@ svg {
 }
 
 .player-control,
-.player-option {
+.menu-option {
   border: none;
   border-radius: 5px;
   font-size: 13px;
@@ -1098,14 +1128,11 @@ svg {
 }
 
 .player-control:hover,
-.player-option:hover {
+.menu-option:hover {
   background: rgba(255, 255, 255, 0.24);
 }
 
-.player-menu {
-  position: absolute;
-  left: 32px;
-  bottom: 108px;
+.menu {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1118,7 +1145,13 @@ svg {
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.6);
 }
 
-.player-menu-title {
+.player-menu {
+  position: absolute;
+  left: 32px;
+  bottom: 108px;
+}
+
+.menu-title {
   padding: 0 8px 4px;
   font-size: 11px;
   color: var(--text2);
@@ -1126,13 +1159,13 @@ svg {
   letter-spacing: 0.5px;
 }
 
-.player-option {
+.menu-option {
   padding: 7px 12px;
   text-align: left;
   background: transparent;
 }
 
-.player-option.active::after {
+.menu-option.active::after {
   content: " ✓";
 }
 
@@ -1572,8 +1605,9 @@ svg {
 .search-go:focus-visible,
 .continue-remove:focus-visible,
 .season-chip:focus-visible,
+.language-btn:focus-visible,
 .player-control:focus-visible,
-.player-option:focus-visible {
+.menu-option:focus-visible {
   outline: none;
   color: var(--accent-text);
   background: var(--accent);
@@ -1583,7 +1617,7 @@ svg {
 .season-chip:focus-visible,
 .btn-accent:focus-visible,
 .player-control:focus-visible,
-.player-option:focus-visible {
+.menu-option:focus-visible {
   transform: var(--lift);
 }
 

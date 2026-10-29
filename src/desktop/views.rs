@@ -1,8 +1,9 @@
 use super::download::{Download, Status};
-use super::{os, play_download, reveal};
+use super::{play_download, reveal};
 use crate::app::{AppState, Screen};
 use crate::gui::poster::card_background;
-use crate::gui::{BackButton, CLOSE_ICON, PLAY_ICON, UPDATE_ICON, count};
+use crate::gui::{BackButton, CLOSE_ICON, PLAY_ICON, UPDATE_ICON};
+use crate::i18n::{Text, text};
 use crate::providers::{Episode, MediaEntry};
 use dioxus::prelude::*;
 
@@ -17,23 +18,21 @@ pub fn EntryActions(entry: MediaEntry, season: Option<u32>, episode: Option<Epis
     let status = app.device.status(&entry, season, episode.as_ref());
     let progress = status.as_ref().map_or(0, percent);
     let state = status.as_ref().map_or("idle", phase);
+    let t = &text().desktop;
     let (label, glyph) = match &status {
-        None => ("Download".to_owned(), Some(DOWNLOAD_ICON)),
-        Some(Status::Queued) => ("Queued".to_owned(), None),
-        Some(Status::Downloading(percent)) => (format!("Downloading {percent}%"), None),
-        Some(Status::Muxing) => ("Finishing".to_owned(), None),
-        Some(Status::Completed) => ("Downloaded".to_owned(), Some(CHECK_ICON)),
-        Some(Status::Failed(_)) => ("Retry download".to_owned(), Some(UPDATE_ICON)),
+        None => (t.download.to_owned(), Some(DOWNLOAD_ICON)),
+        Some(Status::Queued) => (t.queued.to_owned(), None),
+        Some(Status::Downloading(percent)) => ((t.progress)(*percent), None),
+        Some(Status::Muxing) => (t.finishing.to_owned(), None),
+        Some(Status::Completed) => (t.downloaded.to_owned(), Some(CHECK_ICON)),
+        Some(Status::Failed(_)) => (t.retry.to_owned(), Some(UPDATE_ICON)),
     };
-    let noun = episode.as_ref().map_or_else(
-        || "this movie".to_owned(),
-        |e| format!("episode {}", e.number),
-    );
+    let number = episode.as_ref().map(|e| e.number);
     let action = match &status {
-        None => format!("Download {noun}"),
-        Some(Status::Completed) => format!("Play {noun}"),
-        Some(Status::Failed(_)) => format!("Retry the download of {noun}"),
-        Some(_) => format!("Show the download of {noun}"),
+        None => (t.download_this)(number),
+        Some(Status::Completed) => (t.play_this)(number),
+        Some(Status::Failed(_)) => (t.retry_this)(number),
+        Some(_) => (t.show_this)(number),
     };
     let compact = episode.is_some();
     let onclick = move |_| match &status {
@@ -78,13 +77,14 @@ pub fn DownloadsView() -> Element {
         .cloned()
         .collect();
     let size = ready.iter().filter_map(|d| d.size).sum();
-    let summary = summary(&active, ready.len(), size);
+    let t = text();
+    let summary = summary(t, &active, ready.len(), size);
     rsx! {
         div { class: "downloads-view",
             header { class: "dl-header",
                 BackButton {}
                 div { class: "dl-heading",
-                    h2 { class: "dl-title", "Downloads" }
+                    h2 { class: "dl-title", "{t.desktop.downloads}" }
                     if !downloads.is_empty() {
                         span { class: "dl-summary", "{summary}" }
                     }
@@ -93,22 +93,20 @@ pub fn DownloadsView() -> Element {
             if downloads.is_empty() {
                 div { class: "dl-empty",
                     span { class: "dl-empty-icon", dangerous_inner_html: DOWNLOAD_ICON }
-                    h3 { class: "dl-empty-title", "No downloads yet" }
-                    p { class: "dl-empty-text",
-                        "Download a movie or an episode from its page and watch it here, even offline."
-                    }
+                    h3 { class: "dl-empty-title", "{t.desktop.empty}" }
+                    p { class: "dl-empty-text", "{t.desktop.empty_hint}" }
                     button {
                         class: "btn-accent dl-empty-action",
                         onclick: move |_| app.navigate(Screen::Home),
-                        "Browse titles"
+                        "{t.desktop.browse}"
                     }
                 }
             }
             if !active.is_empty() {
-                DownloadSection { title: "Downloading", downloads: active }
+                DownloadSection { title: t.desktop.active, downloads: active }
             }
             if !ready.is_empty() {
-                DownloadSection { title: "Ready to watch", downloads: ready }
+                DownloadSection { title: t.desktop.ready_to_watch, downloads: ready }
             }
         }
     }
@@ -138,6 +136,7 @@ fn DownloadItem(download: Download) -> Element {
     let background = card_background(name, thumbnail(&download));
     let ready = download.status == Status::Completed;
     let id = download.id;
+    let t = text();
     let play = ready.then(|| download.clone());
     rsx! {
         div { class: "dl-item {phase(&download.status)}",
@@ -145,7 +144,7 @@ fn DownloadItem(download: Download) -> Element {
                 class: "dl-thumb",
                 style: "{background}",
                 disabled: !ready,
-                aria_label: "Play {title}",
+                aria_label: (t.desktop.play_title)(&title),
                 onclick: move |_| {
                     if let Some(download) = play.clone() {
                         play_download(app, download);
@@ -157,18 +156,18 @@ fn DownloadItem(download: Download) -> Element {
             }
             div { class: "dl-info",
                 span { class: "dl-name", "{name}" }
-                span { class: "dl-detail", "{detail(&download)}" }
+                span { class: "dl-detail", "{detail(t, &download)}" }
                 div { class: "dl-status",
                     {match &download.status {
                         Status::Queued => rsx! {
                             div { class: "dl-bar", aria_hidden: true }
-                            span { class: "dl-state", "Waiting to start" }
+                            span { class: "dl-state", "{t.desktop.waiting}" }
                         },
                         Status::Downloading(percent) => rsx! {
                             div {
                                 class: "dl-bar",
                                 role: "progressbar",
-                                aria_label: "{title} download progress",
+                                aria_label: (t.desktop.progress_of)(&title),
                                 aria_valuemin: 0,
                                 aria_valuemax: 100,
                                 aria_valuenow: "{percent}",
@@ -180,19 +179,19 @@ fn DownloadItem(download: Download) -> Element {
                             div {
                                 class: "dl-bar indeterminate",
                                 role: "progressbar",
-                                aria_label: "{title} finishing",
+                                aria_label: (t.desktop.finishing_of)(&title),
                             }
-                            span { class: "dl-state", "Finishing" }
+                            span { class: "dl-state", "{t.desktop.finishing}" }
                         },
                         Status::Completed => rsx! {
                             span { class: "dl-state",
                                 span { class: "dl-state-icon", dangerous_inner_html: CHECK_ICON }
-                                "{ready_label(download.size)}"
+                                "{ready_label(t, download.size)}"
                             }
                         },
                         Status::Failed(error) => rsx! {
                             span { class: "dl-state", title: "{error}",
-                                "Download failed: {error.lines().next().unwrap_or_default()}"
+                                "{(t.desktop.failed)(error.lines().next().unwrap_or_default())}"
                             }
                         },
                     }}
@@ -205,15 +204,15 @@ fn DownloadItem(download: Download) -> Element {
                         rsx! {
                             button {
                                 class: "dl-action",
-                                aria_label: "Show {title} in {os::FILE_MANAGER}",
-                                title: "Show in {os::FILE_MANAGER}",
+                                aria_label: (t.desktop.reveal_title)(&title),
+                                title: t.desktop.reveal,
                                 onclick: move |_| reveal(app, shown.clone()),
                                 span { class: "dl-glyph", dangerous_inner_html: FOLDER_ICON }
                             }
                             button {
                                 class: "dl-action danger",
-                                aria_label: "Delete {title}",
-                                title: "Delete",
+                                aria_label: (t.desktop.delete_title)(&title),
+                                title: t.desktop.delete,
                                 onclick: move |_| app.device.delete_download(app, deleted.clone()),
                                 span { class: "dl-glyph", dangerous_inner_html: TRASH_ICON }
                             }
@@ -224,8 +223,8 @@ fn DownloadItem(download: Download) -> Element {
                         rsx! {
                             button {
                                 class: "dl-action",
-                                aria_label: "Retry {title}",
-                                title: "Retry",
+                                aria_label: (t.desktop.retry_title)(&title),
+                                title: t.retry,
                                 onclick: move |_| {
                                     app.device.download(
                                         app,
@@ -238,8 +237,8 @@ fn DownloadItem(download: Download) -> Element {
                             }
                             button {
                                 class: "dl-action danger",
-                                aria_label: "Remove {title}",
-                                title: "Remove",
+                                aria_label: (t.desktop.remove_title)(&title),
+                                title: t.desktop.remove,
                                 onclick: move |_| app.device.dismiss(id),
                                 span { class: "dl-glyph", dangerous_inner_html: CLOSE_ICON }
                             }
@@ -248,8 +247,8 @@ fn DownloadItem(download: Download) -> Element {
                     Status::Queued | Status::Downloading(_) => rsx! {
                         button {
                             class: "dl-action danger",
-                            aria_label: "Cancel {title}",
-                            title: "Cancel",
+                            aria_label: (t.desktop.cancel_title)(&title),
+                            title: t.desktop.cancel,
                             onclick: move |_| app.device.dismiss(id),
                             span { class: "dl-glyph", dangerous_inner_html: CLOSE_ICON }
                         }
@@ -288,48 +287,47 @@ fn thumbnail(download: &Download) -> Option<&str> {
         .or(download.entry.image_url.as_deref())
 }
 
-fn detail(download: &Download) -> String {
+fn detail(t: &Text, download: &Download) -> String {
     match (download.season, &download.episode) {
         (Some(season), Some(episode)) => episode.label(season),
-        _ => download
-            .entry
-            .year
-            .as_ref()
-            .map_or_else(|| "Movie".to_owned(), |year| format!("Movie · {year}")),
+        _ => download.entry.year.as_ref().map_or_else(
+            || t.movie.to_owned(),
+            |year| format!("{} · {year}", t.movie),
+        ),
     }
 }
 
-fn size_label(bytes: u64) -> String {
+fn size_label(t: &Text, bytes: u64) -> String {
     let megabytes = bytes.saturating_add(500_000) / 1_000_000;
     if megabytes < 1000 {
         return format!("{megabytes} MB");
     }
     let tenths = bytes.saturating_add(50_000_000) / 100_000_000;
-    format!("{}.{} GB", tenths / 10, tenths % 10)
+    format!("{}{}{} GB", tenths / 10, t.decimal, tenths % 10)
 }
 
-fn ready_label(size: Option<u64>) -> String {
+fn ready_label(t: &Text, size: Option<u64>) -> String {
     match size {
-        Some(bytes) => format!("Ready · {}", size_label(bytes)),
-        None => "Ready".to_owned(),
+        Some(bytes) => format!("{} · {}", t.desktop.ready, size_label(t, bytes)),
+        None => t.desktop.ready.to_owned(),
     }
 }
 
-fn summary(active: &[Download], ready: usize, size: u64) -> String {
+fn summary(t: &Text, active: &[Download], ready: usize, size: u64) -> String {
     let running = active.iter().filter(|d| d.status.is_active()).count();
     let failed = active.len() - running;
     let mut parts = Vec::new();
     if running > 0 {
-        parts.push(format!("{running} downloading"));
+        parts.push((t.desktop.running)(running));
     }
     if failed > 0 {
-        parts.push(format!("{failed} failed"));
+        parts.push((t.desktop.failed_count)(failed));
     }
     if ready > 0 {
-        parts.push(format!("{} ready", count(ready, "title")));
+        parts.push((t.desktop.titles_ready)(ready));
     }
     if size > 0 {
-        parts.push(size_label(size));
+        parts.push(size_label(t, size));
     }
     parts.join(" · ")
 }
@@ -338,6 +336,7 @@ fn summary(active: &[Download], ready: usize, size: u64) -> String {
 mod tests {
     use super::super::config::AppConfig;
     use super::*;
+    use crate::i18n::Lang;
 
     fn download(status: Status) -> Download {
         Download {
@@ -356,25 +355,28 @@ mod tests {
 
     #[test]
     fn sizes_read_like_finder() {
-        assert_eq!(size_label(734_003_200), "734 MB");
-        assert_eq!(size_label(999_400_000), "999 MB");
-        assert_eq!(size_label(999_600_000), "1.0 GB");
-        assert_eq!(size_label(1_610_612_736), "1.6 GB");
-        assert_eq!(ready_label(Some(1_610_612_736)), "Ready · 1.6 GB");
-        assert_eq!(ready_label(None), "Ready");
+        let en = Lang::En.text();
+        assert_eq!(size_label(en, 734_003_200), "734 MB");
+        assert_eq!(size_label(en, 999_400_000), "999 MB");
+        assert_eq!(size_label(en, 999_600_000), "1.0 GB");
+        assert_eq!(size_label(en, 1_610_612_736), "1.6 GB");
+        assert_eq!(ready_label(en, Some(1_610_612_736)), "Ready · 1.6 GB");
+        assert_eq!(ready_label(en, None), "Ready");
+        assert_eq!(size_label(Lang::It.text(), 1_610_612_736), "1,6 GB");
     }
 
     #[test]
     fn details_name_the_episode_or_the_movie_year() {
+        let en = Lang::En.text();
         let mut item = download(Status::Queued);
-        assert_eq!(detail(&item), "Movie");
+        assert_eq!(detail(en, &item), "Movie");
         item.entry.year = Some("2010".into());
-        assert_eq!(detail(&item), "Movie · 2010");
+        assert_eq!(detail(en, &item), "Movie · 2010");
         item.season = Some(2);
         item.episode = Some(Episode::numbered(5, "Mandala"));
-        assert_eq!(detail(&item), "S02E05 - Mandala");
+        assert_eq!(detail(en, &item), "S02E05 - Mandala");
         item.episode = Some(Episode::numbered(5, ""));
-        assert_eq!(detail(&item), "S02E05");
+        assert_eq!(detail(en, &item), "S02E05");
     }
 
     #[test]
@@ -384,11 +386,16 @@ mod tests {
             download(Status::Queued),
             download(Status::Failed("boom".into())),
         ];
+        let en = Lang::En.text();
         assert_eq!(
-            summary(&active, 3, 1_610_612_736),
+            summary(en, &active, 3, 1_610_612_736),
             "2 downloading · 1 failed · 3 titles ready · 1.6 GB"
         );
-        assert_eq!(summary(&[], 1, 0), "1 title ready");
+        assert_eq!(summary(en, &[], 1, 0), "1 title ready");
+        assert_eq!(
+            summary(Lang::It.text(), &active, 1, 0),
+            "2 in download · 1 non riuscito · 1 titolo pronto"
+        );
     }
 
     #[test]

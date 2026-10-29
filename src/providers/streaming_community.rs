@@ -1,7 +1,8 @@
 use super::{
-    Episode, Http, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl,
-    fetch_json, fetch_text, fetch_vixcloud, items, non_blank, uint, year,
+    Details, Episode, Http, MediaEntry, MediaType, Provider, ProviderError, ProviderResult,
+    StreamUrl, fetch_json, fetch_text, fetch_vixcloud, items, non_blank, uint, year,
 };
+use crate::i18n::Lang;
 use async_trait::async_trait;
 use dioxus::logger::tracing::warn;
 use futures::future::join_all;
@@ -11,8 +12,6 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
-const DEFAULT_LANG: &str = "it";
-const LANGS: [&str; 2] = ["it", "en"];
 const IMAGE_TYPES: [&str; 4] = ["poster", "cover", "cover_mobile", "background"];
 const BACKDROP_TYPES: [&str; 2] = ["background", "cover"];
 const CATALOG_SIZE: usize = 100;
@@ -24,6 +23,7 @@ pub struct StreamingCommunity {
     client: Http,
     base: String,
     cdn: String,
+    langs: [&'static str; 2],
     browse: Mutex<Option<Browse>>,
 }
 
@@ -60,11 +60,15 @@ impl Browse {
 }
 
 impl StreamingCommunity {
-    pub fn new(client: Http, base: String) -> Self {
+    pub fn new(client: Http, base: String, lang: Lang) -> Self {
         Self {
             client,
             cdn: base.replacen("://", "://cdn.", 1),
             base,
+            langs: match lang {
+                Lang::It => ["it", "en"],
+                Lang::En => ["en", "it"],
+            },
             browse: Mutex::new(None),
         }
     }
@@ -74,16 +78,8 @@ impl StreamingCommunity {
         data_page(&fetch_text(request).await?)
     }
 
-    fn title_path(entry: &MediaEntry) -> String {
-        format!("/{}/titles/{}-{}", Self::lang(entry), entry.id, entry.slug)
-    }
-
-    fn lang(entry: &MediaEntry) -> &str {
-        if entry.language.is_empty() {
-            DEFAULT_LANG
-        } else {
-            &entry.language
-        }
+    fn title_path(&self, entry: &MediaEntry) -> String {
+        format!("/{}/titles/{}-{}", self.langs[0], entry.id, entry.slug)
     }
 
     fn titles<'a>(
@@ -149,13 +145,13 @@ impl StreamingCommunity {
         let mut entries: Vec<MediaEntry> = self
             .titles(
                 items(&props["sliders"]).flat_map(|s| items(&s["titles"])),
-                DEFAULT_LANG,
+                self.langs[0],
             )
             .filter(|e| seen.insert(e.id))
             .collect();
         if entries.is_empty() {
             entries = self
-                .titles(items(&props["titles"]), DEFAULT_LANG)
+                .titles(items(&props["titles"]), self.langs[0])
                 .filter(|e| seen.insert(e.id))
                 .collect();
         }
@@ -261,13 +257,13 @@ impl Provider for StreamingCommunity {
     }
 
     async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>> {
-        let pages = join_all(LANGS.map(|lang| async move {
+        let pages = join_all(self.langs.map(|lang| async move {
             self.page(&format!("/{lang}/search"), &[("q", query)]).await
         }))
         .await;
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
-        for (lang, page) in LANGS.into_iter().zip(pages) {
+        for (lang, page) in self.langs.into_iter().zip(pages) {
             match page {
                 Ok(page) => entries.extend(
                     self.titles(items(&page["props"]["titles"]), lang)
@@ -280,12 +276,27 @@ impl Provider for StreamingCommunity {
     }
 
     async fn seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<u32>> {
-        let page = self.page(&Self::title_path(entry), &[]).await?;
-        Ok(parse_seasons(&page))
+        Ok(self.details(entry).await?.seasons)
+    }
+
+    async fn details(&self, entry: &MediaEntry) -> ProviderResult<Details> {
+        let page = self.page(&self.title_path(entry), &[]).await?;
+        let title = self.parse_title(&page["props"]["title"], self.langs[0]);
+        Ok(Details {
+            entry: title.map_or_else(
+                || entry.clone(),
+                |title| MediaEntry {
+                    provider: entry.provider,
+                    provider_name: entry.provider_name.clone(),
+                    ..title
+                },
+            ),
+            seasons: parse_seasons(&page),
+        })
     }
 
     async fn episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>> {
-        let path = format!("{}/season-{season}", Self::title_path(entry));
+        let path = format!("{}/season-{season}", self.title_path(entry));
         let page = self.page(&path, &[]).await?;
         Ok(self.parse_episodes(&page))
     }
@@ -296,7 +307,7 @@ impl Provider for StreamingCommunity {
         _season: Option<u32>,
         episode: Option<&Episode>,
     ) -> ProviderResult<StreamUrl> {
-        let lang = Self::lang(entry);
+        let lang = self.langs[0];
         fetch_vixcloud(&self.client, async || {
             let mut iframe = self
                 .client
@@ -314,11 +325,12 @@ impl Provider for StreamingCommunity {
     }
 
     async fn catalog(&self) -> ProviderResult<Vec<MediaEntry>> {
-        let page = self.page("", &[]).await?;
+        let page = self.page(&format!("/{}", self.langs[0]), &[]).await?;
         let mut seen = HashSet::new();
         let mut entries = self.home(&page, &mut seen);
         let genres = genres(&page);
-        let batches = LANGS
+        let batches = self
+            .langs
             .into_iter()
             .flat_map(|lang| slider_requests(&genres).map(move |sliders| (lang, sliders)));
         for (lang, sliders) in batches {
@@ -349,14 +361,14 @@ impl Provider for StreamingCommunity {
             else {
                 return Ok(Vec::new());
             };
-            let page = page.to_string();
-            let mut query = vec![("lang", DEFAULT_LANG), ("page", page.as_str())];
+            let (lang, page) = (self.langs[0], page.to_string());
+            let mut query = vec![("lang", lang), ("page", page.as_str())];
             if let Some(genre) = &genre {
                 query.push(("g", genre.as_str()));
             }
             let json = fetch_json(
                 self.client
-                    .get(format!("{}/{DEFAULT_LANG}/browse/{path}", self.base))
+                    .get(format!("{}/{lang}/browse/{path}", self.base))
                     .query(&query)
                     .header("accept", "application/json")
                     .header("x-requested-with", "XMLHttpRequest"),
@@ -371,8 +383,7 @@ impl Provider for StreamingCommunity {
                 }
             });
             let json = json?;
-            let entries: Vec<MediaEntry> =
-                self.titles(items(&json["titles"]), DEFAULT_LANG).collect();
+            let entries: Vec<MediaEntry> = self.titles(items(&json["titles"]), lang).collect();
             if !entries.is_empty() {
                 return Ok(entries);
             }
@@ -390,6 +401,7 @@ mod tests {
             client: Http::new(std::time::Duration::from_secs(1)),
             base: "https://streamingcommunity.test".into(),
             cdn: "https://cdn.streamingcommunity.test".into(),
+            langs: ["it", "en"],
             browse: Mutex::new(None),
         }
     }
@@ -403,6 +415,7 @@ mod tests {
         let provider = StreamingCommunity::new(
             Http::new(std::time::Duration::from_secs(1)),
             "https://streamingcommunity.test".into(),
+            Lang::It,
         );
         assert_eq!(provider.cdn, "https://cdn.streamingcommunity.test");
     }
@@ -521,7 +534,7 @@ mod tests {
         let mut seen = HashSet::new();
         let entries = provider().home(&page, &mut seen);
         assert_eq!(ids(&entries), [1, 2, 3]);
-        assert!(entries.iter().all(|e| e.language == DEFAULT_LANG));
+        assert!(entries.iter().all(|e| e.language == "it"));
         assert_eq!(seen, HashSet::from([1, 2, 3]));
     }
 
@@ -559,21 +572,62 @@ mod tests {
         assert_eq!(
             paths,
             [
-                "/",
+                "/it",
                 "/it/browse/trending?lang=it&page=1",
                 "/it/browse/latest?lang=it&page=1"
             ]
         );
     }
 
-    #[test]
-    fn title_path_defaults_language() {
+    #[tokio::test]
+    async fn an_english_interface_reads_english_titles_first() {
+        let (base, requests) = serve(&[(
+            200,
+            r#"<div id="app" data-page='{"props":{"titles":[{"id":1,"name":"A"}]}}'></div>"#,
+        )])
+        .await;
+        let provider =
+            StreamingCommunity::new(Http::new(std::time::Duration::from_secs(1)), base, Lang::En);
+        let entries = provider.catalog().await.unwrap();
+        assert_eq!(entries[0].language, "en");
+        assert_eq!(requests.lock().unwrap()[0].split(' ').nth(1), Some("/en"));
+    }
+
+    #[tokio::test]
+    async fn details_come_in_the_interface_language_and_keep_the_provider() {
+        let (base, requests) = serve(&[(
+            200,
+            r#"<div id="app" data-page='{"props":{"title":{"id":5,"name":"Lupin","slug":"x","type":"tv","plot":"Inspired by","seasons":[{"number":2},{"number":1}]}}}'></div>"#,
+        )])
+        .await;
+        let provider = StreamingCommunity {
+            base,
+            langs: ["en", "it"],
+            ..provider()
+        };
         let entry = MediaEntry {
             id: 5,
             slug: "x".into(),
+            provider: 3,
+            provider_name: "StreamingCommunity".into(),
+            description: Some("Ispirandosi".into()),
             ..Default::default()
         };
-        assert_eq!(StreamingCommunity::title_path(&entry), "/it/titles/5-x");
+        let details = provider.details(&entry).await.unwrap();
+        assert_eq!(details.seasons, [1, 2]);
+        assert_eq!(
+            (
+                details.entry.description.as_deref(),
+                details.entry.language.as_str()
+            ),
+            (Some("Inspired by"), "en")
+        );
+        assert_eq!(details.entry.key(), entry.key());
+        assert_eq!(details.entry.provider_name, entry.provider_name);
+        assert_eq!(
+            requests.lock().unwrap()[0].split(' ').nth(1),
+            Some("/en/titles/5-x")
+        );
     }
 
     #[test]

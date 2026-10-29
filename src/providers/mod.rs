@@ -6,6 +6,7 @@ mod streaming_community;
 
 pub use models::*;
 
+use crate::i18n::Lang;
 use crate::time::sleep;
 use animeunity::AnimeUnity;
 use async_trait::async_trait;
@@ -71,6 +72,17 @@ pub trait Provider {
     fn name(&self) -> &'static str;
     async fn search(&self, query: &str) -> ProviderResult<Vec<MediaEntry>>;
     async fn seasons(&self, entry: &MediaEntry) -> ProviderResult<Vec<u32>>;
+    async fn details(&self, entry: &MediaEntry) -> ProviderResult<Details> {
+        let seasons = if entry.is_movie() {
+            Vec::new()
+        } else {
+            self.seasons(entry).await?
+        };
+        Ok(Details {
+            entry: entry.clone(),
+            seasons,
+        })
+    }
     async fn episodes(&self, entry: &MediaEntry, season: u32) -> ProviderResult<Vec<Episode>>;
     async fn stream(
         &self,
@@ -97,17 +109,18 @@ type Domains = HashMap<String, Domain>;
 pub struct Providers(Arc<[Arc<dyn Provider>]>);
 
 impl Providers {
-    pub async fn load(timeout: Duration) -> Self {
+    pub async fn load(timeout: Duration, lang: Lang) -> Self {
         let http = Http::new(timeout);
         let domains = domains(&http, DOMAINS_URL).await;
-        Self::with(http, &domains)
+        Self::with(http, &domains, lang)
     }
 
-    fn with(shared: Http, domains: &Domains) -> Self {
+    fn with(shared: Http, domains: &Domains, lang: Lang) -> Self {
         let list: Vec<Arc<dyn Provider>> = vec![
             Arc::new(StreamingCommunity::new(
                 shared.clone(),
                 domain(domains, "streamingcommunity"),
+                lang,
             )),
             Arc::new(RaiPlay::new(shared.clone())),
             Arc::new(Aurora::new(shared.clone(), "nove", "Nove")),
@@ -475,7 +488,8 @@ mod tests {
 
     #[test]
     fn provider_order_is_stable_because_indices_are_persisted() {
-        let names: Vec<_> = Providers::with(Http::new(Duration::from_secs(1)), &built_in_domains())
+        let http = Http::new(Duration::from_secs(1));
+        let names: Vec<_> = Providers::with(http, &built_in_domains(), Lang::En)
             .0
             .iter()
             .map(|p| p.name())

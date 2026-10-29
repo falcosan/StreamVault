@@ -1,6 +1,7 @@
 use super::poster::{PosterCard, card_background};
 use super::{CLOSE_ICON, LOGO};
 use crate::app::AppState;
+use crate::i18n::text;
 use crate::watch::WatchItem;
 use dioxus::prelude::*;
 
@@ -9,10 +10,11 @@ pub fn HomeView() -> Element {
     let app = use_context::<AppState>();
     let catalog = app.catalog.items.read();
     let watching = app.watch.read();
+    let t = text();
 
     if catalog.is_empty() && *app.catalog.loading.read() {
         return rsx! {
-            div { class: "center-msg", role: "progressbar", aria_label: "Loading",
+            div { class: "center-msg", role: "progressbar", aria_label: t.loading,
                 div { class: "splash-logo", dangerous_inner_html: LOGO }
             }
         };
@@ -23,7 +25,7 @@ pub fn HomeView() -> Element {
             if !watching.is_empty() {
                 section { class: "continue-section",
                     div { class: "section-header",
-                        h2 { class: "section-title", "Continue Watching" }
+                        h2 { class: "section-title", "{t.continue_watching}" }
                     }
                     div { class: "continue-row",
                         for item in watching.iter() {
@@ -37,12 +39,12 @@ pub fn HomeView() -> Element {
             }
             if catalog.is_empty() {
                 div { class: "center-msg compact",
-                    span { class: "empty-msg", "No media available" }
+                    span { class: "empty-msg", "{t.no_media}" }
                     button {
                         class: "btn-accent",
                         "data-focus": "retry",
                         onclick: move |_| app.reload(),
-                        "Retry"
+                        "{t.retry}"
                     }
                 }
             }
@@ -52,7 +54,7 @@ pub fn HomeView() -> Element {
                 }
             }
             if *app.catalog.loading_more.read() {
-                div { class: "loading-msg", role: "status", "Loading more..." }
+                div { class: "loading-msg", role: "status", "{t.loading_more}" }
             }
         }
     }
@@ -89,7 +91,7 @@ fn ContinueCard(item: WatchItem) -> Element {
             }
             button {
                 class: "continue-remove",
-                aria_label: "Remove {name} from Continue Watching",
+                aria_label: (text().remove_from_continue_watching)(&name),
                 onclick: move |_| app.remove_watch(key),
                 span { class: "close-icon", dangerous_inner_html: CLOSE_ICON }
             }

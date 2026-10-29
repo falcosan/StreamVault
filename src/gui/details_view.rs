@@ -1,6 +1,7 @@
 use super::poster::{badge, format_score, poster_color};
-use super::{BackButton, PLAY_ICON, count};
+use super::{BackButton, PLAY_ICON};
 use crate::app::AppState;
+use crate::i18n::{Text, text};
 use crate::platform::EntryActions;
 use crate::providers::{Episode, MediaEntry};
 use crate::watch::{WatchItem, first_episode};
@@ -11,9 +12,10 @@ const SKELETON_ROWS: usize = 3;
 #[component]
 pub fn DetailsView(entry: MediaEntry) -> Element {
     let app = use_context::<AppState>();
+    let t = text();
     let movie = entry.is_movie();
-    let (tone, label) = badge(&entry);
-    let score = entry.score.as_deref().map(format_score);
+    let (tone, label) = badge(t, &entry);
+    let score = entry.score.as_deref().map(|score| format_score(t, score));
     let seasons = app.details.seasons.read().len();
     let resume = app
         .watch
@@ -51,7 +53,7 @@ pub fn DetailsView(entry: MediaEntry) -> Element {
                             span { class: "hero-fact hero-score", "★ {score}" }
                         }
                         if seasons > 0 {
-                            span { class: "hero-fact", "{count(seasons, \"Season\")}" }
+                            span { class: "hero-fact", "{(t.season_count)(seasons)}" }
                         }
                         span { class: "hero-fact", "{entry.provider_name}" }
                     }
@@ -87,7 +89,7 @@ fn PlayButton(entry: MediaEntry, resume: Option<WatchItem>) -> Element {
         .season
         .read()
         .zip(first_episode(&app.details.episodes.read()).cloned());
-    let (label, ready) = play_action(entry.is_movie(), resume.as_ref(), first.as_ref());
+    let (label, ready) = play_action(text(), entry.is_movie(), resume.as_ref(), first.as_ref());
     rsx! {
         button {
             class: "btn-accent hero-play",
@@ -113,7 +115,7 @@ fn Resume(item: WatchItem) -> Element {
             div { class: "resume-bar",
                 span { style: "width: {item.progress_pct():.1}%;" }
             }
-            span { "{runtime(minutes)} left" }
+            span { "{(text().time_left)(&runtime(minutes))}" }
         }
     }
 }
@@ -126,6 +128,7 @@ fn Episodes(entry: MediaEntry, resume: Option<WatchItem>) -> Element {
     let episodes = app.details.episodes.read();
     let selected = *app.details.season.read();
     let season = selected.unwrap_or(1);
+    let t = text();
     let progress = |episode: &Episode| {
         resume
             .as_ref()
@@ -136,9 +139,9 @@ fn Episodes(entry: MediaEntry, resume: Option<WatchItem>) -> Element {
     rsx! {
         section { class: "episodes",
             div { class: "episodes-head",
-                h2 { class: "section-title", "Episodes" }
+                h2 { class: "section-title", "{t.episodes}" }
                 if seasons.len() > 1 {
-                    div { class: "season-chips", role: "group", aria_label: "Seasons",
+                    div { class: "season-chips", role: "group", aria_label: t.seasons,
                         for &number in seasons.iter() {
                             button {
                                 key: "{number}",
@@ -150,12 +153,12 @@ fn Episodes(entry: MediaEntry, resume: Option<WatchItem>) -> Element {
                                         app.select_season(number);
                                     }
                                 },
-                                "Season {number}"
+                                "{(t.season)(number)}"
                             }
                         }
                     }
                 } else if let Some(number) = selected {
-                    span { class: "season-label", "Season {number}" }
+                    span { class: "season-label", "{(t.season)(number)}" }
                 }
             }
             if episodes.is_empty() && loading {
@@ -171,7 +174,7 @@ fn Episodes(entry: MediaEntry, resume: Option<WatchItem>) -> Element {
                     }
                 }
             } else if episodes.is_empty() {
-                p { class: "hint", "No episodes available" }
+                p { class: "hint", "{t.no_episodes}" }
             } else {
                 div { class: "episode-list",
                     for episode in episodes.iter() {
@@ -192,9 +195,10 @@ fn Episodes(entry: MediaEntry, resume: Option<WatchItem>) -> Element {
 #[component]
 fn EpisodeRow(entry: MediaEntry, season: u32, episode: Episode, progress: Option<f64>) -> Element {
     let app = use_context::<AppState>();
+    let t = text();
     let number = episode.number;
     let title = if episode.name.is_empty() {
-        format!("Episode {number}")
+        (t.episode)(number)
     } else {
         episode.name.clone()
     };
@@ -208,7 +212,7 @@ fn EpisodeRow(entry: MediaEntry, season: u32, episode: Episode, progress: Option
             button {
                 class: "episode",
                 "data-focus": "episode-{season}-{number}",
-                aria_label: "Play episode {number}: {title}",
+                aria_label: (t.play_episode)(number, &title),
                 onclick: move |_| app.play_episode(season, play.clone()),
                 span { class: "episode-thumb",
                     if let Some(url) = &episode.image_url {
@@ -237,14 +241,15 @@ fn EpisodeRow(entry: MediaEntry, season: u32, episode: Episode, progress: Option
 }
 
 fn play_action(
+    t: &Text,
     movie: bool,
     resume: Option<&WatchItem>,
     first: Option<&(u32, Episode)>,
 ) -> (String, bool) {
     let verb = if resume.is_some_and(WatchItem::started) {
-        "Resume"
+        t.resume
     } else {
-        "Play"
+        t.play
     };
     let target = match resume {
         Some(item) => item.season.zip(item.episode.as_ref()),
@@ -268,24 +273,27 @@ fn runtime(minutes: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Lang;
     use crate::watch::start_of;
 
     #[test]
     fn play_waits_for_the_first_episode_of_a_series() {
-        assert_eq!(play_action(false, None, None), ("Play".into(), false));
+        let en = Lang::En.text();
+        assert_eq!(play_action(en, false, None, None), ("Play".into(), false));
         assert_eq!(
-            play_action(false, None, Some(&(1, Episode::numbered(1, "")))),
+            play_action(en, false, None, Some(&(1, Episode::numbered(1, "")))),
             ("Play S01E01".into(), true)
         );
-        assert_eq!(play_action(true, None, None), ("Play".into(), true));
+        assert_eq!(play_action(en, true, None, None), ("Play".into(), true));
     }
 
     #[test]
     fn resume_targets_the_saved_episode_once_started() {
+        let en = Lang::En.text();
         let first = (1, Episode::numbered(1, ""));
         let queued = start_of(MediaEntry::default(), 2, Episode::numbered(6, ""));
         assert_eq!(
-            play_action(false, Some(&queued), Some(&first)),
+            play_action(en, false, Some(&queued), Some(&first)),
             ("Play S02E06".into(), true)
         );
         let started = WatchItem {
@@ -293,7 +301,7 @@ mod tests {
             ..queued
         };
         assert_eq!(
-            play_action(false, Some(&started), None),
+            play_action(en, false, Some(&started), None),
             ("Resume S02E06".into(), true)
         );
         let movie = WatchItem {
@@ -302,7 +310,7 @@ mod tests {
             ..started
         };
         assert_eq!(
-            play_action(true, Some(&movie), None),
+            play_action(en, true, Some(&movie), None),
             ("Resume".into(), true)
         );
     }

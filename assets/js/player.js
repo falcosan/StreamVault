@@ -16,6 +16,13 @@ const pick = (tracks, lang) => {
     exact >= 0 ? exact : tracks.findIndex((t) => describe(t).includes(wanted));
   return Math.max(index, 0);
 };
+const primary = (language) => normalize(language).split(/[-_]/)[0];
+const spoken = (tracks, languages) =>
+  languages
+    .map((codes) =>
+      tracks.findIndex((t) => codes.includes(primary(t.language))),
+    )
+    .find((index) => index >= 0) ?? -1;
 
 const buffering = (video, started) =>
   video.paused
@@ -68,10 +75,13 @@ function hlsPlayer(hls) {
   };
 }
 
-function applyAudio(player, prefs) {
+function applyAudio(player, prefs, languages) {
   const audio = player.audio().map(track);
-  if (prefs.audio_lang && audio.length > 1)
-    player.selectAudio(pick(audio, prefs.audio_lang));
+  if (audio.length < 2) return;
+  const index = prefs.audio_lang
+    ? pick(audio, prefs.audio_lang)
+    : spoken(audio, languages);
+  if (index >= 0) player.selectAudio(index);
 }
 
 function applySubtitles(player, prefs) {
@@ -82,9 +92,10 @@ function applySubtitles(player, prefs) {
     );
 }
 
-function attach(video, url, start, prefs, send) {
+function attach(video, url, start, prefs, languages, send) {
   let started = false;
   let player;
+  const chosen = new Set();
   const status = () =>
     send({
       type: "status",
@@ -137,6 +148,7 @@ function attach(video, url, start, prefs, send) {
       stop();
     },
     select: (menu, index) => {
+      chosen.add(menu);
       if (menu === "audio") player.selectAudio(index);
       else player.selectSubtitle(index);
       tracks();
@@ -147,8 +159,8 @@ function attach(video, url, start, prefs, send) {
   if (PROGRESSIVE.test(url.split(/[?#]/)[0]) || !window.Hls?.isSupported()) {
     player = nativePlayer(video);
     const refresh = () => {
-      applyAudio(player, prefs);
-      applySubtitles(player, prefs);
+      if (!chosen.has("audio")) applyAudio(player, prefs, languages);
+      if (!chosen.has("subtitles")) applySubtitles(player, prefs);
       tracks();
     };
     const lists = [video.audioTracks, video.textTracks].filter(Boolean);
@@ -177,11 +189,11 @@ function attach(video, url, start, prefs, send) {
   player = hlsPlayer(hls);
   let recovered = false;
   hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
-    applyAudio(player, prefs);
+    if (!chosen.has("audio")) applyAudio(player, prefs, languages);
     tracks();
   });
   hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => {
-    applySubtitles(player, prefs);
+    if (!chosen.has("subtitles")) applySubtitles(player, prefs);
     tracks();
   });
   for (const event of [
@@ -228,7 +240,15 @@ async function control(channel) {
       const send = (event) =>
         channel.send({ ...event, generation: command.generation });
       session =
-        video && attach(video, command.url, command.start, command.prefs, send);
+        video &&
+        attach(
+          video,
+          command.url,
+          command.start,
+          command.prefs,
+          command.languages,
+          send,
+        );
       continue;
     }
     if (command.type === "detach") {

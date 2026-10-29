@@ -35,6 +35,11 @@ pub struct Episode {
     pub description: Option<String>,
 }
 
+pub struct Details {
+    pub entry: MediaEntry,
+    pub seasons: Vec<u32>,
+}
+
 pub struct StreamUrl {
     pub url: String,
     #[cfg(feature = "desktop")]

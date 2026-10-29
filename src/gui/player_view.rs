@@ -1,5 +1,6 @@
-use super::{BackButton, PLAY_ICON};
+use super::{BackButton, Choice, PLAY_ICON, Picker};
 use crate::app::{AppState, Playback};
+use crate::i18n::text;
 use crate::platform::focus;
 use crate::player::{Menu, OSD_SECONDS, SEEK_SECONDS, clock, offset_label};
 use dioxus::prelude::*;
@@ -31,12 +32,13 @@ pub fn PlayerView() -> Element {
     let menu = *player.menu.read();
     let pinned = status.paused || menu.is_some();
     let list = player.tracks.read();
+    let t = text();
     let audio = list
         .current(Menu::Audio)
-        .map_or_else(|| "Default".into(), |t| t.name());
+        .map_or_else(|| t.default_track.into(), |track| track.name(t));
     let subtitles = list
         .current(Menu::Subtitles)
-        .map_or_else(|| "Off".into(), |t| t.name());
+        .map_or_else(|| t.off.into(), |track| track.name(t));
 
     rsx! {
         div {
@@ -62,7 +64,7 @@ pub fn PlayerView() -> Element {
                 Video { key: "{url}", url, start, tracks }
             }
             if loading {
-                div { class: "player-spinner", role: "progressbar", aria_label: "Loading" }
+                div { class: "player-spinner", role: "progressbar", aria_label: t.loading }
             }
             if let Some(offset) = offset {
                 div { class: "player-offset", aria_hidden: true, "{offset}" }
@@ -93,8 +95,8 @@ pub fn PlayerView() -> Element {
                             max: "{status.duration}",
                             step: "any",
                             value: "{time}",
-                            aria_label: "Seek",
-                            aria_valuetext: "{clock(time)} of {clock(status.duration)}",
+                            aria_label: t.seek,
+                            aria_valuetext: (t.time_of)(&clock(time), &clock(status.duration)),
                             style: "--progress: {percent}%;",
                             oninput: move |e| {
                                 if let Ok(time) = e.value().parse() {
@@ -113,7 +115,7 @@ pub fn PlayerView() -> Element {
                         button {
                             id: "control-play",
                             class: "player-control icon",
-                            aria_label: if status.paused { "Play" } else { "Pause" },
+                            aria_label: if status.paused { t.play } else { t.pause },
                             onclick: move |_| player.toggle(),
                             span {
                                 class: "control-icon",
@@ -126,7 +128,7 @@ pub fn PlayerView() -> Element {
                                 class: "player-control",
                                 aria_expanded: menu == Some(Menu::Audio),
                                 onclick: move |_| player.toggle_menu(Menu::Audio),
-                                "Audio: {audio}"
+                                "{(t.audio_track)(&audio)}"
                             }
                         }
                         if !list.subtitles.is_empty() {
@@ -135,7 +137,7 @@ pub fn PlayerView() -> Element {
                                 class: "player-control",
                                 aria_expanded: menu == Some(Menu::Subtitles),
                                 onclick: move |_| player.toggle_menu(Menu::Subtitles),
-                                "Subtitles: {subtitles}"
+                                "{(t.subtitles_track)(&subtitles)}"
                             }
                         }
                         if app.has_next() {
@@ -146,13 +148,13 @@ pub fn PlayerView() -> Element {
                                     focus("#seek");
                                     app.play_next();
                                 },
-                                "Next episode"
+                                "{t.next_episode}"
                             }
                         }
                         button {
                             id: "control-fullscreen",
                             class: "player-control icon",
-                            aria_label: if status.fullscreen { "Exit fullscreen" } else { "Fullscreen" },
+                            aria_label: if status.fullscreen { t.exit_fullscreen } else { t.fullscreen },
                             onclick: move |_| player.fullscreen(),
                             span {
                                 class: "control-icon",
@@ -170,37 +172,33 @@ pub fn PlayerView() -> Element {
 fn TrackMenu(menu: Menu) -> Element {
     let app = use_context::<AppState>();
     let tracks = app.player.tracks.read();
+    let t = text();
     let (title, selected) = match menu {
-        Menu::Audio => ("Audio", tracks.audio_index.max(0)),
-        Menu::Subtitles => ("Subtitles", tracks.subtitle_index),
+        Menu::Audio => (t.audio, tracks.audio_index.max(0)),
+        Menu::Subtitles => (t.subtitles, tracks.subtitle_index),
     };
-    let mut options: Vec<(i32, String)> = tracks
+    let choice = |value, name| Choice {
+        value,
+        name,
+        lang: None,
+    };
+    let mut options: Vec<Choice<i32>> = tracks
         .list(menu)
         .0
         .iter()
         .enumerate()
-        .map(|(i, track)| (i32::try_from(i).unwrap_or(i32::MAX), track.name()))
+        .map(|(i, track)| choice(i32::try_from(i).unwrap_or(i32::MAX), track.name(t)))
         .collect();
     if menu == Menu::Subtitles {
-        options.insert(0, (-1, "Off".into()));
+        options.insert(0, choice(-1, t.off.into()));
     }
     rsx! {
-        div { class: "player-menu", role: "group", aria_label: "{title}",
-            span { class: "player-menu-title", "{title}" }
-            for (index, name) in options {
-                button {
-                    key: "{index}",
-                    class: if index == selected { "player-option active" } else { "player-option" },
-                    aria_pressed: index == selected,
-                    onmounted: move |e| async move {
-                        if index == selected {
-                            let _ = e.set_focus(true).await;
-                        }
-                    },
-                    onclick: move |_| app.player.choose(app, menu, index),
-                    "{name}"
-                }
-            }
+        Picker {
+            class: "player-menu",
+            title,
+            options,
+            selected,
+            onchoose: move |index| app.player.choose(app, menu, index),
         }
     }
 }

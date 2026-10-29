@@ -12,6 +12,7 @@ pub use player_view::PlayerView;
 pub use search_view::SearchView;
 
 use crate::app::AppState;
+use crate::i18n::text;
 use dioxus::prelude::*;
 
 const LOGO: &str = include_str!("../../assets/img/vector/logo.svg");
@@ -26,7 +27,7 @@ pub fn BackButton() -> Element {
     rsx! {
         button {
             class: "back-button",
-            aria_label: "Back",
+            aria_label: text().back,
             onclick: move |_| {
                 app.back();
             },
@@ -35,21 +36,39 @@ pub fn BackButton() -> Element {
     }
 }
 
-pub fn count(n: usize, noun: &str) -> String {
-    if n == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{n} {noun}s")
-    }
+#[derive(Clone, PartialEq)]
+pub struct Choice<T> {
+    pub value: T,
+    pub name: String,
+    pub lang: Option<&'static str>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn count_pluralizes() {
-        assert_eq!(count(1, "Season"), "1 Season");
-        assert_eq!(count(25, "Season"), "25 Seasons");
+#[component]
+pub fn Picker<T: Copy + PartialEq + 'static>(
+    class: &'static str,
+    title: &'static str,
+    options: Vec<Choice<T>>,
+    selected: T,
+    onchoose: EventHandler<T>,
+) -> Element {
+    rsx! {
+        div { class: "menu {class}", role: "group", aria_label: title,
+            span { class: "menu-title", "{title}" }
+            for (position, Choice { value, name, lang }) in options.into_iter().enumerate() {
+                button {
+                    key: "{position}",
+                    class: if value == selected { "menu-option active" } else { "menu-option" },
+                    lang,
+                    aria_pressed: value == selected,
+                    onmounted: move |e| async move {
+                        if value == selected {
+                            let _ = e.set_focus(true).await;
+                        }
+                    },
+                    onclick: move |_| onchoose.call(value),
+                    "{name}"
+                }
+            }
+        }
     }
 }

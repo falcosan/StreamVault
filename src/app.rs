@@ -1,4 +1,5 @@
 use crate::gui::{CLOSE_ICON, DetailsView, HomeView, Navbar, PlayerView, SearchView};
+use crate::i18n::{Lang, text};
 use crate::platform::{self, Device};
 use crate::player::Player;
 use crate::prefs::PlayerPrefs;
@@ -99,6 +100,7 @@ pub struct Catalog {
     pub loading_more: Signal<bool>,
     done: CopyValue<bool>,
     scroll: CopyValue<f64>,
+    task: CopyValue<Option<Task>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -132,6 +134,7 @@ pub struct AppState {
     stream_task: CopyValue<Option<Task>>,
     pub watch: Signal<Vec<WatchItem>>,
     pub prefs: Signal<PlayerPrefs>,
+    pub language_menu: Signal<bool>,
     pub device: Device,
     replica: CopyValue<Replica>,
     providers: CopyValue<Shared<LocalBoxFuture<'static, Providers>>>,
@@ -150,6 +153,7 @@ impl AppState {
                 loading_more: Signal::default(),
                 done: CopyValue::default(),
                 scroll: CopyValue::default(),
+                task: CopyValue::default(),
             },
             search: Search::default(),
             details: Details::default(),
@@ -158,6 +162,7 @@ impl AppState {
             stream_task: CopyValue::default(),
             watch: Signal::default(),
             prefs: Signal::default(),
+            language_menu: Signal::default(),
             replica: CopyValue::new(Replica::default()),
             providers: CopyValue::new(load_providers(device.timeout())),
             device,
@@ -190,24 +195,52 @@ impl AppState {
         true
     }
 
-    pub fn search(mut self) {
+    pub fn search(self) {
+        if self.find() {
+            self.navigate(Screen::Search);
+        }
+    }
+
+    fn find(mut self) -> bool {
         let query = self.search.query.peek().trim().to_owned();
         if query.is_empty() {
-            return;
+            return false;
         }
         self.search.busy.set(true);
         self.search.results.set(Vec::new());
-        self.navigate(Screen::Search);
         restart(self.search.task, async move {
             let found = self.providers().await.search(&query).await;
             self.search.results.set(search::rank(found, &query));
             self.search.busy.set(false);
         });
+        true
     }
 
     pub fn reload(mut self) {
         self.providers.set(load_providers(self.device.timeout()));
-        spawn_forever(self.load_catalog());
+        self.catalog.loading_more.set(false);
+        restart(self.catalog.task, self.load_catalog());
+    }
+
+    pub fn choose_language(self, lang: Lang) {
+        self.close_language_menu();
+        if lang == Lang::current() {
+            return;
+        }
+        lang.select();
+        platform::save_language(lang);
+        self.reload();
+        if let Some(entry) = self.details.entry.peek().clone() {
+            self.load_details(entry, *self.details.season.peek());
+        }
+        if !self.search.results.peek().is_empty() {
+            self.find();
+        }
+    }
+
+    pub fn close_language_menu(mut self) {
+        self.language_menu.set(false);
+        platform::focus("#language");
     }
 
     async fn load_catalog(mut self) {
@@ -228,7 +261,7 @@ impl AppState {
             return;
         }
         self.catalog.loading_more.set(true);
-        spawn_forever(async move {
+        restart(self.catalog.task, async move {
             let mut seen: HashSet<_> = self
                 .catalog
                 .items
@@ -248,17 +281,13 @@ impl AppState {
         self.details.entry.set(Some(entry.clone()));
         self.details.season.set(None);
         self.navigate(Screen::Details);
-        if entry.is_movie() {
-            self.clear_episodes();
-        } else {
-            let watching = self
-                .watch
-                .peek()
-                .iter()
-                .find(|item| item.entry.key() == entry.key())
-                .and_then(|item| item.season);
-            self.load_seasons(entry, watching);
-        }
+        let watching = self
+            .watch
+            .peek()
+            .iter()
+            .find(|item| item.entry.key() == entry.key())
+            .and_then(|item| item.season);
+        self.load_details(entry, watching);
     }
 
     pub fn select_season(mut self, season: u32) {
@@ -272,19 +301,21 @@ impl AppState {
             let episodes = async { self.provider(&entry).await?.episodes(&entry, season).await };
             match episodes.await {
                 Ok(episodes) => self.details.episodes.set(episodes),
-                Err(e) => self.report("Failed to load episodes", e),
+                Err(e) => self.report(text().episodes_failed, e),
             }
             self.details.loading.set(false);
         });
     }
 
-    fn load_seasons(mut self, entry: MediaEntry, preferred: Option<u32>) {
+    fn load_details(mut self, entry: MediaEntry, preferred: Option<u32>) {
         self.details.loading.set(true);
         self.details.seasons.set(Vec::new());
         self.details.episodes.set(Vec::new());
         restart(self.details.task, async move {
-            if let Err(e) = self.fill_details(&entry, preferred).await {
-                self.report("Failed to load episodes", e);
+            match self.fill_details(&entry, preferred).await {
+                Err(e) if entry.is_movie() => warn!("cannot refresh {}: {e}", entry.name),
+                Err(e) => self.report(text().episodes_failed, e),
+                Ok(()) => {}
             }
             self.details.loading.set(false);
         });
@@ -296,11 +327,12 @@ impl AppState {
         preferred: Option<u32>,
     ) -> ProviderResult<()> {
         let provider = self.provider(entry).await?;
-        let seasons = provider.seasons(entry).await?;
+        let details = provider.details(entry).await?;
         let pick = preferred
-            .filter(|p| seasons.contains(p))
-            .or(seasons.first().copied());
-        self.details.seasons.set(seasons);
+            .filter(|p| details.seasons.contains(p))
+            .or(details.seasons.first().copied());
+        self.details.entry.set(Some(details.entry));
+        self.details.seasons.set(details.seasons);
         if let Some(season) = pick {
             self.details.season.set(Some(season));
             self.details
@@ -353,7 +385,7 @@ impl AppState {
         self.details.entry.set(Some(entry.clone()));
         match season {
             Some(_) if loaded => {}
-            Some(season) => self.load_seasons(entry.clone(), Some(season)),
+            Some(season) => self.load_details(entry.clone(), Some(season)),
             None => self.clear_episodes(),
         }
     }
@@ -415,10 +447,10 @@ impl AppState {
             };
             let episodes = match episodes.await {
                 Ok(episodes) => episodes,
-                Err(e) => return self.report("Failed to load next season", e),
+                Err(e) => return self.report(text().next_season_failed, e),
             };
             let Some(first) = watch::first_episode(&episodes).cloned() else {
-                return self.report("Failed to load next season", "no episodes");
+                return self.report(text().next_season_failed, text().no_episodes);
             };
             self.details.episodes.set(episodes);
             self.details.season.set(Some(next_season));
@@ -515,7 +547,7 @@ impl AppState {
                     current.url = Some(stream.url);
                 }
             }
-            Err(e) => self.report("Failed to get stream", e),
+            Err(e) => self.report(text().stream_failed, e),
         }
     }
 
@@ -611,7 +643,9 @@ pub fn restart(mut slot: CopyValue<Option<Task>>, future: impl Future<Output = (
 }
 
 fn load_providers(timeout: Duration) -> Shared<LocalBoxFuture<'static, Providers>> {
-    Providers::load(timeout).boxed_local().shared()
+    async move { Providers::load(timeout, Lang::current()).await }
+        .boxed_local()
+        .shared()
 }
 
 pub fn cancel(mut slot: CopyValue<Option<Task>>) {
@@ -623,13 +657,26 @@ pub fn cancel(mut slot: CopyValue<Option<Task>>) {
 #[component]
 pub fn App() -> Element {
     let mut app = use_context_provider(AppState::new);
+    use_effect(|| {
+        document::eval(&format!(
+            "document.documentElement.lang = {:?};",
+            Lang::current().code()
+        ));
+    });
+    use_hook(move || {
+        restart(app.catalog.task, async move {
+            if let Some(lang) = platform::load_language().await {
+                lang.select();
+            }
+            app.load_catalog().await;
+        });
+    });
     platform::use_device(app);
     use_future(move || app.player.run(app));
     use_future(move || async move {
         app.load_state().await;
         app.sync().await;
     });
-    use_future(move || app.load_catalog());
     use_effect(move || {
         let top = match *app.screen.read() {
             Screen::Home => *app.catalog.scroll.peek(),
@@ -665,7 +712,7 @@ pub fn App() -> Element {
                     span { "{message}" }
                     button {
                         class: "dismiss",
-                        aria_label: "Dismiss error",
+                        aria_label: text().dismiss_error,
                         onclick: move |_| app.error.set(None),
                         span { class: "close-icon", dangerous_inner_html: CLOSE_ICON }
                     }

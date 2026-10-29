@@ -3,7 +3,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-pub const FILE_MANAGER: &str = "Finder";
 pub const INSTALLER: &str = "StreamVault-install-macos";
 pub const HLS: Option<&str> = None;
 const RELAUNCH: &str = "while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; exec open -n \"$2\"";

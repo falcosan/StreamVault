@@ -12,6 +12,7 @@ pub const WATCH_FILE: &str = "continue_watching.json";
 pub const PREFS_FILE: &str = "player_prefs.json";
 pub const REPLICA_FILE: &str = "sync_replica.json";
 pub const DOWNLOADS_FILE: &str = "downloads.json";
+pub const LANGUAGE_FILE: &str = "language.json";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]

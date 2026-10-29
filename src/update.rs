@@ -1,4 +1,5 @@
 use crate::app::AppState;
+use crate::i18n::text;
 use crate::time::sleep;
 use dioxus::core::spawn_forever;
 use dioxus::prelude::*;
@@ -37,7 +38,7 @@ impl Update {
             let result = install.await;
             self.installing.set(false);
             if let Err(e) = result {
-                app.report("Update failed", e);
+                app.report(text().update_failed, e);
             }
         });
     }

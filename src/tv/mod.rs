@@ -10,11 +10,10 @@ use dioxus::prelude::*;
 use remote::{Direction, Key};
 pub use remote::{focus, focus_key, restore as restore_focus};
 use std::time::Duration;
-pub use storage::{load_replica, save_replica, sync_config};
+pub use storage::{load_language, load_replica, save_language, save_replica, sync_config};
 pub use update::install as install_update;
 use wasm_bindgen::prelude::*;
 
-pub const NAV: &[(Screen, &str)] = &[];
 const CSS: &str = include_str!("../../assets/style/tv.css");
 const HLS: Asset = asset!(
     "/assets/js/hls.min.js",
@@ -26,10 +25,15 @@ const SEEK_BAR: &str = "#seek";
 const OSD: &str = ".player-osd *";
 const CONTROLS: &str = ".player-controls";
 const MENU: &str = ".player-menu";
+const LANGUAGE_MENU: &str = ".language-menu";
 
 pub fn launch(app: fn() -> Element) {
     console_error_panic_hook::set_once();
     dioxus::launch(app);
+}
+
+pub fn nav() -> [(Screen, &'static str); 0] {
+    []
 }
 
 #[derive(Clone, Copy)]
@@ -84,6 +88,20 @@ fn handle(app: AppState, key: Key) -> bool {
                 true
             }
             Key::Back | Key::Cancel => remote::focus("#search-go"),
+            _ => false,
+        };
+    }
+    if *app.language_menu.peek() {
+        return match key {
+            Key::Move(direction) => {
+                remote::navigate_in(direction, LANGUAGE_MENU);
+                true
+            }
+            Key::Select => remote::activate(),
+            Key::Back => {
+                app.close_language_menu();
+                true
+            }
             _ => false,
         };
     }

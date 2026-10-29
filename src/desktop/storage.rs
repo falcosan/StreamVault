@@ -1,8 +1,9 @@
 use super::config::{
-    DOWNLOADS_FILE, PREFS_FILE, REPLICA_FILE, WATCH_FILE, missing_ok, read_json, state_dir,
-    write_json,
+    DOWNLOADS_FILE, LANGUAGE_FILE, PREFS_FILE, REPLICA_FILE, WATCH_FILE, missing_ok, read_json,
+    state_dir, write_json,
 };
 use super::download::Download;
+use crate::i18n::Lang;
 use crate::prefs::PlayerPrefs;
 use crate::sync::Replica;
 use crate::time::{epoch_ms, now_ms};
@@ -23,6 +24,14 @@ pub fn save_replica(replica: &Replica) {
     save(&state_dir().join(REPLICA_FILE), replica);
 }
 
+pub async fn load_language() -> Option<Lang> {
+    language(state_dir())
+}
+
+pub fn save_language(lang: Lang) {
+    save(&state_dir().join(LANGUAGE_FILE), lang.code());
+}
+
 pub fn load_downloads() -> Vec<Download> {
     load::<Vec<Download>>(&state_dir().join(DOWNLOADS_FILE))
         .into_iter()
@@ -32,6 +41,10 @@ pub fn load_downloads() -> Vec<Download> {
 
 pub fn save_downloads(downloads: &[Download]) {
     save(&state_dir().join(DOWNLOADS_FILE), downloads);
+}
+
+fn language(dir: &Path) -> Option<Lang> {
+    Lang::parse(&load::<String>(&dir.join(LANGUAGE_FILE)))
 }
 
 fn migrate(dir: &Path) -> Option<Replica> {
@@ -117,6 +130,14 @@ mod tests {
         let valid = serde_json::to_value(item(7, 5.0)).unwrap();
         let items = parse_items(vec![json!({ "entry": { "id": null } }), valid]);
         assert_eq!(items.iter().map(|i| i.entry.id).collect::<Vec<_>>(), [7]);
+    }
+
+    #[test]
+    fn the_chosen_language_comes_back() {
+        let dir = scratch_dir("language");
+        assert_eq!(language(&dir), None);
+        save(&dir.join(LANGUAGE_FILE), Lang::It.code());
+        assert_eq!(language(&dir), Some(Lang::It));
     }
 
     #[test]

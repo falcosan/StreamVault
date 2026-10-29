@@ -10,6 +10,7 @@ mod views;
 mod windows;
 
 use crate::app::{AppState, Playback, Screen};
+use crate::i18n::text;
 use crate::providers::{Episode, MediaEntry};
 use crate::settings::SyncConfig;
 use crate::update::Update;
@@ -23,7 +24,7 @@ use download::{Download, Status};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-pub use storage::{load_replica, save_replica};
+pub use storage::{load_language, load_replica, save_language, save_replica};
 use tokio::sync::Semaphore;
 pub use update::install as install_update;
 use uuid::Uuid;
@@ -34,7 +35,6 @@ use macos as os;
 #[cfg(windows)]
 use windows as os;
 
-pub const NAV: &[(Screen, &str)] = &[(Screen::Downloads, "Downloads")];
 const MAX_DOWNLOADS: usize = 2;
 static DOWNLOAD_SLOTS: Semaphore = Semaphore::const_new(MAX_DOWNLOADS);
 
@@ -53,6 +53,10 @@ pub fn launch(app: fn() -> Element) {
 
 pub async fn sync_config() -> SyncConfig {
     storage::load(&crate::folders::sync_file())
+}
+
+pub fn nav() -> [(Screen, &'static str); 1] {
+    [(Screen::Downloads, text().desktop.downloads)]
 }
 
 pub fn focus(selector: &str) {
@@ -165,7 +169,7 @@ impl Device {
         let config = self.config.read().clone();
         spawn_forever(async move {
             if let Err(e) = download::delete(&config, &file).await {
-                return app.report("Cannot delete download", e);
+                return app.report(text().desktop.delete_failed, e);
             }
             self.downloads
                 .retain(|d| d.status != Status::Completed || d.file != file);
@@ -244,7 +248,7 @@ pub fn use_device(app: AppState) {
 
 fn play_download(app: AppState, download: Download) {
     if !download.file.is_file() {
-        return app.report("File not found", download.file.display());
+        return app.report(text().desktop.file_missing, download.file.display());
     }
     app.prepare_details(&download.entry, None);
     app.play(download.entry, download.season, download.episode);
@@ -253,10 +257,7 @@ fn play_download(app: AppState, download: Download) {
 fn reveal(app: AppState, file: PathBuf) {
     spawn_forever(async move {
         if !os::reveal(&file).await {
-            app.report(
-                &format!("Cannot show in {}", os::FILE_MANAGER),
-                file.display(),
-            );
+            app.report(text().desktop.reveal_failed, file.display());
         }
     });
 }

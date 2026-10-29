@@ -16,6 +16,8 @@ mod folders;
 #[cfg(feature = "app")]
 mod gui;
 #[cfg(feature = "app")]
+mod i18n;
+#[cfg(feature = "app")]
 mod player;
 #[cfg(feature = "app")]
 mod prefs;

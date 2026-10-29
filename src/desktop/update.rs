@@ -1,5 +1,6 @@
 use super::{Device, os};
 use crate::app::AppState;
+use crate::i18n::text;
 use crate::release::{self, RELEASES};
 use dioxus::logger::tracing::warn;
 use std::path::Path;
@@ -27,7 +28,7 @@ async fn run(app: AppState) -> Result<(), String> {
     }
     match relaunch.spawn() {
         Ok(_) => dioxus::desktop::window().close(),
-        Err(e) => app.report("Update installed, restart StreamVault", e),
+        Err(e) => app.report(text().desktop.restart, e),
     }
     Ok(())
 }

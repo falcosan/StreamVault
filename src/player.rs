@@ -1,4 +1,5 @@
 use crate::app::{AppState, cancel, restart};
+use crate::i18n::{Lang, Text, text};
 use crate::platform::focus;
 use crate::prefs::PlayerPrefs;
 use crate::time::{now_ms, sleep};
@@ -71,12 +72,29 @@ pub struct Track {
 }
 
 impl Track {
-    pub fn name(&self) -> String {
-        if self.label.is_empty() {
-            self.language.to_uppercase()
-        } else {
-            self.label.clone()
-        }
+    pub fn name(&self, t: &Text) -> String {
+        let forced = self.language.strip_prefix("forced-");
+        let localized = Lang::parse(forced.unwrap_or(&self.language)).and_then(|lang| {
+            let rest = if self.label.is_empty() || self.label == self.language {
+                ""
+            } else {
+                self.label
+                    .strip_prefix(Lang::En.text().name_of(lang))
+                    .filter(|rest| rest.is_empty() || rest.starts_with(' '))?
+            };
+            let name = t.name_of(lang);
+            Some(match forced {
+                Some(_) => format!("{name} [{}]", t.forced),
+                None => format!("{name}{rest}"),
+            })
+        });
+        localized.unwrap_or_else(|| {
+            if self.label.is_empty() {
+                self.language.to_uppercase()
+            } else {
+                self.label.clone()
+            }
+        })
     }
 
     fn lang(&self) -> String {
@@ -104,6 +122,7 @@ enum Command<'a> {
         url: &'a str,
         start: f64,
         prefs: &'a PlayerPrefs,
+        languages: [&'static [&'static str]; 2],
         generation: u32,
     },
     Detach,
@@ -261,7 +280,7 @@ impl Player {
                     app.finished();
                     focus("#control-next");
                 }
-                Event::Failed { reason } => app.report("Playback failed", reason),
+                Event::Failed { reason } => app.report(text().playback_failed, reason),
             }
         }
     }
@@ -272,6 +291,7 @@ impl Player {
             url,
             start,
             prefs,
+            languages: [Lang::current().codes(), Lang::En.codes()],
             generation: *self.generation.peek(),
         });
     }
@@ -540,12 +560,31 @@ mod tests {
 
     #[test]
     fn track_names_and_languages_fall_back_to_each_other() {
-        let (labelled, bare) = (track("ita", "Italian"), track("eng", ""));
+        let en = Lang::En.text();
+        let (labelled, bare) = (track("", "Japanese"), track("jpn", ""));
         assert_eq!(
-            (labelled.name(), labelled.lang()),
-            ("Italian".into(), "ita".into())
+            (labelled.name(en), labelled.lang()),
+            ("Japanese".into(), "Japanese".into())
         );
-        assert_eq!((bare.name(), bare.lang()), ("ENG".into(), "eng".into()));
+        assert_eq!((bare.name(en), bare.lang()), ("JPN".into(), "jpn".into()));
+    }
+
+    #[test]
+    fn track_names_speak_the_interface_language() {
+        let it = Lang::It.text();
+        assert_eq!(track("ita", "Italian").name(it), "Italiano");
+        assert_eq!(track("eng", "English [CC]").name(it), "Inglese [CC]");
+        assert_eq!(
+            track("forced-ita", "Italian [Forced]").name(it),
+            "Italiano [Forzati]"
+        );
+        assert_eq!(track("en", "").name(it), "Inglese");
+        assert_eq!(
+            track("forced-ita", "forced-ita").name(it),
+            "Italiano [Forzati]"
+        );
+        assert_eq!(track("eng", "Commentary").name(it), "Commentary");
+        assert_eq!(track("ita", "Italiano").name(Lang::En.text()), "Italiano");
     }
 
     #[test]
@@ -621,6 +660,7 @@ mod tests {
             url: "u",
             start: 3.0,
             prefs: &prefs,
+            languages: [Lang::It.codes(), Lang::En.codes()],
             generation: 4,
         };
         let attach = serde_json::to_value(&attach).unwrap();
@@ -628,6 +668,7 @@ mod tests {
             (&attach["type"], &attach["generation"]),
             (&json!("attach"), &json!(4))
         );
+        assert_eq!(attach["languages"], json!([["it", "ita"], ["en", "eng"]]));
         assert_eq!(
             serde_json::to_value(Command::SeekTo { time: 1.0 }).unwrap(),
             json!({"type": "seek_to", "time": 1.0})
@@ -663,6 +704,48 @@ mod tests {
                     r#"["ita", "forced-ita", "Italian"].map((lang) => pick({TRACKS}, lang))"#
                 )),
                 json!([2, 1, 2])
+            );
+        }
+
+        #[test]
+        fn without_a_choice_the_audio_speaks_the_interface_then_english() {
+            let spoken = |tracks: &str| {
+                eval(&format!(
+                    r#"spoken({tracks}, [["it", "ita"], ["en", "eng"]])"#
+                ))
+            };
+            assert_eq!(
+                spoken(r#"[{ language: "eng" }, { language: "ita" }]"#),
+                json!(1)
+            );
+            assert_eq!(
+                spoken(r#"[{ language: "jpn" }, { language: "en-US" }]"#),
+                json!(1)
+            );
+            assert_eq!(spoken(r#"[{ language: "jpn" }]"#), json!(-1));
+        }
+
+        #[test]
+        fn a_track_the_viewer_picked_survives_a_track_list_update() {
+            assert_eq!(
+                eval(
+                    r#"(() => {
+                        const listeners = {};
+                        const target = (object) => Object.assign(object, { addEventListener: (name, listener) => (listeners[name] = listener), removeEventListener() {} });
+                        globalThis.document = { addEventListener() {}, removeEventListener() {} };
+                        const audioTracks = target([{ language: "ita", enabled: true }, { language: "eng", enabled: false }]);
+                        const video = target({ audioTracks, play: async () => {}, removeAttribute() {}, load() {} });
+                        const prefs = { audio_lang: "", subtitle_lang: "", subtitles_on: false, speed: 1 };
+                        const session = attach(video, "movie.mp4", 0, prefs, [["es", "spa"], ["en", "eng"]], () => {});
+                        const enabled = () => audioTracks.findIndex((t) => t.enabled);
+                        listeners.addtrack();
+                        const automatic = enabled();
+                        session.select("audio", 0);
+                        listeners.addtrack();
+                        return [automatic, enabled()];
+                    })()"#
+                ),
+                json!([1, 0])
             );
         }
 

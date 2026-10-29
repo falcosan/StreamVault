@@ -1,4 +1,5 @@
 use crate::app::AppState;
+use crate::i18n::{Text, text};
 use crate::providers::{MediaEntry, stable_hash};
 use dioxus::prelude::*;
 
@@ -27,26 +28,28 @@ pub fn card_background(name: &str, image: Option<&str>) -> String {
     format!("background-color: {color}; background-image: url(\"{escaped}\");")
 }
 
-pub(super) fn format_score(score: &str) -> String {
-    score
-        .parse::<f64>()
-        .map_or_else(|_| score.to_owned(), |v| format!("{v:.1}"))
+pub(super) fn format_score(t: &Text, score: &str) -> String {
+    score.parse::<f64>().map_or_else(
+        |_| score.to_owned(),
+        |v| format!("{v:.1}").replace('.', t.decimal),
+    )
 }
 
-pub(super) fn badge(entry: &MediaEntry) -> (&'static str, &'static str) {
+pub(super) fn badge(t: &Text, entry: &MediaEntry) -> (&'static str, &'static str) {
     if entry.is_movie() {
-        ("badge-movie", "Movie")
+        ("badge-movie", t.movie)
     } else {
-        ("badge-series", "Series")
+        ("badge-series", t.series)
     }
 }
 
 #[component]
 pub(super) fn PosterCard(entry: MediaEntry) -> Element {
     let app = use_context::<AppState>();
+    let t = text();
     let background = card_background(&entry.name, entry.image_url.as_deref());
-    let (tone, label) = badge(&entry);
-    let score = entry.score.as_deref().map(format_score);
+    let (tone, label) = badge(t, &entry);
+    let score = entry.score.as_deref().map(|score| format_score(t, score));
     let target = entry.clone();
     rsx! {
         button {
@@ -74,6 +77,7 @@ pub(super) fn PosterCard(entry: MediaEntry) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Lang;
 
     #[test]
     fn poster_color_is_deterministic() {
@@ -97,7 +101,8 @@ mod tests {
 
     #[test]
     fn format_score_rounds_numbers_and_keeps_text() {
-        assert_eq!(format_score("7.456"), "7.5");
-        assert_eq!(format_score("N/A"), "N/A");
+        assert_eq!(format_score(Lang::En.text(), "7.456"), "7.5");
+        assert_eq!(format_score(Lang::It.text(), "7.456"), "7,5");
+        assert_eq!(format_score(Lang::En.text(), "N/A"), "N/A");
     }
 }
