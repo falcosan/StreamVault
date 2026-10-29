@@ -42,7 +42,7 @@ pub async fn deploy(
     let public = bundle::build(session).await?;
     let mut tv = wait_until(WAITING, || async { Sdb::connect(ip).await.ok() }).await;
     let duid = tv.shell("0 getduid").await.map_err(lost)?;
-    let certificate = Certificate::of(duid.trim());
+    let certificate = Certificate::of(duid.trim())?;
     let app = between(CONFIG, "<tizen:application id=\"", "\"")
         .ok_or("config.xml has no application id.")?;
     let stage = session.out.join("tizen");

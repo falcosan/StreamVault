@@ -1,6 +1,7 @@
 use super::os;
 use super::widget::Signer;
-use crate::deploy::{Session, read, remove, say, write};
+use crate::deploy::{Session, parent, read, remove, say, write};
+use crate::folders;
 use p12_keystore::{
     Certificate as Stored, KeyStore, KeyStoreEntry, Pkcs12ImportPolicy, PrivateKey, PrivateKeyChain,
 };
@@ -14,7 +15,7 @@ use rsa::sha2::Sha512;
 use serde_json::Value;
 use std::error::Error;
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -37,6 +38,7 @@ const ISSUER: &str = "https://svdca.samsungqbe.com/apis/v3";
 const SIGNED_IN: &str = "Signed in: go back to the terminal.";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const ISSUE_TIMEOUT: Duration = Duration::from_secs(60);
+const LEGACY: &str = "SamsungCertificate";
 const KEY_ALIAS: &str = "UserCertificate";
 const KEY_BITS: usize = 2048;
 const AUTHOR_CA: &str = include_str!("../../../../resources/tv/tizen/vd_tizen_dev_author_ca.cer");
@@ -58,15 +60,14 @@ pub struct Certificate {
 }
 
 impl Certificate {
-    pub fn of(duid: &str) -> Self {
-        let dir = dirs::home_dir()
-            .unwrap_or_default()
-            .join("SamsungCertificate")
-            .join(format!("streamvault-{duid}"));
-        Self {
+    pub fn of(duid: &str) -> Result<Self, String> {
+        let dir = folders::local_dir().join("tv").join("tizen").join(duid);
+        let legacy = dirs::home_dir().unwrap_or_default().join(LEGACY);
+        adopt(&legacy, &format!("streamvault-{duid}"), &dir)?;
+        Ok(Self {
             duid: duid.to_owned(),
             dir,
-        }
+        })
     }
 
     pub fn load(&self) -> Result<Option<Signers>, String> {
@@ -146,6 +147,20 @@ impl Certificate {
         self.load()?
             .ok_or_else(|| format!("{} holds no certificate.", self.dir.display()))
     }
+}
+
+fn adopt(legacy: &Path, name: &str, dir: &Path) -> Result<(), String> {
+    let old = legacy.join(name);
+    if dir.exists() || !old.is_dir() {
+        return Ok(());
+    }
+    parent(dir)?;
+    std::fs::rename(&old, dir)
+        .map_err(|e| format!("Cannot move {} to {}: {e}", old.display(), dir.display()))?;
+    if std::fs::read_dir(legacy).is_ok_and(|mut entries| entries.next().is_none()) {
+        remove(legacy);
+    }
+    Ok(())
 }
 
 fn generate() -> Result<RsaPrivateKey, String> {
@@ -349,6 +364,7 @@ fn login_code(line: &str, body: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::check::scratch_dir;
     use p12_keystore::{EncryptionAlgorithm, MacAlgorithm};
     use rsa::pkcs1v15::VerifyingKey;
     use rsa::signature::Verifier;
@@ -388,6 +404,23 @@ mod tests {
         .unwrap()
         .to_der()
         .unwrap()
+    }
+
+    #[test]
+    fn a_certificate_made_by_an_earlier_version_moves_to_the_hidden_folder() {
+        let home = scratch_dir("certificate_adopt");
+        let (legacy, dir) = (home.join(LEGACY), home.join("StreamVault/tv/tizen/7XCI"));
+        write(&legacy.join("streamvault-7XCI/password"), "old").unwrap();
+        adopt(&legacy, "streamvault-7XCI", &dir).unwrap();
+        assert_eq!(read(&dir.join("password")).unwrap(), "old");
+        assert!(!legacy.exists());
+        write(&legacy.join("streamvault-7XCI/password"), "older").unwrap();
+        write(&legacy.join("other/author.p12"), "").unwrap();
+        adopt(&legacy, "streamvault-7XCI", &dir).unwrap();
+        assert_eq!(read(&dir.join("password")).unwrap(), "old");
+        adopt(&legacy, "streamvault-NONE", &home.join("none")).unwrap();
+        assert!(!home.join("none").exists() && legacy.join("other").exists());
+        remove(&home);
     }
 
     #[test]

@@ -119,14 +119,16 @@ missing. It:
 When it ends, successfully or not, it removes everything it installed: Rust,
 the Rust target, `dx` and its tools, the JDK and the Android SDK. It keeps
 only the keys later installs need to update the app:
-`~/.android/debug.keystore` and `~/SamsungCertificate`.
+`~/.android/debug.keystore` and the Samsung certificates, in
+`tv/tizen/<device id>` of StreamVault's own hidden folder
+(`~/Library/Application Support/StreamVault` or `%APPDATA%\StreamVault`).
 
 Samsung TVs only install apps signed with a Samsung certificate issued to a
 Samsung account for that TV's device id. Like TizenBrew, the installer needs no
 Tizen Studio: it talks `sdb` to the TV itself, reads the device id and signs the
-package the way Samsung's own signer does, with the certificate in
-`~/SamsungCertificate/streamvault-<device id>`, including one an earlier
-version made. When there is none, or the TV rejects its certificate, it opens
+package the way Samsung's own signer does, with that TV's certificate (one an
+earlier version left in `~/SamsungCertificate/streamvault-<device id>` moves
+there first). When there is none, or the TV rejects its certificate, it opens
 the Samsung sign-in in the browser, takes the answer on `localhost:4794`, makes
 the keys and requests, sends them to Samsung, stores the certificates with
 Samsung's authorities (shipped in the repository) and their password in that

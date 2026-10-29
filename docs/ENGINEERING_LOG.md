@@ -963,7 +963,9 @@ TizenBrew does in JavaScript, after Samsung's own `webIDE-common-tizentv`.
   and live in `resources/tv/tizen/`, so nothing is downloaded (TizenBrew
   downloads the 44 MB extension for them). The key and `[leaf, CA]` are stored
   as `author.p12` and `distributor.p12` with their password in
-  `~/SamsungCertificate/streamvault-<DUID>`; the folder is replaced only once
+  `tv/tizen/<DUID>` of the app's own folder (`folders::local_dir()`, hidden on
+  both systems), where a folder earlier versions left in
+  `~/SamsungCertificate/streamvault-<DUID>` is moved; it is replaced only once
   both certificates arrived. Stores written by Tizen Studio's Java 8
   (3DES keys, RC2-40 certificates, SHA-1 MAC) still load, so TVs installed
   before keep their author and update in place. A certificate the TV rejects
