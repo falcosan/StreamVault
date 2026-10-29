@@ -931,10 +931,10 @@ TizenBrew does in JavaScript, after Samsung's own `webIDE-common-tizentv`.
   (24-byte little-endian header with a byte-sum checksum and the command's
   complement, `CNXN` with `host::`, no authentication or TLS). The shell
   commands `0 getduid` (the device id), `0 was_kill`,
-  `0 vd_appinstall <app id> <path>` and `0 was_execute` replace
-  `tizen install` and `tizen run`; `sync:` with `SEND`, `DATA` (each within the
-  payload size the TV announced), `DONE` and `QUIT` pushes the package to
-  `/home/owner/share/tmp/sdk_tools/`. Every `WRTE` waits for its `OKAY`.
+  `0 vd_appinstall <app id> <path>`, `0 vd_appuninstall <app id>` and
+  `0 was_execute` replace `tizen install`, `tizen uninstall` and `tizen run`;
+  `sync:` with `SEND`, `DATA` (each within the payload size the TV announced),
+  `DONE` and `QUIT` pushes the package to `/home/owner/share/tmp/sdk_tools/`. Every `WRTE` waits for its `OKAY`.
   `vd_appinstall` prints `install completed` or
   `install failed[…], reason: …`, then `spend time for wascmd is […]ms`, and
   closes.
@@ -966,7 +966,11 @@ TizenBrew does in JavaScript, after Samsung's own `webIDE-common-tizentv`.
   `~/SamsungCertificate/streamvault-<DUID>`; the folder is replaced only once
   both certificates arrived. Stores written by Tizen Studio's Java 8
   (3DES keys, RC2-40 certificates, SHA-1 MAC) still load, so TVs installed
-  before keep their author and update in place. Both answers are PEM, as
+  before keep their author and update in place. A certificate the TV rejects
+  is renewed with the same author key: Tizen's `IsSameAuthor` (app-installers)
+  compares only the author certificates' public keys, so the app still updates
+  in place; a missing store gives a new key, and an app signed with another one
+  is uninstalled before the install (gotcha 46). Both answers are PEM, as
   TizenBrew reads them; no device profile comes back to push.
 
 All of it is Rust without C (`rsa`, `x509-cert`, `p12-keystore`, `zip` with
@@ -1166,6 +1170,7 @@ Samsung installs use no external tool on either.
 | 43  | _Failed to get stream_ (410 Gone) in a Windows VM            | the embed link expires 10 s after it is issued; the first connection to vixcloud took longer (likely Windows' online revocation check, up to 10 s)                  | fetch a new link once when the embed page fails                               |
 | 44  | a download fails now and then as its tracks finish           | with `--write-meta-json false` the tracks' shared temporary folder empties as they end; two tracks ending together both delete it and N_m3u8DL-RE crashes           | keep the default `meta.json`, which holds that folder until the run ends      |
 | 45  | _Invalid format of certificate in signature_ (118, -12)      | the TV decodes `X509Certificate` with a line-based base64 reader; one 1,800-character line fails although XML allows it                                             | write signature values and certificates in lines of 76 characters             |
+| 46  | _Author certificate not match_ (118, -11)                    | Tizen updates an app only from an author certificate with the same public key; this computer lost that key, or another one installed it                             | renew with the stored author key; without it, uninstall first                 |
 
 ---
 

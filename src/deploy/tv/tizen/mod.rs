@@ -13,6 +13,8 @@ use std::path::Path;
 
 pub const API: u16 = 8001;
 const INSTALLED: &str = "install completed";
+const OTHER_AUTHOR: &str = "Author certificate not match";
+const REINSTALL: &str = "The StreamVault on the TV was signed with an author key this computer does not have: reinstalling it, which clears what it saved on the TV (synced data comes back).";
 const WAITING: &str = "Waiting for the TV to accept the connection (restart it if this lasts)…";
 const PACKAGE: &str = "/home/owner/share/tmp/sdk_tools/StreamVault.wgt";
 const CONFIG: &str = include_str!("../../../../resources/tv/tizen/config.xml");
@@ -65,7 +67,7 @@ pub async fn deploy(
         if stored.is_some() && !outcome.to_lowercase().contains("certificate") {
             return Err(refused(&outcome));
         }
-        let signers = certificate.create(session).await?;
+        let signers = certificate.create(session, stored.as_ref()).await?;
         let outcome = install(session, &mut tv, app, &stage, &signers).await?;
         if !outcome.contains(INSTALLED) {
             return Err(refused(&outcome));
@@ -86,7 +88,19 @@ async fn install(
 ) -> Result<String, String> {
     let wgt = widget::package(stage, &signers.author, &signers.distributor)?;
     write(&session.out.join("StreamVault.wgt"), &wgt)?;
-    tv.push(PACKAGE, &wgt).await.map_err(lost)?;
+    let outcome = put(session, tv, app, &wgt).await?;
+    if !outcome.contains(OTHER_AUTHOR) {
+        return Ok(outcome);
+    }
+    say(REINSTALL);
+    tv.shell(&format!("0 vd_appuninstall {app}"))
+        .await
+        .map_err(lost)?;
+    put(session, tv, app, &wgt).await
+}
+
+async fn put(session: &Session, tv: &mut Sdb, app: &str, wgt: &[u8]) -> Result<String, String> {
+    tv.push(PACKAGE, wgt).await.map_err(lost)?;
     let outcome = tv
         .shell(&format!("0 vd_appinstall {app} {PACKAGE}"))
         .await

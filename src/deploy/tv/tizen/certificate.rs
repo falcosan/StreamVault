@@ -85,7 +85,11 @@ impl Certificate {
         }))
     }
 
-    pub async fn create(&self, session: &Session) -> Result<Signers, String> {
+    pub async fn create(
+        &self,
+        session: &Session,
+        previous: Option<&Signers>,
+    ) -> Result<Signers, String> {
         say(format!(
             "Sign in to your Samsung account in the browser: Samsung issues the certificate for this TV ({}).",
             self.duid
@@ -105,7 +109,10 @@ impl Certificate {
             token: &token,
             user: &user,
         };
-        let author_key = generate()?;
+        let author_key = match previous {
+            Some(signers) => signers.author.key().clone(),
+            None => generate()?,
+        };
         let author = samsung
             .issue("authors", &request(&author_key, "StreamVault", None)?, &[])
             .await?;
@@ -456,7 +463,8 @@ mod tests {
     fn a_store_gives_back_its_signer_with_the_samsung_chain() {
         let chain = [issued_by(AUTHOR_CA), der(AUTHOR_CA).unwrap()];
         let written = store(&KEY, &chain, "secret").unwrap();
-        assert_eq!(signer(&written, "secret").unwrap().chain, chain);
+        let loaded = signer(&written, "secret").unwrap();
+        assert_eq!((&loaded.chain[..], loaded.key()), (&chain[..], &*KEY));
         assert!(signer(&written, "wrong").is_err());
     }
 

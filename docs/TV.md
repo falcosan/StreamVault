@@ -130,8 +130,13 @@ version made. When there is none, or the TV rejects its certificate, it opens
 the Samsung sign-in in the browser, takes the answer on `localhost:4794`, makes
 the keys and requests, sends them to Samsung, stores the certificates with
 Samsung's authorities (shipped in the repository) and their password in that
-folder, and installs again. Build output and the TV's answers go to
-`streamvault-tv.log` in the temporary folder.
+folder, and installs again. A new certificate keeps the author key of the one
+it replaces, so the TV goes on updating the app in place. Only an app signed
+with an author key this computer does not have (its folder was deleted, or
+another computer installed it) cannot be updated, so the installer uninstalls
+it first: what the app saved on that TV is cleared, and synced data comes back.
+Build output and the TV's answers go to `streamvault-tv.log` in the temporary
+folder.
 
 The sync settings go into the package as `sync.json`, never into the WASM, so
 run it again when `sync.json` changes. `STREAMVAULT_SYNC_URL`,

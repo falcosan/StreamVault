@@ -45,6 +45,10 @@ impl Signer {
         })
     }
 
+    pub fn key(&self) -> &RsaPrivateKey {
+        self.key.as_ref()
+    }
+
     fn sign(&self, message: &[u8]) -> Result<String, String> {
         let signature = self
             .key
