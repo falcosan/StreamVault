@@ -74,10 +74,6 @@ pub static TEXT: Text = Text {
             Some(n) => format!("Download episode {n}"),
             None => "Download this movie".into(),
         },
-        play_this: |episode| match episode {
-            Some(n) => format!("Play episode {n}"),
-            None => "Play this movie".into(),
-        },
         retry_this: |episode| match episode {
             Some(n) => format!("Retry the download of episode {n}"),
             None => "Retry the download of this movie".into(),

@@ -138,7 +138,6 @@ pub struct Desktop {
     pub downloaded: &'static str,
     pub retry: &'static str,
     pub download_this: fn(Option<&str>) -> String,
-    pub play_this: fn(Option<&str>) -> String,
     pub retry_this: fn(Option<&str>) -> String,
     pub show_this: fn(Option<&str>) -> String,
     pub empty: &'static str,

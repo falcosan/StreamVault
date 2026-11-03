@@ -401,8 +401,8 @@ impl AppState {
         self.details.entry.set(Some(entry.clone()));
         match season {
             Some(_) if loaded => {}
-            Some(season) => self.load_details(entry.clone(), Some(season)),
-            None => self.clear_episodes(),
+            _ if reloads(entry, season) => self.load_details(entry.clone(), season),
+            _ => self.clear_episodes(),
         }
     }
 
@@ -676,6 +676,10 @@ fn lists(listed: Option<u32>, episodes: &[Episode], season: u32) -> bool {
     listed == Some(season) && !episodes.is_empty()
 }
 
+fn reloads(entry: &MediaEntry, season: Option<u32>) -> bool {
+    season.is_some() || entry.is_movie()
+}
+
 pub fn restart(mut slot: CopyValue<Option<Task>>, future: impl Future<Output = ()> + 'static) {
     cancel(slot);
     slot.set(Some(spawn_forever(future)));
@@ -854,6 +858,18 @@ mod tests {
         assert!(!lists(Some(1), &[], 1));
         assert!(!lists(Some(2), &episodes, 1));
         assert!(!lists(None, &episodes, 1));
+    }
+
+    #[test]
+    fn details_shown_for_a_playback_reload_films_and_seasons() {
+        let film = MediaEntry {
+            media_type: crate::providers::MediaType::Movie,
+            ..Default::default()
+        };
+        let series = MediaEntry::default();
+        assert!(reloads(&film, None));
+        assert!(reloads(&series, Some(1)));
+        assert!(!reloads(&series, None));
     }
 
     #[test]

@@ -31,7 +31,6 @@ pub fn EntryActions(entry: MediaEntry, season: Option<u32>, episode: Option<Epis
     let number = number.as_deref();
     let action = match &status {
         None => (t.download_this)(number),
-        Some(Status::Completed) => (t.play_this)(number),
         Some(Status::Failed(_)) => (t.retry_this)(number),
         Some(_) => (t.show_this)(number),
     };
@@ -40,7 +39,6 @@ pub fn EntryActions(entry: MediaEntry, season: Option<u32>, episode: Option<Epis
         None | Some(Status::Failed(_)) => {
             app.device.download(app, &entry, season, episode.as_ref())
         }
-        Some(Status::Completed) => app.play(entry.clone(), season, episode.clone()),
         Some(_) => app.navigate(Screen::Downloads),
     };
     let icon = match glyph {
