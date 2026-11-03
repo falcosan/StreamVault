@@ -3,7 +3,7 @@ mod sdb;
 mod widget;
 
 use super::{ICON, between, bundle, discover, os};
-use crate::deploy::{Session, VERSION, remove, say, wait_until, write};
+use crate::deploy::{Session, VERSION, ask, wait_until, write};
 use crate::settings::SyncConfig;
 use certificate::{Certificate, Signers};
 use sdb::Sdb;
@@ -14,7 +14,7 @@ use std::path::Path;
 pub const API: u16 = 8001;
 const INSTALLED: &str = "install completed";
 const OTHER_AUTHOR: &str = "Author certificate not match";
-const REINSTALL: &str = "The StreamVault on the TV was signed with an author key this computer does not have: reinstalling it, which clears what it saved on the TV (synced data comes back).";
+const REINSTALL: &str = "The StreamVault on the TV was signed with an author key this computer does not have. Reinstall it? That clears what it saved on the TV; with sync on, synced titles come back. [y/N]";
 const WAITING: &str = "Waiting for the TV to accept the connection (restart it if this lasts)…";
 const PACKAGE: &str = "/home/owner/share/tmp/sdk_tools/StreamVault.wgt";
 const CONFIG: &str = include_str!("../../../../resources/tv/tizen/config.xml");
@@ -46,7 +46,6 @@ pub async fn deploy(
     let app = between(CONFIG, "<tizen:application id=\"", "\"")
         .ok_or("config.xml has no application id.")?;
     let stage = session.out.join("tizen");
-    remove(&stage);
     bundle::stage(&public, &stage, sync)?;
     let widget = format!("<widget version=\"{VERSION}\" ");
     write(
@@ -55,10 +54,7 @@ pub async fn deploy(
     )?;
     write(&stage.join("icon.png"), ICON)?;
     tv.shell(&format!("0 was_kill {app}")).await.map_err(lost)?;
-    let stored = certificate.load().unwrap_or_else(|e| {
-        say(e);
-        None
-    });
+    let stored = certificate.load()?;
     let outcome = match &stored {
         Some(signers) => install(session, &mut tv, app, &stage, signers).await?,
         None => String::new(),
@@ -92,7 +88,9 @@ async fn install(
     if !outcome.contains(OTHER_AUTHOR) {
         return Ok(outcome);
     }
-    say(REINSTALL);
+    if !confirmed(ask(REINSTALL).as_deref()) {
+        return Err(refused(&outcome));
+    }
     tv.shell(&format!("0 vd_appuninstall {app}"))
         .await
         .map_err(lost)?;
@@ -115,6 +113,10 @@ async fn developer_mode(http: &reqwest::Client, ip: Ipv4Addr, host: Ipv4Addr) ->
     })
 }
 
+fn confirmed(answer: Option<&str>) -> bool {
+    answer.is_some_and(|answer| answer.starts_with(['y', 'Y']))
+}
+
 fn lost(error: std::io::Error) -> String {
     format!("The connection to the TV failed: {error}")
 }
@@ -134,6 +136,12 @@ fn refused(outcome: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_yes_reinstalls_an_app_another_computer_signed() {
+        assert!(confirmed(Some("y")) && confirmed(Some("Yes")));
+        assert!(!confirmed(Some("")) && !confirmed(Some("n")) && !confirmed(None));
+    }
 
     #[test]
     fn a_refusal_shows_the_failing_line() {

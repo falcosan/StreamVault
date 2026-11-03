@@ -179,7 +179,7 @@ fn Episodes(entry: MediaEntry, resume: Option<WatchItem>) -> Element {
                 div { class: "episode-list",
                     for episode in episodes.iter() {
                         EpisodeRow {
-                            key: "{season}-{episode.number}",
+                            key: "{episode.id}",
                             entry: entry.clone(),
                             season,
                             episode: episode.clone(),
@@ -196,9 +196,9 @@ fn Episodes(entry: MediaEntry, resume: Option<WatchItem>) -> Element {
 fn EpisodeRow(entry: MediaEntry, season: u32, episode: Episode, progress: Option<f64>) -> Element {
     let app = use_context::<AppState>();
     let t = text();
-    let number = episode.number;
+    let number = episode.number_text();
     let title = if episode.name.is_empty() {
-        (t.episode)(number)
+        (t.episode)(&number)
     } else {
         episode.name.clone()
     };
@@ -212,7 +212,7 @@ fn EpisodeRow(entry: MediaEntry, season: u32, episode: Episode, progress: Option
             button {
                 class: "episode",
                 "data-focus": "episode-{season}-{number}",
-                aria_label: (t.play_episode)(number, &title),
+                aria_label: (t.play_episode)(&number, &title),
                 onclick: move |_| app.play_episode(season, play.clone()),
                 span { class: "episode-thumb",
                     if let Some(url) = &episode.image_url {

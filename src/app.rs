@@ -124,7 +124,7 @@ pub struct Details {
 #[derive(Clone, Copy)]
 pub struct AppState {
     pub screen: Signal<Screen>,
-    history: CopyValue<Vec<(Screen, Option<String>)>>,
+    history: CopyValue<Vec<Visit>>,
     pub error: Signal<Option<String>>,
     pub catalog: Catalog,
     pub search: Search,
@@ -158,7 +158,7 @@ impl AppState {
             search: Search::default(),
             details: Details::default(),
             playback: Signal::default(),
-            player: Player::new(),
+            player: Player::default(),
             stream_task: CopyValue::default(),
             watch: Signal::default(),
             prefs: Signal::default(),
@@ -177,17 +177,26 @@ impl AppState {
         if from == Screen::Player {
             self.clear_playback();
         }
-        visit(&mut self.history.write(), (from, platform::focus_key()), to);
+        let shown = leaving_details(from, self.details.entry.peek().as_ref());
+        visit(
+            &mut self.history.write(),
+            (from, platform::focus_key(), shown),
+            to,
+        );
         self.error.set(None);
         self.screen.set(to);
     }
 
     pub fn back(mut self) -> bool {
-        let Some((screen, focus)) = self.history.pop() else {
+        let Some((screen, focus, shown)) = self.history.pop() else {
             return false;
         };
         if *self.screen.peek() == Screen::Player {
             self.clear_playback();
+        }
+        let restored = restored_details(shown, self.details.entry.peek().as_ref());
+        if let Some(entry) = restored {
+            self.show_details(entry);
         }
         self.error.set(None);
         platform::restore_focus(focus);
@@ -222,7 +231,7 @@ impl AppState {
         restart(self.catalog.task, self.load_catalog());
     }
 
-    pub fn choose_language(self, lang: Lang) {
+    pub fn choose_language(mut self, lang: Lang) {
         self.close_language_menu();
         if lang == Lang::current() {
             return;
@@ -230,7 +239,10 @@ impl AppState {
         lang.select();
         platform::save_language(lang);
         self.reload();
-        if let Some(entry) = self.details.entry.peek().clone() {
+        if *self.screen.peek() != Screen::Details {
+            cancel(self.details.task);
+            self.details.entry.set(None);
+        } else if let Some(entry) = self.details.entry.peek().clone() {
             self.load_details(entry, *self.details.season.peek());
         }
         if !self.search.results.peek().is_empty() {
@@ -277,10 +289,14 @@ impl AppState {
         });
     }
 
-    pub fn open(mut self, entry: MediaEntry) {
+    pub fn open(self, entry: MediaEntry) {
+        self.show_details(entry);
+        self.navigate(Screen::Details);
+    }
+
+    fn show_details(mut self, entry: MediaEntry) {
         self.details.entry.set(Some(entry.clone()));
         self.details.season.set(None);
-        self.navigate(Screen::Details);
         let watching = self
             .watch
             .peek()
@@ -414,8 +430,10 @@ impl AppState {
         else {
             return false;
         };
-        next_episode(&self.details.episodes.read(), current.number).is_some()
-            || watch::next_season(&self.details.seasons.read(), *season).is_some()
+        let episodes = self.details.episodes.read();
+        lists(*self.details.season.read(), &episodes, *season)
+            && (next_episode(&episodes, current).is_some()
+                || watch::next_season(&self.details.seasons.read(), *season).is_some())
     }
 
     pub fn play_next(mut self) {
@@ -425,7 +443,14 @@ impl AppState {
         let (Some(season), Some(current)) = (playback.season, &playback.episode) else {
             return;
         };
-        let next = next_episode(&self.details.episodes.peek(), current.number).cloned();
+        if !lists(
+            *self.details.season.peek(),
+            &self.details.episodes.peek(),
+            season,
+        ) {
+            return;
+        }
+        let next = next_episode(&self.details.episodes.peek(), current).cloned();
         if let Some(next) = next {
             return self.play(playback.entry, Some(season), Some(next));
         }
@@ -627,14 +652,28 @@ impl AppState {
     }
 }
 
-fn visit(history: &mut Vec<(Screen, Option<String>)>, from: (Screen, Option<String>), to: Screen) {
+type Visit = (Screen, Option<String>, Option<MediaEntry>);
+
+fn visit(history: &mut Vec<Visit>, from: Visit, to: Screen) {
     if to == Screen::Home {
         history.clear();
     } else if from.0 != Screen::Player {
         history.push(from);
-    } else if history.last().is_some_and(|(screen, _)| *screen == to) {
+    } else if history.last().is_some_and(|(screen, ..)| *screen == to) {
         history.pop();
     }
+}
+
+fn leaving_details(from: Screen, entry: Option<&MediaEntry>) -> Option<MediaEntry> {
+    entry.filter(|_| from == Screen::Details).cloned()
+}
+
+fn restored_details(shown: Option<MediaEntry>, current: Option<&MediaEntry>) -> Option<MediaEntry> {
+    shown.filter(|entry| current != Some(entry))
+}
+
+fn lists(listed: Option<u32>, episodes: &[Episode], season: u32) -> bool {
+    listed == Some(season) && !episodes.is_empty()
 }
 
 pub fn restart(mut slot: CopyValue<Option<Task>>, future: impl Future<Output = ()> + 'static) {
@@ -758,25 +797,63 @@ mod tests {
     #[test]
     fn leaving_the_player_for_the_screen_below_it_does_not_stack_it_twice() {
         let mut history = Vec::new();
-        visit(&mut history, (Screen::Home, None), Screen::Player);
-        visit(&mut history, (Screen::Player, None), Screen::Details);
-        assert_eq!(history, [(Screen::Home, None)]);
+        visit(&mut history, (Screen::Home, None, None), Screen::Player);
+        visit(&mut history, (Screen::Player, None, None), Screen::Details);
+        assert_eq!(history, [(Screen::Home, None, None)]);
         visit(
             &mut history,
-            (Screen::Details, Some("play".into())),
+            (Screen::Details, Some("play".into()), None),
             Screen::Player,
         );
-        visit(&mut history, (Screen::Player, None), Screen::Details);
-        assert_eq!(history, [(Screen::Home, None)]);
+        visit(&mut history, (Screen::Player, None, None), Screen::Details);
+        assert_eq!(history, [(Screen::Home, None, None)]);
     }
 
     #[test]
     fn going_home_starts_a_fresh_history() {
         let mut history = Vec::new();
-        visit(&mut history, (Screen::Home, None), Screen::Search);
-        visit(&mut history, (Screen::Search, None), Screen::Details);
-        visit(&mut history, (Screen::Details, None), Screen::Home);
+        visit(&mut history, (Screen::Home, None, None), Screen::Search);
+        visit(&mut history, (Screen::Search, None, None), Screen::Details);
+        visit(&mut history, (Screen::Details, None, None), Screen::Home);
         assert!(history.is_empty());
+    }
+
+    #[test]
+    fn back_brings_back_the_title_details_showed() {
+        let entry = |id| MediaEntry {
+            id,
+            ..Default::default()
+        };
+        let (first, second) = (entry(1), entry(2));
+        let mut history = Vec::new();
+        let mut leave = |from, shown: Option<&MediaEntry>, to| {
+            visit(&mut history, (from, None, leaving_details(from, shown)), to);
+        };
+        leave(Screen::Home, None, Screen::Details);
+        leave(Screen::Details, Some(&first), Screen::Search);
+        leave(Screen::Search, Some(&first), Screen::Details);
+        let (screen, _, shown) = history.pop().unwrap();
+        assert_eq!(
+            (screen, restored_details(shown, Some(&second))),
+            (Screen::Search, None)
+        );
+        let (screen, _, shown) = history.pop().unwrap();
+        assert_eq!(screen, Screen::Details);
+        assert_eq!(
+            restored_details(shown.clone(), Some(&second)),
+            Some(first.clone())
+        );
+        assert_eq!(restored_details(shown.clone(), None), Some(first.clone()));
+        assert_eq!(restored_details(shown, Some(&first)), None);
+    }
+
+    #[test]
+    fn next_needs_the_episode_list_of_the_playing_season() {
+        let episodes = [Episode::numbered(1, "")];
+        assert!(lists(Some(1), &episodes, 1));
+        assert!(!lists(Some(1), &[], 1));
+        assert!(!lists(Some(2), &episodes, 1));
+        assert!(!lists(None, &episodes, 1));
     }
 
     #[test]

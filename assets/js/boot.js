@@ -1,6 +1,7 @@
 (() => {
   const SHELL = 1;
   const RELEASES = "https://github.com/falcosan/StreamVault/releases";
+  const MANIFEST = `${RELEASES}/latest/download/tv.json`;
   const PUBLIC_KEY =
     "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5cKa7O1TH3Bf7BUECcNOmWH7dEIo5bh2WaHvIGtr7NRVd7tN+aFelM7+aWJrTsbyrC7plSl5uUDyY3ybN479Ig==";
   const DATABASE = "streamvault-update";
@@ -25,10 +26,15 @@
       return open(attempt + 1);
     });
 
-  const database = open(1);
+  let database;
+  const connect = () =>
+    (database ??= open(1).catch((error) => {
+      database = undefined;
+      throw error;
+    }));
 
   const read = async (key) => {
-    const store = (await database).transaction(STORE).objectStore(STORE);
+    const store = (await connect()).transaction(STORE).objectStore(STORE);
     return new Promise((resolve, reject) => {
       const request = store.get(key);
       request.onsuccess = () => resolve(request.result);
@@ -37,7 +43,7 @@
   };
 
   const write = async (entries) => {
-    const transaction = (await database).transaction(STORE, "readwrite", {
+    const transaction = (await connect()).transaction(STORE, "readwrite", {
       durability: "strict",
     });
     const store = transaction.objectStore(STORE);
@@ -146,15 +152,10 @@
   };
 
   window.streamvault = {
-    latest: async () =>
-      JSON.parse(await download(`${RELEASES}/latest/download/tv.json`, "text"))
-        .version,
+    latest: async () => JSON.parse(await download(MANIFEST, "text")).version,
     install: async () => {
       try {
-        const text = await download(
-          `${RELEASES}/latest/download/tv.json`,
-          "text",
-        );
+        const text = await download(MANIFEST, "text");
         const base = `${RELEASES}/download/v${JSON.parse(text).version}`;
         const signature = await download(`${base}/tv.sig`, "arrayBuffer");
         const manifest = await signed(text, signature);

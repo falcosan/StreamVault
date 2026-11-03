@@ -63,7 +63,9 @@ impl StreamingCommunity {
     pub fn new(client: Http, base: String, lang: Lang) -> Self {
         Self {
             client,
-            cdn: base.replacen("://", "://cdn.", 1),
+            cdn: base
+                .replacen("://www.", "://", 1)
+                .replacen("://", "://cdn.", 1),
             base,
             langs: match lang {
                 Lang::It => ["it", "en"],
@@ -164,6 +166,7 @@ impl StreamingCommunity {
                 Some(Episode {
                     id: ep["id"].as_u64()?,
                     number: uint(&ep["number"])?,
+                    part: None,
                     name: ep["name"].as_str().unwrap_or_default().to_owned(),
                     duration: uint(&ep["duration"]),
                     image_url: self.image(ep),
@@ -418,6 +421,12 @@ mod tests {
             Lang::It,
         );
         assert_eq!(provider.cdn, "https://cdn.streamingcommunity.test");
+        let www = StreamingCommunity::new(
+            Http::new(std::time::Duration::from_secs(1)),
+            "https://www.streamingcommunity.test".into(),
+            Lang::It,
+        );
+        assert_eq!(www.cdn, "https://cdn.streamingcommunity.test");
     }
 
     #[test]

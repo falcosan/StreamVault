@@ -33,7 +33,7 @@ own module.
   needs, then packages, signs, installs and launches the app, on macOS and
   Windows alike. `tv/mod.rs` is the flow (pick the TV, ask about sync,
   install), `tv/discover.rs` finds the TVs on the network, `tv/bundle.rs`
-  builds or downloads the web app every TV installs, `tv/tizen.rs` and
+  builds or downloads the web app every TV installs, `tv/tizen/` and
   `tv/android.rs` hold what each TV needs, `tv/macos.rs` and `tv/windows.rs`
   what each computer does differently. `scripts/install tv`, one file that
   runs in bash on macOS and in PowerShell on Windows, downloads the installer
@@ -87,7 +87,8 @@ iex "& { $(irm https://raw.githubusercontent.com/falcosan/StreamVault/main/scrip
 ```
 
 Without a clone, the script downloads the installer of the latest release and
-installs the TV bundle published with it, so nothing is compiled. From a
+installs the TV bundle published with it, so nothing is compiled but the
+small Java host of an Android TV. From a
 clone, the installer builds the bundle from that source; on a Mac the script
 also builds the installer, installing Rust in a temporary folder when it is
 missing. It:
@@ -116,8 +117,9 @@ missing. It:
   `Cargo.toml`, then installs and launches it; from a clone the packages stay
   in `target/tv/`.
 
-When it ends, successfully or not, it removes everything it installed: Rust,
-the Rust target, `dx` and its tools, the JDK and the Android SDK. It keeps
+When it ends, successfully, with an error or stopped with Ctrl+C, it removes
+everything it installed but the Command Line Tools: Rust, the Rust target,
+`dx` and its tools, the JDK and the Android SDK. It keeps
 only the keys later installs need to update the app:
 `~/.android/debug.keystore` and the Samsung certificates, in
 `tv/tizen/<device id>` of StreamVault's own hidden folder
@@ -135,8 +137,9 @@ Samsung's authorities (shipped in the repository) and their password in that
 folder, and installs again. A new certificate keeps the author key of the one
 it replaces, so the TV goes on updating the app in place. Only an app signed
 with an author key this computer does not have (its folder was deleted, or
-another computer installed it) cannot be updated, so the installer uninstalls
-it first: what the app saved on that TV is cleared, and synced data comes back.
+another computer installed it) cannot be updated, so the installer asks to
+uninstall it first: what the app saved on that TV is cleared, and synced data
+comes back only with sync on. Without a terminal to ask in, it stops instead.
 Build output and the TV's answers go to `streamvault-tv.log` in the temporary
 folder.
 
@@ -215,7 +218,7 @@ title and synced.
 
 - Continue Watching and preferences live on the TV in IndexedDB with strict
   durability, so they survive the app being killed and reinstalled.
-- Playback uses hls.js 1.7.3 (`assets/js/hls.min.js`, Apache-2.0, see
+- Playback uses hls.js 1.7.4 (`assets/js/hls.min.js`, Apache-2.0, see
   `assets/js/hls.LICENSE`) because Tizen's native HLS stalls on these streams.
   Progressive URLs (`.mp4`, …) play natively.
 - Downloads are a desktop feature; the TV app streams only.

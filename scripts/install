@@ -11,11 +11,11 @@ die() { printf '\n  %s\n' "$*" >&2; exit 1; }
 command_line_tools() {
   xcrun --find cc &>/dev/null && return
   local package
+  trap 'rm -rf "$temp" "$PLACEHOLDER"' EXIT
   touch "$PLACEHOLDER"
   package="$(softwareupdate --list 2>/dev/null | grep -o 'Command Line Tools[^*]*' | sort -V | tail -n1 | xargs)" || true
-  [[ -n "$package" ]] || { rm -f "$PLACEHOLDER"; die "Command Line Tools package not found"; }
-  softwareupdate --install "$package" --agree-to-license &>/dev/null || { rm -f "$PLACEHOLDER"; die "CLT installation failed"; }
-  rm -f "$PLACEHOLDER"
+  [[ -n "$package" ]] || die "Command Line Tools package not found"
+  softwareupdate --install "$package" --agree-to-license &>/dev/null || die "CLT installation failed"
 }
 
 rust() {

@@ -95,12 +95,18 @@ impl Replica {
         }
     }
 
-    fn apply(&mut self, sent: &[Change], response: Response) -> Result<(), String> {
+    fn apply(&mut self, sent: &[Change], response: Response) -> Result<bool, String> {
         if !response.ok {
             return Err(response.error.unwrap_or_else(|| "sync rejected".into()));
         }
         let wiped =
             matches!((&self.document, &response.id), (Some(known), Some(id)) if known != id);
+        let since = if wiped { 0 } else { response.seq };
+        let changed = wiped
+            || response.reset
+            || !response.entries.is_empty()
+            || since != self.since
+            || response.id.is_some() && response.id != self.document;
         if wiped {
             for record in self.entries.values() {
                 self.pending
@@ -128,8 +134,8 @@ impl Replica {
             }
             self.entries.insert(record.key.clone(), record);
         }
-        self.since = if wiped { 0 } else { response.seq };
-        Ok(())
+        self.since = since;
+        Ok(changed)
     }
 
     pub fn watch(&self) -> Vec<WatchItem> {
@@ -229,7 +235,8 @@ pub async fn run(mut replica: CopyValue<Replica>, config: SyncConfig, mut publis
                 .await
                 .and_then(|response| replica.write().apply(&sent, response));
             match result {
-                Ok(()) => publish(),
+                Ok(true) => publish(),
+                Ok(false) => {}
                 Err(e) => {
                     warn!("sync failed: {e}");
                     sleep(BACKOFF).await;
@@ -307,7 +314,7 @@ mod tests {
         let mut replica = Replica::new("tv");
         replica.record_watch(&[item(1, 5.0), item(2, 5.0)], 1_000);
         replica.pending.clear();
-        replica.record_watch(&[item(2, 9.0), item(3, 1.0)], 2_000);
+        replica.record_watch(&[item(3, 1.0), item(2, 5.0)], 2_000);
         let changes: Vec<_> = replica
             .changes()
             .into_iter()
@@ -317,11 +324,10 @@ mod tests {
             changes,
             [
                 ("watch:0:1".into(), false, 2_000),
-                ("watch:0:2".into(), true, 2_000),
-                ("watch:0:3".into(), true, 1_999),
+                ("watch:0:3".into(), true, 2_000),
             ]
         );
-        assert_eq!(ids(&replica.watch()), [2, 3]);
+        assert_eq!(ids(&replica.watch()), [3, 2]);
     }
 
     #[test]
@@ -373,6 +379,15 @@ mod tests {
             .unwrap();
         replica.record_watch(&[item(1, 7.0)], 4_000);
         assert_eq!(replica.changes()[0].at, 9_001);
+    }
+
+    #[test]
+    fn only_a_sync_that_changed_something_is_saved() {
+        let mut replica = Replica::new("tv");
+        assert_eq!(replica.apply(&[], accepted(1, vec![])), Ok(true));
+        assert_eq!(replica.apply(&[], accepted(1, vec![])), Ok(false));
+        let remote = record("watch:0:1", None, 10, "desktop");
+        assert_eq!(replica.apply(&[], accepted(1, vec![remote])), Ok(true));
     }
 
     #[test]
@@ -584,6 +599,7 @@ mod tests {
         use crate::check::run_js;
 
         const SCRIPT: &str = include_str!("../assets/js/google_apps_script.gs");
+        const USERSCRIPT: &str = include_str!("../assets/js/streamvault.user.js");
         const DAY: u64 = 24 * 60 * 60 * 1000;
 
         struct Server {
@@ -651,6 +667,24 @@ mod tests {
                     "{SCRIPT}\nJSON.stringify([MAX_CHANGES, TOMBSTONE_TTL_MS]);"
                 )),
                 json!([MAX_CHANGES, TOMBSTONE_TTL_MS])
+            );
+        }
+
+        #[test]
+        fn the_userscript_keeps_the_same_limits() {
+            let limits: String = USERSCRIPT
+                .lines()
+                .filter(|line| {
+                    ["MAX_WATCH", "MAX_CHANGES", "TOMBSTONE_TTL_MS"]
+                        .iter()
+                        .any(|name| line.trim_start().starts_with(&format!("const {name} =")))
+                })
+                .collect();
+            assert_eq!(
+                run_js(&format!(
+                    "{limits}\nJSON.stringify([MAX_WATCH, MAX_CHANGES, TOMBSTONE_TTL_MS]);"
+                )),
+                json!([MAX_WATCH, MAX_CHANGES, TOMBSTONE_TTL_MS])
             );
         }
 

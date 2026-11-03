@@ -8,13 +8,13 @@ const describe = (track) =>
   normalize(`${track.language || ""} ${track.label || ""}`);
 const pick = (tracks, lang) => {
   const wanted = normalize(lang);
-  if (!wanted) return 0;
+  if (!wanted) return -1;
   const exact = tracks.findIndex((t) =>
     [t.language, t.label].some((value) => normalize(value) === wanted),
   );
-  const index =
-    exact >= 0 ? exact : tracks.findIndex((t) => describe(t).includes(wanted));
-  return Math.max(index, 0);
+  return exact >= 0
+    ? exact
+    : tracks.findIndex((t) => describe(t).includes(wanted));
 };
 const primary = (language) => normalize(language).split(/[-_]/)[0];
 const spoken = (tracks, languages) =>
@@ -78,9 +78,8 @@ function hlsPlayer(hls) {
 function applyAudio(player, prefs, languages) {
   const audio = player.audio().map(track);
   if (audio.length < 2) return;
-  const index = prefs.audio_lang
-    ? pick(audio, prefs.audio_lang)
-    : spoken(audio, languages);
+  const picked = pick(audio, prefs.audio_lang);
+  const index = picked >= 0 ? picked : spoken(audio, languages);
   if (index >= 0) player.selectAudio(index);
 }
 
@@ -88,7 +87,7 @@ function applySubtitles(player, prefs) {
   const subtitles = player.subtitles().map(track);
   if (subtitles.length)
     player.selectSubtitle(
-      prefs.subtitles_on ? pick(subtitles, prefs.subtitle_lang) : -1,
+      prefs.subtitles_on ? Math.max(pick(subtitles, prefs.subtitle_lang), 0) : -1,
     );
 }
 

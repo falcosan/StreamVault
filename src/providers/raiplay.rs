@@ -166,6 +166,7 @@ fn parse_cards(slug: &str, json: &Value) -> Vec<(Episode, String)> {
                 number: text(&["episode"])
                     .and_then(|n| n.parse().ok())
                     .unwrap_or(position),
+                part: None,
                 name: text(&["episode_title", "name", "toptitle"])
                     .unwrap_or_default()
                     .to_owned(),

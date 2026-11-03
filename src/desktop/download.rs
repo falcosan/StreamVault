@@ -3,6 +3,7 @@ use super::os;
 use crate::app::Subtitle;
 use crate::providers::{Episode, MediaEntry, StreamUrl};
 use dioxus::logger::tracing::warn;
+use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env::consts::EXE_SUFFIX;
@@ -10,11 +11,13 @@ use std::ffi::OsStr;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::sync::LazyLock;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use uuid::Uuid;
 
 const ERROR_LINES: usize = 5;
+const MAX_ROW: usize = 4096;
 const SAVE_PATTERN: &str = "<SaveName>.<Language>.<Id>";
 const ASSETS: &str = "assets";
 const SUBTITLES: &str = "subtitles";
@@ -78,9 +81,9 @@ impl Download {
         self.entry.key_at(self.season, self.episode.as_ref()) == entry.key_at(season, episode)
     }
 
-    pub fn restored(self) -> Option<Self> {
+    pub fn restored(self, root: &Path) -> Option<Self> {
         match self.status {
-            Status::Completed => self.file.is_file().then_some(self),
+            Status::Completed => (self.file.is_file() || !root.is_dir()).then_some(self),
             Status::Failed(_) => None,
             _ => Some(Self {
                 status: Status::Queued,
@@ -194,7 +197,10 @@ fn targets(
             .map_episode_name
             .replace("%(episode_name)", &episode.name)
             .replace("%(season)", &format!("{season:02}"))
-            .replace("%(episode)", &format!("{:02}", episode.number))
+            .replace(
+                "%(episode)",
+                &format!("{:02}{}", episode.number, episode.fraction()),
+            )
             .replace("%(show_name)", &entry.name);
         let season_dir = config
             .serie_dir()
@@ -257,18 +263,11 @@ async fn fetch(
         .spawn()
         .map_err(|e| format!("Failed to start N_m3u8DL-RE: {e}"))?;
 
-    let mut muxing = false;
     let mut progress = Progress::default();
     let mut errors = Vec::new();
     tokio::join!(
-        each_line(child.stdout.take(), |line| {
-            if muxing {
-                return;
-            }
-            if ["Muxing", "muxing", "MUX"].iter().any(|m| line.contains(m)) {
-                muxing = true;
-                report(Status::Muxing);
-            } else if let Some(percent) = progress.update(line) {
+        each_chunk(child.stdout.take(), |output| {
+            if let Some(percent) = progress.update(output) {
                 report(Status::Downloading(percent));
             }
         }),
@@ -295,9 +294,7 @@ async fn fetch(
         return Err(exit_message(exit, &errors));
     }
     let (media, subtitles) = scan_tracks(&tracks).await;
-    if !muxing {
-        report(Status::Muxing);
-    }
+    report(Status::Muxing);
     let muxed = work.join(file);
     mux(&ffmpeg, &muxed, &media)
         .await
@@ -315,30 +312,28 @@ async fn fetch(
 
 #[derive(Default)]
 struct Progress {
+    pending: Vec<u8>,
     streams: HashMap<String, (u64, u64)>,
     percent: u8,
 }
 
 impl Progress {
-    fn update(&mut self, line: &str) -> Option<u8> {
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        let (index, segments) = tokens.iter().enumerate().find_map(|(index, token)| {
-            let (done, total) = token.split_once('/')?;
-            let segments = (done.parse().ok()?, total.parse().ok()?);
-            let percent = tokens
-                .iter()
-                .skip(index + 1)
-                .take(2)
-                .any(|t| t.contains('%'));
-            percent.then_some((index, segments))
-        })?;
-        let stream = tokens[..index]
-            .iter()
-            .filter(|token| token.chars().any(char::is_alphanumeric))
-            .copied()
-            .collect::<Vec<_>>()
-            .join(" ");
-        self.streams.insert(stream, segments);
+    fn update(&mut self, output: impl AsRef<[u8]>) -> Option<u8> {
+        static ROW: LazyLock<Regex> = LazyLock::new(|| Regex::new("(?:Vid|Aud|Sub) ").unwrap());
+        self.pending.extend_from_slice(output.as_ref());
+        let starts: Vec<usize> = ROW
+            .find_iter(&self.pending)
+            .map(|row| row.start())
+            .collect();
+        let ends = starts.iter().skip(1).copied().chain([self.pending.len()]);
+        for (start, end) in starts.iter().copied().zip(ends) {
+            if let Some((stream, segments)) = segments(&self.pending[start..end]) {
+                self.streams.insert(stream, segments);
+            }
+        }
+        let unfinished = starts.last().copied().unwrap_or_default();
+        self.pending
+            .drain(..unfinished.max(self.pending.len().saturating_sub(MAX_ROW)));
         let (done, total) = self
             .streams
             .values()
@@ -348,6 +343,31 @@ impl Progress {
             self.percent = percent;
             percent
         })
+    }
+}
+
+fn segments(row: &[u8]) -> Option<(String, (u64, u64))> {
+    static SEGMENTS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(\d+)/(\d+)\s*\d+(?:[.,]\d+)?\s*%").unwrap());
+    let counts = SEGMENTS.captures(row)?;
+    let number = |group: usize| std::str::from_utf8(&counts[group]).ok()?.parse().ok();
+    let stream = String::from_utf8_lossy(&row[..counts.get(0)?.start()])
+        .split_whitespace()
+        .filter(|token| token.chars().any(char::is_alphanumeric))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some((stream, (number(1)?, number(2)?)))
+}
+
+async fn each_chunk(source: Option<impl AsyncRead + Unpin>, mut handle: impl FnMut(&[u8])) {
+    let Some(source) = source else { return };
+    let mut reader = BufReader::new(source);
+    while let Ok(chunk) = reader.fill_buf().await
+        && !chunk.is_empty()
+    {
+        handle(chunk);
+        let read = chunk.len();
+        reader.consume(read);
     }
 }
 
@@ -506,11 +526,35 @@ async fn remove_leftovers(work: &Path, video: &Path) {
     }
 }
 
-fn work_dir(id: Uuid) -> PathBuf {
+pub fn sweep(downloads: &[Download]) {
+    let kept: Vec<Uuid> = downloads.iter().map(|d| d.id).collect();
+    std::thread::spawn(move || sweep_in(&work_root(), &kept));
+}
+
+fn sweep_in(root: &Path, kept: &[Uuid]) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let orphan = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| Uuid::parse_str(name).ok())
+            .is_some_and(|id| !kept.contains(&id));
+        if orphan && let Err(e) = std::fs::remove_dir_all(entry.path()) {
+            warn!("{} remove error: {e}", entry.path().display());
+        }
+    }
+}
+
+fn work_root() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("StreamVault")
-        .join(id.to_string())
+}
+
+fn work_dir(id: Uuid) -> PathBuf {
+    work_root().join(id.to_string())
 }
 
 async fn reset_dir(dir: &Path) -> std::io::Result<()> {
@@ -656,8 +700,19 @@ fn sanitize_filename(name: &str) -> String {
         .collect();
     if clean.trim_matches('.').is_empty() {
         "_".into()
+    } else if cfg!(windows) && is_device_name(&clean) {
+        format!("_{clean}")
     } else {
         clean
+    }
+}
+
+fn is_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default().trim_end();
+    match stem.to_ascii_uppercase().as_bytes() {
+        b"CON" | b"PRN" | b"AUX" | b"NUL" => true,
+        [b'C', b'O', b'M', n] | [b'L', b'P', b'T', n] => (b'1'..=b'9').contains(n),
+        _ => false,
     }
 }
 
@@ -727,6 +782,16 @@ mod tests {
                 .file
                 .ends_with("Lost - Tabula Rasa S01E03/Lost - Tabula Rasa S01E03.mkv")
         );
+        let recap = Episode {
+            part: Some(50),
+            ..Episode::numbered(3, "")
+        };
+        let recap = Download::new(&config, &lost, Some(1), Some(&recap));
+        assert!(
+            recap
+                .file
+                .ends_with("Lost -  S01E03.5/Lost -  S01E03.5.mkv")
+        );
     }
 
     #[test]
@@ -742,19 +807,35 @@ mod tests {
             ..saved.clone()
         };
         assert_eq!(
-            with(Status::Completed).restored(),
+            with(Status::Completed).restored(&dir),
             Some(with(Status::Completed))
         );
         for status in [Status::Queued, Status::Downloading(40), Status::Muxing] {
-            assert_eq!(with(status).restored(), Some(with(Status::Queued)));
+            assert_eq!(with(status).restored(&dir), Some(with(Status::Queued)));
         }
-        assert_eq!(with(Status::Failed("boom".into())).restored(), None);
+        assert_eq!(with(Status::Failed("boom".into())).restored(&dir), None);
         let deleted = Download {
             file: dir.join("deleted.mp4"),
             ..with(Status::Completed)
         };
-        assert_eq!(deleted.restored(), None);
+        assert_eq!(deleted.clone().restored(&dir), None);
+        let unmounted = dir.join("unmounted");
+        assert_eq!(deleted.clone().restored(&unmounted), Some(deleted));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn work_folders_no_download_owns_are_swept() {
+        let root = scratch_dir("sweep");
+        let (kept, orphan) = (Uuid::new_v4(), Uuid::new_v4());
+        for dir in [kept.to_string(), orphan.to_string(), "other".into()] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        sweep_in(&root, &[kept]);
+        assert!(root.join(kept.to_string()).is_dir());
+        assert!(!root.join(orphan.to_string()).exists());
+        assert!(root.join("other").is_dir());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -929,6 +1010,16 @@ mod tests {
     }
 
     #[test]
+    fn windows_device_names_are_recognised_with_any_extension() {
+        for name in ["con", "Aux.Vol 1", "NUL ", "COM1", "lpt9.mkv"] {
+            assert!(is_device_name(name), "{name}");
+        }
+        for name in ["Con Air", "console", "COM0", "LPT10", "_CON"] {
+            assert!(!is_device_name(name), "{name}");
+        }
+    }
+
+    #[test]
     fn sanitize_never_yields_a_traversal_name() {
         assert_eq!(sanitize_filename(".."), "_");
         assert_eq!(sanitize_filename("."), "_");
@@ -1082,6 +1173,35 @@ mod tests {
         assert_eq!(progress.update("Aud ita ━━━ 100/100 100.00%"), Some(75));
     }
 
+    #[test]
+    fn progress_reads_rows_glued_together_in_any_chunks() {
+        let output = "19:10:04.813 INFO : Start downloading...Vid 1280x720 | 2150 Kbps | avc1.640028\
+            Vid 1280x720 | 2150 Kbps ━━━━━━━━━━ 0/104 0.00% -0.00Bps --:--:--\
+            Aud Italian | ita        ━━━━━━━━━━ 0/104 0.00% -0.00Bps --:--:--\
+            19:10:05.184 WARN : Reading media info...\
+            Vid 1280x720 | 2150 Kbps ━━━━━━━━━━  12/104 11.54% 2.28MB/19.72MB2.28MBps00:00:08\
+            Aud Italian | ita        ━━━━━━━━━━104/104 100.00%8.42MB    -     00:00:00";
+        for size in [1, 7, output.len()] {
+            let mut progress = Progress::default();
+            let reported = output
+                .as_bytes()
+                .chunks(size)
+                .filter_map(|chunk| progress.update(chunk));
+            assert_eq!(reported.last(), Some(55), "chunks of {size} bytes");
+        }
+    }
+
+    #[test]
+    fn progress_holds_back_at_most_one_row() {
+        let mut progress = Progress::default();
+        assert_eq!(
+            progress.update(format!("Vid {}", "x".repeat(MAX_ROW * 2))),
+            None
+        );
+        assert!(progress.pending.len() <= MAX_ROW);
+        assert_eq!(progress.update("Vid ━━━ 4/40 10.00%"), Some(10));
+    }
+
     #[tokio::test]
     async fn each_line_splits_on_any_newline_and_survives_invalid_utf8() {
         let mut lines = Vec::new();
@@ -1089,6 +1209,14 @@ mod tests {
         each_line(Some(source), |line| lines.push(line.to_owned())).await;
         lines.retain(|line| !line.is_empty());
         assert_eq!(lines, ["a", "b", "c\u{fffd}", "d"]);
+    }
+
+    #[tokio::test]
+    async fn each_chunk_hands_over_the_output_unchanged() {
+        let mut output = Vec::new();
+        let source: &[u8] = b"a\rb\nc\xff";
+        each_chunk(Some(source), |chunk| output.extend_from_slice(chunk)).await;
+        assert_eq!(output, source);
     }
 
     #[test]

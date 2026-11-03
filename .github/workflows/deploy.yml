@@ -20,6 +20,8 @@ jobs:
       pending: ${{ steps.release.outputs.pending }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Open the draft release of this version
         id: release
@@ -35,6 +37,8 @@ jobs:
           if [[ "$draft" == missing ]]; then
             gh release create "$tag" --draft --target "$GITHUB_SHA" \
               --title "StreamVault ${tag#v}" --notes "StreamVault ${tag#v}."
+          else
+            gh release edit "$tag" --target "$GITHUB_SHA"
           fi
           echo "pending=true" >>"$GITHUB_OUTPUT"
 
@@ -44,6 +48,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Install Rust and dx
         run: |
@@ -71,6 +77,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Build the Windows app and installer
         env:
@@ -93,6 +101,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Build the Mac app and installer
         run: |

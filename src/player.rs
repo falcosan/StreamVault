@@ -22,7 +22,7 @@ const STEP_INTERVAL: Duration = Duration::from_millis(200);
 pub const OSD_SECONDS: u64 = 4;
 pub const SEEK_SECONDS: f64 = 10.0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Menu {
     Audio,
@@ -38,7 +38,7 @@ impl Menu {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Default, Deserialize)]
 pub struct Tracks {
     pub audio: Vec<Track>,
     pub audio_index: i32,
@@ -65,7 +65,7 @@ impl Tracks {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 pub struct Track {
     language: String,
     label: String,
@@ -106,7 +106,7 @@ impl Track {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Clone, Copy, Default, Deserialize)]
 pub struct Status {
     pub time: f64,
     pub duration: f64,
@@ -208,7 +208,7 @@ impl Streak {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct Player {
     pub osd: Signal<bool>,
     pub menu: Signal<Option<Menu>>,
@@ -223,21 +223,6 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new() -> Self {
-        Self {
-            osd: Signal::default(),
-            menu: Signal::default(),
-            scrub: Signal::default(),
-            status: Signal::default(),
-            tracks: Signal::default(),
-            pending: CopyValue::default(),
-            streak: CopyValue::default(),
-            generation: CopyValue::default(),
-            last_input: CopyValue::default(),
-            channel: CopyValue::default(),
-        }
-    }
-
     pub async fn run(mut self, app: AppState) {
         let mut channel = document::eval(SCRIPT);
         self.channel.set(Some(channel));
@@ -766,13 +751,32 @@ mod tests {
         }
 
         #[test]
-        fn pick_falls_back_to_a_partial_match_then_the_first_track() {
+        fn pick_falls_back_to_a_partial_match_then_to_none() {
             assert_eq!(
                 eval(&format!(
                     r#"["ital", "xyz", ""].map((lang) => pick({TRACKS}, lang))"#
                 )),
-                json!([1, 0, 0])
+                json!([1, -1, -1])
             );
+        }
+
+        #[test]
+        fn a_saved_audio_language_the_stream_lacks_speaks_the_interface_language() {
+            let chosen = |audio_lang: &str| {
+                eval(&format!(
+                    r#"(() => {{
+                        let chosen = -1;
+                        const player = {{
+                            audio: () => [{{ language: "eng" }}, {{ language: "ita" }}],
+                            selectAudio: (index) => (chosen = index),
+                        }};
+                        applyAudio(player, {{ audio_lang: "{audio_lang}" }}, [["it", "ita"], ["en", "eng"]]);
+                        return chosen;
+                    }})()"#
+                ))
+            };
+            assert_eq!(chosen("jpn"), json!(1));
+            assert_eq!(chosen("eng"), json!(0));
         }
     }
 }

@@ -11,7 +11,7 @@ use crate::time::sleep;
 use animeunity::AnimeUnity;
 use async_trait::async_trait;
 use aurora::Aurora;
-use dioxus::logger::tracing::warn;
+use dioxus::logger::tracing::{info, warn};
 use futures::future::join_all;
 use raiplay::RaiPlay;
 use regex::Regex;
@@ -111,7 +111,8 @@ pub struct Providers(Arc<[Arc<dyn Provider>]>);
 impl Providers {
     pub async fn load(timeout: Duration, lang: Lang) -> Self {
         let http = Http::new(timeout);
-        let domains = domains(&http, DOMAINS_URL).await;
+        let mut domains = domains(&http, DOMAINS_URL).await;
+        follow_moves(&http, &mut domains).await;
         Self::with(http, &domains, lang)
     }
 
@@ -271,6 +272,31 @@ async fn domains(http: &Http, url: &str) -> Domains {
         Err(e) => warn!("domains fetch failed, using the built-in ones: {e}"),
     }
     domains
+}
+
+async fn follow_moves(http: &Http, domains: &mut Domains) {
+    join_all(domains.iter_mut().map(|(site, domain)| async move {
+        let request = http.client.get(&domain.full_url).timeout(DOMAINS_TIMEOUT);
+        match request.send().await {
+            Ok(response) => {
+                if let Some(origin) = moved_origin(&domain.full_url, response.url()) {
+                    info!("{site} moved to {origin}");
+                    domain.full_url = origin;
+                }
+            }
+            Err(e) => warn!(
+                "{site} domain check failed, keeping {}: {e}",
+                domain.full_url
+            ),
+        }
+    }))
+    .await;
+}
+
+fn moved_origin(from: &str, to: &Url) -> Option<String> {
+    let from = Url::parse(from).ok()?;
+    (to.scheme() == from.scheme() && to.origin() != from.origin())
+        .then(|| to.origin().ascii_serialization())
 }
 
 fn built_in_domains() -> Domains {
@@ -593,6 +619,52 @@ mod tests {
             domain(&unavailable, "streamingcommunity"),
             domain(&built_in, "streamingcommunity")
         );
+    }
+
+    #[tokio::test]
+    async fn a_moved_site_is_followed_and_an_unreachable_one_is_kept() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (new, _) = serve(&[(200, "")]).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let old = format!("http://{}/", listener.local_addr().unwrap());
+        let redirect = format!(
+            "HTTP/1.1 301 X\r\nlocation: {new}/it\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        );
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = socket.read(&mut [0; 4096]).await;
+            socket.write_all(redirect.as_bytes()).await.unwrap();
+        });
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let down = format!("http://{}/", closed.local_addr().unwrap());
+        drop(closed);
+        let mut domains = Domains::from([
+            ("moved".into(), Domain { full_url: old }),
+            (
+                "down".into(),
+                Domain {
+                    full_url: down.clone(),
+                },
+            ),
+        ]);
+        follow_moves(&Http::new(Duration::from_secs(1)), &mut domains).await;
+        assert_eq!(domain(&domains, "moved"), new);
+        assert_eq!(domains["down"].full_url, down);
+    }
+
+    #[test]
+    fn moved_origin_needs_another_host_on_the_same_scheme() {
+        let to = |url| Url::parse(url).unwrap();
+        assert_eq!(
+            moved_origin("https://sc.old/", &to("https://www.sc.new/it?x=1")).as_deref(),
+            Some("https://www.sc.new")
+        );
+        assert_eq!(
+            moved_origin("https://sc.old", &to("https://sc.old/it")),
+            None
+        );
+        assert_eq!(moved_origin("https://sc.old", &to("http://sc.new/")), None);
+        assert_eq!(moved_origin("", &to("https://sc.new/")), None);
     }
 
     #[test]

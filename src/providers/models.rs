@@ -24,10 +24,14 @@ pub struct MediaEntry {
     pub description: Option<String>,
 }
 
+pub type EpisodeOrder = (u32, Option<u8>);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Episode {
     pub id: u64,
     pub number: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part: Option<u8>,
     pub name: String,
     pub duration: Option<u32>,
     pub image_url: Option<String>,
@@ -58,7 +62,21 @@ impl StreamUrl {
 
 impl Episode {
     pub fn code(&self, season: u32) -> String {
-        format!("S{season:02}E{:02}", self.number)
+        format!("S{season:02}E{:02}{}", self.number, self.fraction())
+    }
+
+    pub fn number_text(&self) -> String {
+        format!("{}{}", self.number, self.fraction())
+    }
+
+    pub fn fraction(&self) -> String {
+        self.part.map_or_else(String::new, |hundredths| {
+            format!(".{}", format!("{hundredths:02}").trim_end_matches('0'))
+        })
+    }
+
+    pub fn order(&self) -> EpisodeOrder {
+        (self.number, self.part)
     }
 
     pub fn label(&self, season: u32) -> String {
@@ -80,8 +98,8 @@ impl MediaEntry {
         &self,
         season: Option<u32>,
         episode: Option<&Episode>,
-    ) -> (usize, u64, Option<u32>, Option<u32>) {
-        (self.provider, self.id, season, episode.map(|e| e.number))
+    ) -> (usize, u64, Option<u32>, Option<EpisodeOrder>) {
+        (self.provider, self.id, season, episode.map(Episode::order))
     }
 
     pub fn is_movie(&self) -> bool {
@@ -103,11 +121,11 @@ impl MediaEntry {
     }
 }
 
-pub fn next_episode(episodes: &[Episode], after: u32) -> Option<&Episode> {
+pub fn next_episode<'a>(episodes: &'a [Episode], current: &Episode) -> Option<&'a Episode> {
     episodes
         .iter()
-        .filter(|e| e.number > after)
-        .min_by_key(|e| e.number)
+        .filter(|e| e.order() > current.order())
+        .min_by_key(|e| e.order())
 }
 
 #[cfg(test)]
@@ -116,6 +134,7 @@ impl Episode {
         Self {
             id: u64::from(number),
             number,
+            part: None,
             name: name.into(),
             duration: None,
             image_url: None,
@@ -203,8 +222,39 @@ mod tests {
             Episode::numbered(1, ""),
             Episode::numbered(2, ""),
         ];
-        assert_eq!(next_episode(&episodes, 1).map(|e| e.number), Some(2));
-        assert!(next_episode(&episodes, 3).is_none());
+        let after =
+            |number| next_episode(&episodes, &Episode::numbered(number, "")).map(|e| e.number);
+        assert_eq!(after(1), Some(2));
+        assert!(after(3).is_none());
+    }
+
+    #[test]
+    fn a_fractional_episode_keeps_its_own_place_name_and_identity() {
+        let half = Episode {
+            id: 75,
+            part: Some(50),
+            ..Episode::numbered(7, "")
+        };
+        let episodes = [
+            Episode::numbered(8, ""),
+            half.clone(),
+            Episode::numbered(7, ""),
+        ];
+        assert_eq!(next_episode(&episodes, &episodes[2]), Some(&half));
+        assert_eq!(next_episode(&episodes, &half), Some(&episodes[0]));
+        assert_eq!(
+            (half.code(1), half.number_text()),
+            ("S01E07.5".into(), "7.5".into())
+        );
+        let entry = MediaEntry::default();
+        assert_ne!(
+            entry.key_at(Some(1), Some(&half)),
+            entry.key_at(Some(1), Some(&episodes[2]))
+        );
+        let whole = serde_json::to_value(&episodes[2]).unwrap();
+        assert!(whole.get("part").is_none());
+        let restored: Episode = serde_json::from_value(whole).unwrap();
+        assert_eq!(restored.part, None);
     }
 
     #[test]

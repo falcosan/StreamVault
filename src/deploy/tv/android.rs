@@ -1,5 +1,7 @@
 use super::{ICON, between, bundle, os};
-use crate::deploy::{Session, VERSION, ask, attempt, binary, say, tidy, wait_until, write};
+use crate::deploy::{
+    Session, VERSION, ask, attempt, binary, create, parent, say, tidy, wait_until, write,
+};
 use crate::settings::SyncConfig;
 use std::env::consts::ARCH;
 use std::net::Ipv4Addr;
@@ -11,6 +13,8 @@ pub const REMOTE: u16 = 6466;
 const API: &str = "36";
 const BUILD_TOOLS: &str = "36.0.0";
 const MIN_API: &str = "21";
+const JAVA_RELEASE: &str = "17";
+const DEBUG_PASSWORD: &str = "android";
 const WEBVIEW_MIN: u32 = 96;
 const CMDLINE_TOOLS: &str = "15641748";
 const LICENSES: usize = 20;
@@ -20,16 +24,19 @@ const ACTIVITY: &str = include_str!("../../../resources/tv/android/MainActivity.
 const BANNER: &str = include_str!("../../../resources/tv/android/banner.xml");
 const READY: &str = "On the TV: enable Developer options (tap Build 7 times in About), turn on USB, network or wireless debugging (Fire TV: ADB debugging), and allow this computer when asked.";
 
-pub async fn attached() -> Vec<(String, String)> {
-    let Ok(output) = Command::new(adb_in(&user_sdk()))
-        .args(["devices", "-l"])
-        .output()
-        .await
-    else {
+pub async fn attached(session: &Session) -> Vec<(String, String)> {
+    let adb = adb_in(&user_sdk());
+    let Ok(output) = Command::new(&adb).args(["devices", "-l"]).output().await else {
         return Vec::new();
     };
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
+    if String::from_utf8_lossy(&output.stderr).contains("daemon started successfully") {
+        session.on_exit(move || tidy(&adb, &["kill-server"]));
+    }
+    devices(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn devices(list: &str) -> Vec<(String, String)> {
+    list.lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
             let serial = fields.next()?;
@@ -40,6 +47,24 @@ pub async fn attached() -> Vec<(String, String)> {
                 .then(|| (serial.to_owned(), model.unwrap_or(serial).to_owned()))
         })
         .collect()
+}
+
+fn service(list: &str, target: &str, kind: &str) -> Option<String> {
+    list.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let (service, address) = (fields.get(1)?, fields.get(2)?);
+        (service.contains(&format!("_adb-tls-{kind}"))
+            && address.starts_with(&format!("{target}:")))
+        .then(|| (*address).to_owned())
+    })
+}
+
+fn build_tools(root: &Path) -> PathBuf {
+    root.join("build-tools").join(BUILD_TOOLS)
+}
+
+fn android_jar(root: &Path) -> PathBuf {
+    root.join(format!("platforms/android-{API}/android.jar"))
 }
 
 pub async fn deploy(
@@ -105,7 +130,7 @@ async fn jdk(session: &Session) -> Result<PathBuf, String> {
         .chain(os::system_java());
     for home in candidates {
         let mut javac = Command::new(binary(&home.join("bin"), "javac"));
-        if attempt(javac.args(["--release", "17", "-version"])).await {
+        if attempt(javac.args(["--release", JAVA_RELEASE, "-version"])).await {
             return Ok(home);
         }
     }
@@ -191,11 +216,10 @@ impl Sdk {
     }
 
     fn complete(root: &Path) -> bool {
-        let tools = root.join("build-tools").join(BUILD_TOOLS);
-        tools.join(format!("apksigner{}", os::SCRIPT)).is_file()
-            && root
-                .join(format!("platforms/android-{API}/android.jar"))
-                .is_file()
+        build_tools(root)
+            .join(format!("apksigner{}", os::SCRIPT))
+            .is_file()
+            && android_jar(root).is_file()
             && adb_in(root).is_file()
     }
 
@@ -204,19 +228,12 @@ impl Sdk {
     }
 
     fn tool(&self, name: &str) -> Command {
-        Command::new(binary(
-            &self.root.join("build-tools").join(BUILD_TOOLS),
-            name,
-        ))
+        Command::new(binary(&build_tools(&self.root), name))
     }
 
     fn script(&self, name: &str, jdk: &Path) -> Command {
-        let mut script = Command::new(
-            self.root
-                .join("build-tools")
-                .join(BUILD_TOOLS)
-                .join(format!("{name}{}", os::SCRIPT)),
-        );
+        let mut script =
+            Command::new(build_tools(&self.root).join(format!("{name}{}", os::SCRIPT)));
         java(&mut script, jdk);
         script
     }
@@ -252,15 +269,7 @@ impl Sdk {
 
     async fn service(&self, target: &str, kind: &str) -> Option<String> {
         let output = self.adb().args(["mdns", "services"]).output().await.ok()?;
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .find_map(|line| {
-                let fields: Vec<&str> = line.split_whitespace().collect();
-                let (service, address) = (fields.get(1)?, fields.get(2)?);
-                (service.contains(&format!("_adb-tls-{kind}"))
-                    && address.starts_with(&format!("{target}:")))
-                .then(|| (*address).to_owned())
-            })
+        service(&String::from_utf8_lossy(&output.stdout), target, kind)
     }
 
     async fn webview(&self, serial: &str) -> Option<u32> {
@@ -285,12 +294,9 @@ impl Apk<'_> {
     async fn build(&self, package: &str, sync: Option<&SyncConfig>) -> Result<PathBuf, String> {
         let session = self.session;
         let code = version_code(VERSION)
-            .ok_or(format!("{VERSION} is not a major.minor.patch version."))?;
+            .ok_or_else(|| format!("{VERSION} is not a major.minor.patch version."))?;
         let work = session.out.join("android");
-        let platform = self
-            .sdk
-            .root
-            .join(format!("platforms/android-{API}/android.jar"));
+        let platform = android_jar(&self.sdk.root);
         bundle::stage(self.public, &work.join("assets/www"), sync)?;
         write(&work.join("res/drawable-xxxhdpi/icon.png"), ICON)?;
         write(&work.join("res/drawable/banner.xml"), BANNER)?;
@@ -341,7 +347,7 @@ impl Apk<'_> {
         session
             .run(
                 self.jdk_tool("javac")
-                    .args(["--release", "17", "-classpath"])
+                    .args(["--release", JAVA_RELEASE, "-classpath"])
                     .arg(&platform)
                     .arg("-d")
                     .arg(&classes)
@@ -355,8 +361,7 @@ impl Apk<'_> {
             .collect();
         compiled.sort();
         let dex = work.join("dex");
-        std::fs::create_dir_all(&dex)
-            .map_err(|e| format!("Cannot create {}: {e}", dex.display()))?;
+        create(&dex)?;
         session
             .run(
                 self.sdk
@@ -393,7 +398,9 @@ impl Apk<'_> {
                     .script("apksigner", self.jdk)
                     .args(["sign", "--ks"])
                     .arg(&keystore)
-                    .args(["--ks-pass", "pass:android", "--out"])
+                    .arg("--ks-pass")
+                    .arg(format!("pass:{DEBUG_PASSWORD}"))
+                    .arg("--out")
                     .arg(&apk)
                     .arg(&aligned),
             )
@@ -407,8 +414,7 @@ impl Apk<'_> {
         if keystore.is_file() {
             return Ok(keystore);
         }
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
+        parent(&keystore)?;
         self.session
             .run(
                 self.jdk_tool("keytool")
@@ -416,9 +422,9 @@ impl Apk<'_> {
                     .arg(&keystore)
                     .args([
                         "-storepass",
-                        "android",
+                        DEBUG_PASSWORD,
                         "-keypass",
-                        "android",
+                        DEBUG_PASSWORD,
                         "-alias",
                         "androiddebugkey",
                     ])
@@ -444,6 +450,39 @@ mod tests {
         assert_eq!(version_code("2.0.13"), Some(20013));
         assert_eq!(version_code("1.1"), None);
         assert_eq!(version_code("1.x.0"), None);
+    }
+
+    #[test]
+    fn usb_devices_are_listed_with_their_model() {
+        let list = "List of devices attached\n\
+            R58M12345   device usb:1-1 product:sabrina model:Chromecast device:sabrina transport_id:3\n\
+            emulator-5554   offline transport_id:1\n\
+            192.168.1.20:5555   device product:x model:Shield transport_id:2\n\
+            ZY223   device transport_id:4\n";
+        assert_eq!(
+            devices(list),
+            [
+                ("R58M12345".to_owned(), "Chromecast".to_owned()),
+                ("ZY223".to_owned(), "ZY223".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_wireless_debugging_service_is_found_by_address_and_kind() {
+        let list = "List of discovered mdns services\n\
+            adb-R58M-AbCd\t_adb-tls-pairing._tcp\t192.168.1.20:41235\n\
+            adb-R58M-AbCd\t_adb-tls-connect._tcp\t192.168.1.20:37123\n\
+            adb-Other-Ef\t_adb-tls-connect._tcp\t192.168.1.200:40000\n";
+        assert_eq!(
+            service(list, "192.168.1.20", "connect").as_deref(),
+            Some("192.168.1.20:37123")
+        );
+        assert_eq!(
+            service(list, "192.168.1.20", "pairing").as_deref(),
+            Some("192.168.1.20:41235")
+        );
+        assert_eq!(service(list, "192.168.1.2", "connect"), None);
     }
 
     #[test]

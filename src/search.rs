@@ -4,7 +4,6 @@ use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 const EXACT: usize = 1000;
 const PREFIX: usize = 800;
 const CONTAINS: usize = 600;
-const DESCRIPTION: usize = 450;
 const WORDS: usize = 500;
 
 pub fn rank(entries: Vec<MediaEntry>, query: &str) -> Vec<MediaEntry> {
@@ -37,9 +36,6 @@ fn score(entry: &MediaEntry, query: &str, words: &[&str]) -> usize {
     }
     let description = entry.description.as_deref().map(normalize);
     let described = |text: &str| description.as_deref().is_some_and(|d| d.contains(text));
-    if described(query) {
-        return DESCRIPTION;
-    }
     let matched = words
         .iter()
         .filter(|w| names.iter().any(|n| fuzzy_contains(n, w)) || described(w))
@@ -162,6 +158,18 @@ mod tests {
                 "Nothing"
             ]
         );
+    }
+
+    #[test]
+    fn a_phrase_in_the_description_ranks_with_its_scattered_words() {
+        let ranked = rank(
+            vec![
+                entry("Scattered", Some("drama at the office")),
+                entry("Phrase", Some("an office drama")),
+            ],
+            "office drama",
+        );
+        assert_eq!(names(&ranked), ["Phrase", "Scattered"]);
     }
 
     #[test]

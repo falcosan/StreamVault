@@ -103,7 +103,7 @@ impl AppConfig {
     pub fn load() -> Self {
         let path = config_dir().join("config.json");
         match read_json(&path) {
-            Ok(config) => config,
+            Ok(config) => Self::checked(config),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 let config = Self::default();
                 if let Err(e) = write_json(&path, &config) {
@@ -118,6 +118,14 @@ impl AppConfig {
         }
     }
 
+    fn checked(mut self) -> Self {
+        if !self.output.map_episode_name.contains("%(episode)") {
+            warn!("map_episode_name has no %(episode), using the default");
+            self.output.map_episode_name = OutputConfig::default().map_episode_name;
+        }
+        self
+    }
+
     pub fn timeout(&self) -> Duration {
         Duration::from_secs(self.requests.timeout)
     }
@@ -130,7 +138,7 @@ impl AppConfig {
         self.download_dir().join(&self.output.serie_folder_name)
     }
 
-    fn download_dir(&self) -> PathBuf {
+    pub fn download_dir(&self) -> PathBuf {
         icloud_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
             .join(&self.output.root_path)
@@ -186,7 +194,7 @@ fn replace_file(path: &Path, fill: impl FnOnce(&Path) -> io::Result<()>) -> io::
     }
     let tmp = path.with_extension("tmp");
     fill(&tmp)?;
-    fs::File::open(&tmp)?.sync_all()?;
+    fs::OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
     fs::rename(&tmp, path)
 }
 
@@ -194,6 +202,20 @@ fn replace_file(path: &Path, fill: impl FnOnce(&Path) -> io::Result<()>) -> io::
 mod tests {
     use super::*;
     use crate::check::scratch_dir;
+
+    #[test]
+    fn an_episode_name_without_its_number_falls_back_to_the_default() {
+        let with = |name: &str| {
+            let mut config = AppConfig::default();
+            config.output.map_episode_name = name.into();
+            AppConfig::checked(config).output.map_episode_name
+        };
+        assert_eq!(
+            with("%(show_name) %(episode_name)"),
+            AppConfig::default().output.map_episode_name
+        );
+        assert_eq!(with("%(show_name) %(episode)"), "%(show_name) %(episode)");
+    }
 
     #[test]
     fn defaults_match_documented_values() {

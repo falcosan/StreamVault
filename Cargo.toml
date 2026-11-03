@@ -17,6 +17,10 @@ app = [
   "dep:unicode-normalization",
   "dep:uuid",
   "dep:web-time",
+  "reqwest/json",
+  "reqwest/query",
+  "reqwest/form",
+  "tokio/sync",
 ]
 desktop = [
   "app",
@@ -26,6 +30,7 @@ desktop = [
   "dep:embed-resource",
   "dep:image",
   "reqwest/default-tls",
+  "uuid/serde",
   "tokio/rt",
   "tokio/fs",
   "tokio/process",
@@ -36,6 +41,7 @@ tv = [
   "dioxus/web",
   "dep:console_error_panic_hook",
   "sys-locale/js",
+  "uuid/js",
   "dep:wasm-bindgen",
   "dep:wasm-bindgen-futures",
   "dep:web-sys",
@@ -54,6 +60,7 @@ deploy = [
   "reqwest/native-tls",
   "reqwest/multipart",
   "tokio/rt",
+  "tokio/signal",
   "tokio/net",
   "tokio/fs",
   "tokio/process",
@@ -71,20 +78,17 @@ zip = { version = "9", default-features = false, features = [
   "deflate-flate2-zlib-rs",
 ], optional = true }
 regex = { version = "1", optional = true }
-scraper = { version = "0.29", optional = true }
+scraper = { version = "0.29", default-features = false, optional = true }
 sys-locale = { version = "0.3", optional = true }
 serde_json = "1"
 async-trait = { version = "0.1", optional = true }
 percent-encoding = "2"
 unicode-normalization = { version = "0.1.26", optional = true }
 serde = { version = "1", features = ["derive"] }
-uuid = { version = "1", features = ["v4", "serde", "js"], optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
 dioxus = { version = "0.7", optional = true }
 dioxus-desktop = { version = "0.7", features = ["fullscreen"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = [
-  "json",
-  "query",
-  "form",
   "charset",
   "http2",
   "system-proxy",
@@ -114,10 +118,10 @@ web-sys = { version = "0.3", optional = true, features = [
 ] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1", features = ["sync", "time", "macros"] }
+tokio = { version = "1", features = ["time", "macros"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tokio = { version = "1", features = ["sync", "macros"] }
+tokio = { version = "1", features = ["macros"] }
 gloo-timers = { version = "0.4", features = ["futures"] }
 
 [build-dependencies]

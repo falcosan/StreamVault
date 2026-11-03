@@ -3,9 +3,14 @@ use std::path::Path;
 use tokio::process::Command;
 
 pub const APP: &str = "StreamVault-windows-x64.exe";
-pub const FFMPEG: &str =
-    "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip";
-pub const DOWNLOADER: &str = "win-x64";
+pub const FFMPEG: (&str, &str) = (
+    "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip",
+    "fa7d4d7e795db0e2503f49f105f46ed5852386f0cfdd819899be3b65ebde24fc",
+);
+pub const DOWNLOADER: (&str, &str) = (
+    "win-x64",
+    "3825fd42ee502f98a9378f6fdddb2f7822709f521806214f466db6935c950f1a",
+);
 pub const DOWNLOADER_ARCHIVE: &str = "zip";
 const WEBVIEW: &str = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
 const RUNTIME: &str = r"Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
@@ -123,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn a_running_file_is_moved_aside_before_the_new_one_lands() {
+    fn an_existing_file_is_moved_aside_before_the_new_one_lands() {
         let dir = scratch_dir("replace");
         let (new, path) = (dir.join("new.exe"), dir.join(r"app\StreamVault.exe"));
         std::fs::write(&new, "new").unwrap();

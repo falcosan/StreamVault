@@ -51,7 +51,7 @@ pub async fn choose(session: &Session) -> Result<Tv, String> {
         return found
             .into_iter()
             .find(|tv| tv.address == address)
-            .ok_or(format!("No supported TV found at {address}."));
+            .ok_or_else(|| format!("No supported TV found at {address}."));
     }
     match found.len() {
         0 => Err(NONE_FOUND.to_owned()),
@@ -82,7 +82,7 @@ fn pick(mut tvs: Vec<Tv>) -> Result<Tv, String> {
 }
 
 async fn probes(session: &Session, wanted: Option<&str>) -> Vec<Probe> {
-    let attached = android::attached()
+    let attached = android::attached(session)
         .await
         .into_iter()
         .map(|(serial, model)| {

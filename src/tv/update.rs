@@ -57,6 +57,28 @@ mod tests {
         let result = run_js(&format!(
             r#"
             var window = globalThis;
+            var outcome;
+            var location = {{ reload: () => (outcome = "reloaded") }};
+            var atob = (text) => text;
+            var TextEncoder = class {{ encode(text) {{ return text; }} }};
+            var TextDecoder = class {{ decode() {{ outcome = "started the bundle"; return ""; }} }};
+            var crypto = {{
+              subtle: {{
+                importKey: async () => ({{}}),
+                verify: async (_, key, signature) => signature === "sig",
+                digest: async (_, data) => Uint8Array.of(data === "code" ? 0xab : 0xcd).buffer,
+              }},
+            }};
+            var releases = {{}};
+            var fetch = async (url) => {{
+              const body = releases[url.split("/").pop()];
+              return {{
+                ok: body !== undefined,
+                status: body === undefined ? 404 : 200,
+                text: async () => body,
+                arrayBuffer: async () => body,
+              }};
+            }};
             var warnings = [];
             var console = {{ warn: (message) => warnings.push(message) }};
             var later = setTimeout;
@@ -106,7 +128,7 @@ mod tests {
               {BOOT}
             }}).then(async () => {{
               {then}
-              return JSON.stringify({{ opens, warnings, stored: Object.fromEntries(stored) }});
+              return JSON.stringify({{ opens, warnings, stored: Object.fromEntries(stored), outcome }});
             }})
             "#,
             entry = Value::from(entry.to_string_lossy()),
@@ -117,6 +139,68 @@ mod tests {
 
     fn trial() -> Value {
         json!({ "version": "1.1.2", "installed": "1.1.1", "state": "trying" })
+    }
+
+    const MANIFEST: &str = r#"{"version":"1.1.2","shell":1,"entry":"e.js","wasm":"w.wasm","scripts":[],"files":[{"name":"e.js","sha256":"ab"}]}"#;
+
+    fn install(name: &str, release: &str) -> Value {
+        let then = format!(
+            r#"releases["tv.json"] = {manifest};
+            releases["tv.sig"] = "sig";
+            releases["e.js"] = "code";
+            {release}
+            try {{ await streamvault.install(); }} catch (error) {{ outcome = error; }}"#,
+            manifest = Value::from(MANIFEST),
+        );
+        boot(name, "0", &json!({}), &then)
+    }
+
+    #[test]
+    fn an_update_is_kept_only_when_its_signature_files_and_shell_check_out() {
+        let installed = install("install_signed", "");
+        assert_eq!(installed["outcome"], "reloaded");
+        assert_eq!(
+            installed["stored"]["status"],
+            json!({ "version": "1.1.2", "installed": "1.1.1", "state": "new" })
+        );
+        for (name, release, refusal) in [
+            (
+                "install_forged",
+                r#"releases["tv.sig"] = "forged";"#,
+                "the update signature is not valid",
+            ),
+            (
+                "install_altered",
+                r#"releases["e.js"] = "altered";"#,
+                "e.js does not match the signed update",
+            ),
+            (
+                "install_newer_shell",
+                r#"releases["tv.json"] = releases["tv.json"].replace('"shell":1', '"shell":2');"#,
+                "needs a new installation",
+            ),
+        ] {
+            let refused = install(name, release);
+            let outcome = refused["outcome"].as_str().unwrap_or_default();
+            assert!(outcome.contains(refusal), "{name}: {outcome}");
+            assert_eq!(refused["stored"], json!({}), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_stored_update_that_no_longer_matches_starts_the_installed_version() {
+        let stored = json!({
+            "status": { "version": "1.1.2", "installed": "1.1.1", "state": "good" },
+            "bundle": { "manifest": MANIFEST, "signature": "sig", "files": { "e.js": "altered" } },
+        });
+        assert_eq!(
+            boot("boot_altered", "0", &stored, ""),
+            json!({
+                "opens": 1,
+                "warnings": ["StreamVault: the downloaded update cannot start"],
+                "stored": {},
+            })
+        );
     }
 
     #[test]
@@ -137,6 +221,23 @@ mod tests {
                 "opens": 20,
                 "warnings": ["StreamVault: the downloaded update cannot be read"],
                 "stored": stored,
+            })
+        );
+    }
+
+    #[test]
+    fn a_store_still_locked_at_start_is_opened_again_when_needed() {
+        assert_eq!(
+            boot(
+                "boot_reopen",
+                "20",
+                &json!({ "status": trial() }),
+                "await streamvault.confirm();"
+            ),
+            json!({
+                "opens": 21,
+                "warnings": ["StreamVault: the downloaded update cannot be read"],
+                "stored": { "status": { "version": "1.1.2", "installed": "1.1.1", "state": "good" } },
             })
         );
     }

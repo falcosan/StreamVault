@@ -83,7 +83,7 @@ fn key(code: u32, name: &str) -> Option<Key> {
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 struct Rect {
     left: f64,
     top: f64,
@@ -107,7 +107,6 @@ impl Rect {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
 struct Rank {
     misaligned: bool,
     distance: f64,

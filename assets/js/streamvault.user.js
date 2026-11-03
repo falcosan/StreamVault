@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         StreamVault Sync
 // @namespace    https://github.com/falcosan/StreamVault
-// @version      2.0.0
+// @version      2.1.0
 // @description  Continue watching, progress and player preferences synced with StreamVault
 // @include      /^https:\/\/(www\.)?streamingcommunity[^/]*\//
 // @include      /^https:\/\/(www\.)?(vixcloud|vixsrc)[^/]*\//
 // @grant        GM.xmlHttpRequest
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @connect      script.google.com
 // @connect      script.googleusercontent.com
 // @run-at       document-end
@@ -19,6 +21,8 @@
   const TOKEN = "CHANGE_ME";
   const PROVIDER = 0;
   const PROVIDER_NAME = "StreamingCommunity";
+  const PLAYER = /^(www\.)?(vixcloud|vixsrc)/i;
+  const TIMEOUT_MS = 30000;
 
   if (!/^(www\.)?(streamingcommunity|vixcloud|vixsrc)/i.test(location.hostname))
     return;
@@ -38,7 +42,7 @@
         headers: body
           ? { "Content-Type": "text/plain;charset=utf-8" }
           : undefined,
-        timeout: 30000,
+        timeout: TIMEOUT_MS,
         onload: (r) => resolve(r.responseText),
         onerror: () => reject(new Error("network error")),
         ontimeout: () => reject(new Error("timeout")),
@@ -51,6 +55,7 @@
       method,
       body,
       credentials: "omit",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
       headers: body
         ? { "Content-Type": "text/plain;charset=utf-8" }
         : undefined,
@@ -105,12 +110,26 @@
     replica.pending[key] = { key, value, at };
   }
 
+  const persisted =
+    typeof GM_getValue === "function"
+      ? {
+          get: () => GM_getValue(STORE_KEY, null) ?? localStorage.getItem(STORE_KEY),
+          set: (text) => {
+            GM_setValue(STORE_KEY, text);
+            localStorage.removeItem(STORE_KEY);
+          },
+        }
+      : {
+          get: () => localStorage.getItem(STORE_KEY),
+          set: (text) => localStorage.setItem(STORE_KEY, text),
+        };
+
   const store = {
     inflight: null,
     ready: null,
     load() {
       try {
-        const saved = JSON.parse(localStorage.getItem(STORE_KEY));
+        const saved = JSON.parse(persisted.get());
         if (saved && saved.device) return saved;
       } catch (_) {}
       return {
@@ -122,7 +141,7 @@
     },
     save(replica) {
       try {
-        localStorage.setItem(STORE_KEY, JSON.stringify(replica));
+        persisted.set(JSON.stringify(replica));
       } catch (_) {}
     },
     watch() {
@@ -239,26 +258,27 @@
 
     function pickIndex(tracks, wantLang) {
       const wanted = norm(wantLang);
-      if (!wanted) return 0;
+      if (!wanted) return -1;
       const list = Array.from(tracks);
       const exact = list.findIndex((t) =>
         [t.language, t.label].some((value) => norm(value) === wanted),
       );
-      const index =
-        exact >= 0 ? exact : list.findIndex((t) => tag(t).includes(wanted));
-      return Math.max(index, 0);
+      return exact >= 0
+        ? exact
+        : list.findIndex((t) => tag(t).includes(wanted));
     }
 
     function applyTracks(prefs) {
       const ats = video.audioTracks;
       if (prefs.audio_lang && ats && ats.length > 1) {
         const idx = pickIndex(ats, prefs.audio_lang);
-        for (let i = 0; i < ats.length; i++) ats[i].enabled = i === idx;
+        if (idx >= 0)
+          for (let i = 0; i < ats.length; i++) ats[i].enabled = i === idx;
       }
       const subs = subTracks();
       if (!subs.length) return;
       const idx = prefs.subtitles_on
-        ? pickIndex(subs, prefs.subtitle_lang)
+        ? Math.max(pickIndex(subs, prefs.subtitle_lang), 0)
         : -1;
       for (let i = 0; i < subs.length; i++) {
         subs[i].mode = i === idx ? "showing" : "disabled";
@@ -552,7 +572,7 @@
   const CSS = `
 #sv-row.sv-fallback{margin:20px 0 4px;padding:0 16px;font-family:inherit}
 #sv-row.sv-fallback .sv-head{color:#fff;font-size:1.55rem;font-weight:700;margin-bottom:12px;line-height:1.2}
-#sv-row.sv-fallback .sv-scroll{display:flex;gap:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:4px}
+#sv-row.sv-fallback .sv-scroll{display:flex;gap:10px;overflow-x:auto;scrollbar-width:none;padding-bottom:4px}
 #sv-row.sv-fallback .sv-scroll::-webkit-scrollbar{display:none}
 #sv-row.sv-fallback .sv-card{position:relative;flex:0 0 clamp(105px,29vw,170px);aspect-ratio:2/3;border-radius:10px;overflow:hidden;background:#181818;text-decoration:none}
 #sv-row.sv-fallback .sv-card img{width:100%;height:100%;object-fit:cover;display:block}
@@ -590,6 +610,7 @@
     const x = document.createElement("button");
     x.className = "sv-x";
     x.title = "Remove";
+    x.setAttribute("aria-label", "Remove");
     x.textContent = "×";
     x.svItem = item;
     x.svCard = cardEl;
@@ -795,10 +816,11 @@
     let prefsPending = null;
     let touchStart = null;
 
-    const frames = new Set();
+    const frames = new Map();
 
     function fromPlayerFrame(ev) {
       try {
+        if (!PLAYER.test(new URL(ev.origin).hostname)) return false;
         if (!ev.source || ev.source.top !== window) return false;
         for (const f of document.querySelectorAll("iframe")) {
           if (!/\/iframe|vixcloud|vixsrc/i.test(f.src || "")) continue;
@@ -832,7 +854,7 @@
       if (!failed && pendingTime) flush(true);
     }
 
-    async function sendCtx(target) {
+    async function sendCtx(target, origin) {
       if (!ctx) return;
       try {
         await store.ready;
@@ -847,7 +869,7 @@
             resume: item && sameEpisode ? item.current_time : 0,
             prefs: store.prefs(),
           },
-          "*",
+          origin,
         );
       } catch (_) {}
     }
@@ -859,8 +881,8 @@
       if (!fromPlayerFrame(ev)) return;
       if (msg.type === "sv:hello") {
         stats.hello++;
-        frames.add(ev.source);
-        sendCtx(ev.source);
+        frames.set(ev.source, ev.origin);
+        sendCtx(ev.source, ev.origin);
       } else if (msg.type === "sv:time") {
         stats.time++;
         if (
@@ -941,7 +963,6 @@
         .catch(() => {});
     }
 
-    let ctxFetchAt = 0;
     let ctxFetchedFor = "";
 
     function ensureCtxProps() {
@@ -958,18 +979,15 @@
         ensurePoster();
         return;
       }
-      const now = Date.now();
-      if (now - ctxFetchAt < 3000) return;
-      ctxFetchAt = now;
+      ctxFetchedFor = location.href;
       const token = ++ctxFetchToken;
       fetchPage(location.pathname + location.search)
         .then((p) => {
           if (token !== ctxFetchToken || !p || !p.props) return;
           pageCache = p;
-          ctxFetchedFor = location.href;
           ctx = watchContext();
           ensurePoster();
-          frames.forEach((w) => sendCtx(w));
+          frames.forEach((origin, w) => sendCtx(w, origin));
         })
         .catch(() => {});
     }

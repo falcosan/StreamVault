@@ -12,6 +12,7 @@ fn windows_icon() {
     use image::codecs::ico::{IcoEncoder, IcoFrame};
     use image::imageops::FilterType;
     use std::path::PathBuf;
+    const IDI_APPLICATION: u16 = 32512;
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -35,7 +36,7 @@ fn windows_icon() {
         .expect("the Windows icon encodes");
     let resource = out.join("app.rc");
     let path = icon.display().to_string().replace('\\', "/");
-    std::fs::write(&resource, format!("32512 ICON \"{path}\"\n"))
+    std::fs::write(&resource, format!("{IDI_APPLICATION} ICON \"{path}\"\n"))
         .expect("the resource is writable");
     embed_resource::compile(&resource, embed_resource::NONE)
         .manifest_required()

@@ -44,7 +44,10 @@ pub static TEXT: Text = Text {
     play: "Riproduci",
     resume: "Riprendi",
     play_episode: |n, title| format!("Riproduci l'episodio {n}: {title}"),
-    time_left: |time| format!("Mancano {time}"),
+    time_left: |time| match time {
+        "1 min" | "1 h" => format!("Manca {time}"),
+        time => format!("Mancano {time}"),
+    },
     episodes_failed: "Impossibile caricare gli episodi",
     next_season_failed: "Impossibile caricare la stagione successiva",
     stream_failed: "Impossibile ottenere il video",

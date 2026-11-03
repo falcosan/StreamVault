@@ -65,3 +65,63 @@ fn store(key: &'static str, value: String) {
         }
     });
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use crate::check::run_js;
+    use serde_json::json;
+
+    const STORAGE: &str = include_str!("../../assets/js/storage.js");
+
+    #[test]
+    fn a_store_that_failed_to_open_is_opened_again_on_the_next_use() {
+        let result = run_js(&format!(
+            r#"
+            var later = setTimeout;
+            setTimeout = (run) => later(run, 0);
+            var failures = 20;
+            var opens = 0;
+            var request = (outcome) => {{
+              const request = {{}};
+              later(() => outcome(request), 0);
+              return request;
+            }};
+            var connection = {{
+              transaction: () => ({{
+                objectStore: () => ({{
+                  get: () => request((get) => {{
+                    get.result = "saved";
+                    get.onsuccess();
+                  }}),
+                }}),
+              }}),
+            }};
+            var indexedDB = {{
+              open: () => {{
+                opens++;
+                return request((open) => {{
+                  if (failures-- > 0) {{
+                    open.error = new Error("Internal error opening backing store");
+                    open.onerror();
+                  }} else {{
+                    open.result = connection;
+                    open.onsuccess();
+                  }}
+                }});
+              }},
+            }};
+            {storage}
+            (async () => {{
+              const first = await load("replica").then(() => "loaded", () => "failed");
+              const second = await load("replica");
+              return JSON.stringify({{ first, second, opens }});
+            }})()
+            "#,
+            storage = STORAGE.replace("export ", ""),
+        ));
+        assert_eq!(
+            result,
+            json!({ "first": "failed", "second": "saved", "opens": 21 })
+        );
+    }
+}

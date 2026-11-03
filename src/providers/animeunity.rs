@@ -123,9 +123,11 @@ fn page_ranges(total: u32) -> impl Iterator<Item = (u32, u32)> {
 }
 
 fn parse_episode(position: u32, ep: &Value) -> Option<Episode> {
+    let (number, part) = number(&ep["number"]).unwrap_or((position, None));
     Some(Episode {
         id: ep["id"].as_u64()?,
-        number: number(&ep["number"]).unwrap_or(position),
+        number,
+        part,
         name: ["title", "title_it"]
             .iter()
             .find_map(|k| ep[k].as_str().filter(|t| !t.is_empty()))
@@ -137,13 +139,18 @@ fn parse_episode(position: u32, ep: &Value) -> Option<Episode> {
     })
 }
 
-fn number(value: &Value) -> Option<u32> {
+fn number(value: &Value) -> Option<(u32, Option<u8>)> {
     let text = match value {
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.trim().to_owned(),
         _ => return None,
     };
-    text.split('.').next()?.parse().ok()
+    let (whole, fraction) = text.split_once('.').unwrap_or((&text, ""));
+    let hundredths = format!("{fraction:0<2}")
+        .get(..2)
+        .and_then(|digits| digits.parse::<u8>().ok())
+        .filter(|&hundredths| hundredths > 0);
+    Some((whole.parse().ok()?, hundredths))
 }
 
 #[async_trait(?Send)]
@@ -213,7 +220,7 @@ impl Provider for AnimeUnity {
             .zip(1u32..)
             .filter_map(|(ep, position)| parse_episode(position, ep))
             .collect();
-        episodes.sort_by_key(|e| e.number);
+        episodes.sort_by_key(Episode::order);
         Ok(episodes)
     }
 
@@ -344,7 +351,12 @@ mod tests {
             &json!({ "id": 5, "number": "12.5", "title": null, "title_it": "Dodici" }),
         )
         .unwrap();
-        assert_eq!((ep.id, ep.number, ep.name.as_str()), (5, 12, "Dodici"));
+        assert_eq!(
+            (ep.id, ep.number, ep.part, ep.name.as_str()),
+            (5, 12, Some(50), "Dodici")
+        );
+        let whole = parse_episode(2, &json!({ "id": 7, "number": "12" })).unwrap();
+        assert_eq!((whole.number, whole.part), (12, None));
         let ep = parse_episode(4, &json!({ "id": 6, "number": "OVA" })).unwrap();
         assert_eq!((ep.number, ep.name.as_str()), (4, ""));
         assert!(parse_episode(1, &json!({ "number": 1 })).is_none());
@@ -352,7 +364,10 @@ mod tests {
 
     #[test]
     fn number_rejects_negative_and_missing_values() {
-        assert_eq!(number(&json!(3)), Some(3));
+        assert_eq!(number(&json!(3)), Some((3, None)));
+        assert_eq!(number(&json!(7.5)), Some((7, Some(50))));
+        assert_eq!(number(&json!("7.25")), Some((7, Some(25))));
+        assert_eq!(number(&json!("7.0")), Some((7, None)));
         assert_eq!(number(&json!(-1)), None);
         assert_eq!(number(&json!(null)), None);
     }

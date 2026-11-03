@@ -17,7 +17,7 @@ pub fn EntryActions(entry: MediaEntry, season: Option<u32>, episode: Option<Epis
     let app = use_context::<AppState>();
     let status = app.device.status(&entry, season, episode.as_ref());
     let progress = status.as_ref().map_or(0, percent);
-    let state = status.as_ref().map_or("idle", phase);
+    let state = status.as_ref().map_or("", phase);
     let t = &text().desktop;
     let (label, glyph) = match &status {
         None => (t.download.to_owned(), Some(DOWNLOAD_ICON)),
@@ -27,7 +27,8 @@ pub fn EntryActions(entry: MediaEntry, season: Option<u32>, episode: Option<Epis
         Some(Status::Completed) => (t.downloaded.to_owned(), Some(CHECK_ICON)),
         Some(Status::Failed(_)) => (t.retry.to_owned(), Some(UPDATE_ICON)),
     };
-    let number = episode.as_ref().map(|e| e.number);
+    let number = episode.as_ref().map(Episode::number_text);
+    let number = number.as_deref();
     let action = match &status {
         None => (t.download_this)(number),
         Some(Status::Completed) => (t.play_this)(number),

@@ -20,10 +20,16 @@ const POLL: Duration = Duration::from_secs(3);
 const ATTEMPTS: usize = 3;
 
 pub async fn main() -> ExitCode {
-    let result = match std::env::args().nth(1).as_deref() {
-        Some("desktop") => desktop::deploy().await,
-        Some("tv") => tv::deploy().await,
-        _ => Err("Usage: install desktop|tv".to_owned()),
+    let deploy = async {
+        match std::env::args().nth(1).as_deref() {
+            Some("desktop") => desktop::deploy().await,
+            Some("tv") => tv::deploy().await,
+            _ => Err("Usage: install desktop|tv".to_owned()),
+        }
+    };
+    let result = tokio::select! {
+        result = deploy => result,
+        Ok(()) = tokio::signal::ctrl_c() => Err("Stopped.".to_owned()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -147,9 +153,25 @@ fn find(dir: &Path, matches: &impl Fn(&str) -> bool) -> Option<PathBuf> {
 }
 
 fn parent(path: &Path) -> Result<(), String> {
-    path.parent().map_or(Ok(()), |dir| {
-        fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))
-    })
+    path.parent().map_or(Ok(()), create)
+}
+
+fn create(dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))
+}
+
+fn replace_dir(dir: &Path, fill: impl FnOnce(&Path) -> Result<(), String>) -> Result<(), String> {
+    let staged = dir.with_extension("new");
+    remove(&staged);
+    fill(&staged)?;
+    remove(dir);
+    fs::rename(&staged, dir)
+        .map_err(|e| format!("Cannot move {} to {}: {e}", staged.display(), dir.display()))
+}
+
+fn target_directory(metadata: &str) -> Option<PathBuf> {
+    let metadata: serde_json::Value = serde_json::from_str(metadata).ok()?;
+    metadata["target_directory"].as_str().map(PathBuf::from)
 }
 
 fn describe(command: &Command) -> String {
@@ -185,7 +207,7 @@ impl Session {
         let log = std::env::temp_dir().join(format!("streamvault-{device}.log"));
         for dir in [&scratch, &out] {
             remove(dir);
-            fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
+            create(dir)?;
         }
         File::create(&log).map_err(|e| format!("Cannot write {}: {e}", log.display()))?;
         let http = reqwest::Client::builder()
@@ -251,7 +273,10 @@ impl Session {
     async fn download(&self, url: &str, name: &str) -> Result<PathBuf, String> {
         let path = self.scratch.join(name);
         let mut failure = String::new();
-        for _ in 0..ATTEMPTS {
+        for attempt in 0..ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(POLL).await;
+            }
             match self.fetch(url, &path).await {
                 Ok(()) => return Ok(path),
                 Err(e) => failure = e,
@@ -278,8 +303,20 @@ impl Session {
         file.flush().await.map_err(|e| e.to_string())
     }
 
+    async fn target_dir(&self, root: &Path) -> Result<PathBuf, String> {
+        let metadata = self
+            .output(
+                Command::new("cargo")
+                    .args(["metadata", "--format-version", "1", "--no-deps"])
+                    .current_dir(root),
+            )
+            .await?;
+        target_directory(&metadata)
+            .ok_or_else(|| "cargo metadata named no target directory.".to_owned())
+    }
+
     async fn unpack(&self, archive: &Path, dir: &Path, members: &[&str]) -> Result<(), String> {
-        fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
+        create(dir)?;
         self.run(
             Command::new(TAR)
                 .arg("-xf")
@@ -354,6 +391,33 @@ mod tests {
         assert_eq!(read(&dir.join("to/assets/app.js")).unwrap(), "js");
         assert_eq!(read(&dir.join("to/index.html")).unwrap(), "html");
         remove(&dir);
+    }
+
+    #[test]
+    fn a_folder_is_replaced_only_once_its_new_copy_is_complete() {
+        let home = scratch_dir("deploy_replace");
+        let dir = home.join("StreamVault.app");
+        write(&dir.join("old"), "old").unwrap();
+        let failed = replace_dir(&dir, |staged| {
+            write(&staged.join("new"), "new")?;
+            Err("disk full".to_owned())
+        });
+        assert!(failed.is_err());
+        assert_eq!(read(&dir.join("old")).unwrap(), "old");
+        replace_dir(&dir, |staged| write(&staged.join("new"), "new")).unwrap();
+        assert_eq!(read(&dir.join("new")).unwrap(), "new");
+        assert!(!dir.join("old").exists() && !dir.with_extension("new").exists());
+        remove(&home);
+    }
+
+    #[test]
+    fn the_build_output_follows_cargo_metadata() {
+        assert_eq!(
+            target_directory(r#"{"packages":[],"target_directory":"/tmp/elsewhere"}"#),
+            Some(PathBuf::from("/tmp/elsewhere"))
+        );
+        assert_eq!(target_directory("{}"), None);
+        assert_eq!(target_directory("not json"), None);
     }
 
     #[test]

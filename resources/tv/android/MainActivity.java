@@ -33,6 +33,7 @@ public final class MainActivity extends Activity {
     private static final String HOST = "appassets.androidplatform.net";
     private static final String INDEX = "index.html";
     private static final String BODY = "x-streamvault-body";
+    private static final String RESPONSE_URL = "x-streamvault-url";
     private static final int TIMEOUT_MS = 30_000;
     private static final int MAX_REDIRECTS = 20;
     private static final Map<String, String> TYPES = Map.of(
@@ -43,8 +44,7 @@ public final class MainActivity extends Activity {
             <script>
               (() => {
                 const send = window.fetch.bind(window);
-                window.fetch = async (input, init) => {
-                  const request = new Request(input, init);
+                const relay = async (request) => {
                   if (["GET", "HEAD"].includes(request.method) || new URL(request.url).origin === location.origin) {
                     return send(request);
                   }
@@ -56,9 +56,14 @@ public final class MainActivity extends Activity {
                   headers.set("%s", StreamVault.keep(btoa(binary)));
                   return send(new Request(request, { headers }));
                 };
+                window.fetch = async (input, init) => {
+                  const response = await relay(new Request(input, init));
+                  const url = response.headers.get("%s");
+                  return url ? Object.defineProperty(response, "url", { value: url }) : response;
+                };
               })();
             </script>
-            """, BODY);
+            """, BODY, RESPONSE_URL);
 
     private final Map<String, byte[]> bodies = new ConcurrentHashMap<>();
     private WebView web;
@@ -180,16 +185,17 @@ public final class MainActivity extends Activity {
             throw new IOException("unusable status " + status);
         }
         Map<String, String> response = allow(origin);
-        StringBuilder exposed = new StringBuilder();
+        StringBuilder exposed = new StringBuilder(RESPONSE_URL);
         for (Map.Entry<String, List<String>> header : connection.getHeaderFields().entrySet()) {
             String name = header.getKey();
             if (name != null
                     && !name.equalsIgnoreCase("Content-Type")
                     && !name.toLowerCase(Locale.ROOT).startsWith("access-control-")) {
                 response.put(name, String.join(", ", header.getValue()));
-                exposed.append(exposed.length() == 0 ? "" : ", ").append(name);
+                exposed.append(", ").append(name);
             }
         }
+        response.put(RESPONSE_URL, connection.getURL().toString());
         response.put("Access-Control-Expose-Headers", exposed.toString());
         String type = connection.getContentType();
         String reason = connection.getResponseMessage();

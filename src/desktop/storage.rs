@@ -32,10 +32,10 @@ pub fn save_language(lang: Lang) {
     save(&state_dir().join(LANGUAGE_FILE), lang.code());
 }
 
-pub fn load_downloads() -> Vec<Download> {
+pub fn load_downloads(root: &Path) -> Vec<Download> {
     load::<Vec<Download>>(&state_dir().join(DOWNLOADS_FILE))
         .into_iter()
-        .filter_map(Download::restored)
+        .filter_map(|download| download.restored(root))
         .collect()
 }
 
@@ -76,6 +76,9 @@ pub fn load<T: DeserializeOwned + Default>(path: &Path) -> T {
     read_json(path).unwrap_or_else(|e| {
         if e.kind() != io::ErrorKind::NotFound {
             warn!("{} read error: {e}", path.display());
+            if let Err(e) = fs::rename(path, path.with_added_extension("unreadable")) {
+                warn!("{} cannot be set aside: {e}", path.display());
+            }
         }
         T::default()
     })
@@ -138,6 +141,21 @@ mod tests {
         assert_eq!(language(&dir), None);
         save(&dir.join(LANGUAGE_FILE), Lang::It.code());
         assert_eq!(language(&dir), Some(Lang::It));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_set_aside_instead_of_overwritten() {
+        let dir = scratch_dir("unreadable");
+        let path = dir.join(REPLICA_FILE);
+        fs::write(&path, "{ not json").unwrap();
+        assert!(load::<Option<Replica>>(&path).is_none());
+        assert!(!path.exists());
+        assert_eq!(
+            fs::read_to_string(path.with_added_extension("unreadable")).unwrap(),
+            "{ not json"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

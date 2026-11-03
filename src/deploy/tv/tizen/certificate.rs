@@ -1,6 +1,6 @@
 use super::os;
 use super::widget::Signer;
-use crate::deploy::{Session, parent, read, remove, say, write};
+use crate::deploy::{Session, create, parent, read, remove, replace_dir, say, write};
 use crate::folders;
 use p12_keystore::{
     Certificate as Stored, KeyStore, KeyStoreEntry, Pkcs12ImportPolicy, PrivateKey, PrivateKeyChain,
@@ -61,6 +61,9 @@ pub struct Certificate {
 
 impl Certificate {
     pub fn of(duid: &str) -> Result<Self, String> {
+        if duid.is_empty() || !duid.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return Err(format!("The TV sent an unusable device id: {duid:?}"));
+        }
         let dir = folders::local_dir().join("tv").join("tizen").join(duid);
         let legacy = dirs::home_dir().unwrap_or_default().join(LEGACY);
         adopt(&legacy, &format!("streamvault-{duid}"), &dir)?;
@@ -80,9 +83,13 @@ impl Certificate {
         else {
             return Ok(None);
         };
+        let unlock = |store: &[u8]| {
+            signer(store, &password)
+                .map_err(|e| format!("{e} Delete {} to make a new one.", self.dir.display()))
+        };
         Ok(Some(Signers {
-            author: signer(&author, &password)?,
-            distributor: signer(&distributor, &password)?,
+            author: unlock(&author)?,
+            distributor: unlock(&distributor)?,
         }))
     }
 
@@ -129,21 +136,22 @@ impl Certificate {
         let password = uuid::Uuid::new_v4().simple().to_string();
         let author = [der(&author)?, der(AUTHOR_CA)?];
         let distributor = [der(&distributor)?, der(DISTRIBUTOR_CA)?];
-        let stores = [
+        let files = [
             ("author.p12", store(&author_key, &author, &password)?),
             (
                 "distributor.p12",
                 store(&distributor_key, &distributor, &password)?,
             ),
+            ("password", password.into_bytes()),
         ];
-        remove(&self.dir);
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|e| format!("Cannot create {}: {e}", self.dir.display()))?;
-        os::private(&self.dir)?;
-        for (name, data) in stores {
-            write(&self.dir.join(name), data)?;
-        }
-        write(&self.dir.join("password"), &password)?;
+        replace_dir(&self.dir, |staged| {
+            create(staged)?;
+            os::private(staged)?;
+            for (name, data) in files {
+                write(&staged.join(name), data)?;
+            }
+            Ok(())
+        })?;
         self.load()?
             .ok_or_else(|| format!("{} holds no certificate.", self.dir.display()))
     }
@@ -404,6 +412,13 @@ mod tests {
         .unwrap()
         .to_der()
         .unwrap()
+    }
+
+    #[test]
+    fn only_a_plain_device_id_names_a_certificate_folder() {
+        for duid in ["", "..", "../7XCI", "/Users/x", "7XCI 7KNS", "7XCI\n"] {
+            assert!(Certificate::of(duid).is_err(), "{duid:?}");
+        }
     }
 
     #[test]

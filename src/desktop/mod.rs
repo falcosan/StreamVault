@@ -90,11 +90,14 @@ pub struct Device {
 
 impl Device {
     pub fn new() -> Self {
+        let config = AppConfig::load();
+        let downloads = storage::load_downloads(&config.download_dir());
+        download::sweep(&downloads);
         Self {
             update: Update::default(),
-            downloads: Signal::new(storage::load_downloads()),
+            downloads: Signal::new(downloads),
             tasks: Signal::default(),
-            config: CopyValue::new(AppConfig::load()),
+            config: CopyValue::new(config),
         }
     }
 

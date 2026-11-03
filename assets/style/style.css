@@ -8,7 +8,7 @@
   --accent: rgb(var(--accent-rgb));
   --accent-hover: #d4dd17;
   --accent-text: #151515;
-  --danger-rgb: 229, 57, 53;
+  --danger-rgb: 234, 97, 93;
   --danger: rgb(var(--danger-rgb));
   --success-rgb: 70, 211, 105;
   --success: rgb(var(--success-rgb));
@@ -253,7 +253,7 @@ svg {
   align-items: center;
   gap: 8px;
   padding: 8px 20px;
-  background: var(--danger);
+  background: #c62828;
   color: white;
   font-size: 13px;
 }
@@ -482,7 +482,7 @@ svg {
 }
 
 .badge-series {
-  background: #0091d5;
+  background: #0077b6;
   color: white;
 }
 
@@ -1083,14 +1083,14 @@ svg {
 }
 
 .player-seek:focus-visible {
-  outline: none;
+  outline-color: transparent;
   height: 8px;
 }
 
 .player-seek:focus-visible::-webkit-slider-thumb {
   width: 18px;
   height: 18px;
-  box-shadow: 0 0 0 3px var(--accent);
+  box-shadow: 0 0 0 var(--ring) var(--accent);
 }
 
 .player-control,
@@ -1608,7 +1608,7 @@ svg {
 .language-btn:focus-visible,
 .player-control:focus-visible,
 .menu-option:focus-visible {
-  outline: none;
+  outline-color: transparent;
   color: var(--accent-text);
   background: var(--accent);
   border-color: var(--accent);
@@ -1622,7 +1622,7 @@ svg {
 }
 
 .logo:focus-visible {
-  outline: none;
+  outline-color: transparent;
   border-radius: 6px;
   box-shadow: 0 0 0 var(--ring) var(--accent);
 }
@@ -1631,7 +1631,11 @@ svg {
 .continue-open:focus-visible,
 .episode:focus-visible,
 .search-input:focus-visible {
-  outline: none;
+  outline-color: transparent;
+}
+
+.continue-open:focus-visible {
+  outline-offset: calc(-1 * var(--ring));
 }
 
 .poster-card:focus-visible,

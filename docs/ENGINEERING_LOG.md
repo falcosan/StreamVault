@@ -78,7 +78,7 @@ StreamVault/            one crate, one device feature per build
 Each device module exposes the same small surface that the shared code calls:
 `launch`, `Device` (request timeout, local playback lookup), `use_device`
 (device hooks), `load_replica`/`save_replica`, `sync_config`, focus
-bookkeeping, `install_update`, `NAV` and two slots (`Head`, `EntryActions`). The
+bookkeeping, `install_update`, `nav()` and two slots (`Head`, `EntryActions`). The
 first port copied `src/providers/` and the models into `tv/` and then into a
 separate `core` crate; both are gone, so every device compiles the same files.
 
@@ -511,7 +511,12 @@ StreamingCommunity and AnimeUnity move domain often, so the apps read
 and on _Retry_, and every request to the providers waits for it (GitHub serves
 it with a 5-minute cache): a new domain needs a commit, not a release. The copy
 built into the app is used when the file cannot be fetched (5 s timeout) and
-fills any site the file leaves out.
+fills any site the file leaves out. Each site's address is then requested once
+(same timeout): when it redirects to another host on the same scheme, as an old
+domain does after a move, that host is used until the next start or _Retry_, so
+the apps follow a move before `domains.json` catches up. On Android the host's
+request proxy follows redirects itself, so it names the address it reached in
+`x-streamvault-url`, which its `fetch` bridge turns into `Response.url`.
 
 ### 9.1 Why the providers can run in the webview
 
@@ -521,7 +526,8 @@ answered 200, and Aurora accepted an `Authorization` header. The Tizen web
 runtime does not apply CORS to an installed widget. Browser rules on headers
 still apply: requests cannot set `Cookie`, `Referer` or `User-Agent`, and
 responses do not expose `Set-Cookie`. StreamingCommunity, RaiPlay and Aurora
-do not need them; AnimeUnity's login flow does, so it works on macOS only.
+do not need them; AnimeUnity's login flow does, so it works in the desktop
+app only.
 
 ### 9.2 Making the providers build for WASM
 
@@ -672,7 +678,7 @@ Tizen's native `<video>` reports `canPlayType` "maybe" but either fails with
 them (verified: 1280×720, Italian/English audio, 37 subtitle tracks), because
 every host involved answers `access-control-allow-origin: *`.
 
-hls.js 1.7.3 is vendored (`assets/js/hls.min.js`, verified against the npm
+hls.js 1.7.4 is vendored (`assets/js/hls.min.js`, verified against the npm
 `sha512` integrity, Apache-2.0) so playback never depends on a CDN; the TV and
 the Windows app load it (§14.1). `assets/js/player.js` is the one player for
 every device: Rust talks to it through a long-lived `document::eval` channel
@@ -821,7 +827,9 @@ replaced by a per-key last-writer-wins map:
   itself (a JSON file on macOS, IndexedDB on the TV), pushed within 10 s when
   dirty, pulled every 60 s and whenever the app becomes visible. On first run
   the macOS app folds its old `continue_watching.json`/`player_prefs.json` into
-  the replica and removes them. Userscript: the same replica in `localStorage`.
+  the replica and removes them. Userscript: the same replica in the userscript
+  manager's storage (`GM_getValue`), shared by every StreamingCommunity domain;
+  `localStorage` only under a manager without it.
 - The server code is tested from Rust: `sync.rs` runs `google_apps_script.gs`
   under JavaScriptCore (the system `jsc` shell) and drives real replicas
   through it (migration, convergence, deletions, clock skew, pruning, a wiped
@@ -968,14 +976,16 @@ TizenBrew does in JavaScript, after Samsung's own `webIDE-common-tizentv`.
   `tv/tizen/<DUID>` of the app's own folder (`folders::local_dir()`, hidden on
   both systems), where a folder earlier versions left in
   `~/SamsungCertificate/streamvault-<DUID>` is moved; it is replaced only once
-  both certificates arrived. Stores written by Tizen Studio's Java 8
+  both certificates arrived and are written in full beside it, and a store that
+  cannot be read stops the install, naming the folder to delete, instead of
+  silently making a new author key. Stores written by Tizen Studio's Java 8
   (3DES keys, RC2-40 certificates, SHA-1 MAC) still load, so TVs installed
   before keep their author and update in place. A certificate the TV rejects
   is renewed with the same author key: Tizen's `IsSameAuthor` (app-installers)
   compares only the author certificates' public keys, so the app still updates
   in place; a missing store gives a new key, and an app signed with another one
-  is uninstalled before the install (gotcha 46). Both answers are PEM, as
-  TizenBrew reads them; no device profile comes back to push.
+  is uninstalled before the install, after asking (gotcha 46). Both answers
+  are PEM, as TizenBrew reads them; no device profile comes back to push.
 
 All of it is Rust without C (`rsa`, `x509-cert`, `p12-keystore`, `zip` with
 zlib-rs), so §14.2 holds. With the stores Tizen Studio left for the Samsung it
@@ -1024,7 +1034,7 @@ context), and no Content-Security-Policy.
   hour after (relaunching resumes the widget, `reload="disable"`, so a check
   at start alone could miss a release for days); `install()` refuses a
   release whose `shell` is newer than `boot.js` and asks for a new installation
-  from the Mac.
+  from the computer.
 - Verified in the browser with release requests answered over CDP by a signed
   1.1.2 bundle: the offer, refusals of a modified WASM, a bad signature and a
   newer shell (nothing stored), the install and confirmed restart, fallback
@@ -1096,11 +1106,11 @@ stays a macOS resource.
 
 `install desktop` is `src/deploy/desktop/`. On macOS it takes the release
 binary, assembles `StreamVault.app` (`Info.plist` with the `Cargo.toml`
-version, the icon, FFmpeg 7.1 and N_m3u8DL-RE 0.5.1 in `Resources/bin`), signs
+version, the icon, FFmpeg 7.1 and N_m3u8DL-RE 0.6.0 in `Resources/bin`), signs
 it ad hoc and replaces the one in the current folder. On Windows it installs
 the WebView2 runtime when it is missing (its `pv` in the registry), the
 executable, FFmpeg 7.1 (the gyan.dev essentials build) and
-N_m3u8DL-RE 0.5.1 into `%LOCALAPPDATA%\Programs\StreamVault`, with a Start menu
+N_m3u8DL-RE 0.6.0 into `%LOCALAPPDATA%\Programs\StreamVault`, with a Start menu
 shortcut (WScript.Shell) and a per-user uninstall entry (`reg add`); a running
 executable is renamed aside, which Windows allows, so an update replaces it in
 place.
@@ -1175,6 +1185,7 @@ Samsung installs use no external tool on either.
 | 44  | a download fails now and then as its tracks finish           | with `--write-meta-json false` the tracks' shared temporary folder empties as they end; two tracks ending together both delete it and N_m3u8DL-RE crashes           | keep the default `meta.json`, which holds that folder until the run ends      |
 | 45  | _Invalid format of certificate in signature_ (118, -12)      | the TV decodes `X509Certificate` with a line-based base64 reader; one 1,800-character line fails although XML allows it                                             | write signature values and certificates in lines of 76 characters             |
 | 46  | _Author certificate not match_ (118, -11)                    | Tizen updates an app only from an author certificate with the same public key; this computer lost that key, or another one installed it                             | renew with the stored author key; without it, uninstall first                 |
+| 47  | a download stays at 0% until it ends                         | from 0.6.0 (Spectre.Console 0.57) N_m3u8DL-RE writes each line break on its own, and its writer for piped output drops it: the rows of every redraw arrive glued    | read the output as it arrives; a row starts at `Vid `, `Aud ` or `Sub `       |
 
 ---
 
@@ -1225,10 +1236,10 @@ Samsung installs use no external tool on either.
   owner and only the existing certificate was used on the TV.
 - The Windows app and installer pass clippy and build from the Mac with the
   GNU cross toolchain (a GUI executable with the icon group 32512, and a
-  console installer), but have not run on a Windows PC yet, and the `windows`
-  and `macos` jobs of `deploy.yml` have not run on GitHub yet. The inlined
-  hls.js the Windows app streams with played in the macOS app, not yet in
-  WebView2.
+  console installer) and have run on Windows (gotchas 42 and 43); the
+  `windows` and `macos` jobs of `deploy.yml` have published every release
+  since v1.1.5. The inlined hls.js the Windows app streams with played in the
+  macOS app, not yet in WebView2.
 - On the TV, AnimeUnity's cookie-based login cannot work under browser header
   rules (§9.1). Its search failed with HTTP 405 until `domains.json` followed the
   site's move to `animeunity.co` (the old domain's 301 turned the POST into a GET).
@@ -1244,7 +1255,8 @@ Samsung installs use no external tool on either.
   details and episodes follow it: every title and season page is read in that
   language, and opening a title refreshes its name and plot from it. Until a
   viewer picks an audio track, playback picks the interface language, then
-  English, else keeps the stream's default; a pick is kept as before. The TV
+  English, else keeps the stream's default; a pick is kept as before, and a
+  picked language the stream lacks falls back to that order. The TV
   build, run in Chrome with each language as the browser's, showed home,
   search, details and player in that language, and the menu switched it by
   mouse and by remote keys and kept it across a reload; the Samsung's own

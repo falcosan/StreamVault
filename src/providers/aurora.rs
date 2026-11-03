@@ -116,6 +116,7 @@ fn parse_videos(entry: &MediaEntry, json: &Value) -> ProviderResult<Vec<Video>> 
                 episode: Episode {
                     id: stable_hash(&format!("{}-{season}-{id}", entry.id)),
                     number,
+                    part: None,
                     name: item["title"].as_str().unwrap_or_default().to_owned(),
                     duration: item["videoDuration"]
                         .as_u64()

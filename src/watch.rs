@@ -81,7 +81,7 @@ pub fn finish(items: &mut Vec<WatchItem>, item: &WatchItem, episodes: &[Episode]
         remove(items, item.entry.key());
         return true;
     };
-    let Some(next) = next_episode(episodes, current.number) else {
+    let Some(next) = next_episode(episodes, current) else {
         return false;
     };
     upsert(items, start_of(item.entry.clone(), season, next.clone()));
@@ -103,7 +103,7 @@ pub fn next_season(seasons: &[u32], after: u32) -> Option<u32> {
 }
 
 pub fn first_episode(episodes: &[Episode]) -> Option<&Episode> {
-    episodes.iter().min_by_key(|e| e.number)
+    episodes.iter().min_by_key(|e| e.order())
 }
 
 #[cfg(test)]

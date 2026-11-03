@@ -14,10 +14,15 @@ const open = (attempt) =>
     return open(attempt + 1);
   });
 
-const database = open(1);
+let database;
+const connect = () =>
+  (database ??= open(1).catch((error) => {
+    database = undefined;
+    throw error;
+  }));
 
 export async function load(key) {
-  const store = (await database).transaction(STORE).objectStore(STORE);
+  const store = (await connect()).transaction(STORE).objectStore(STORE);
   return new Promise((resolve, reject) => {
     const request = store.get(key);
     request.onsuccess = () => resolve(request.result ?? null);
@@ -35,7 +40,7 @@ export async function packaged(name) {
 }
 
 export async function save(key, value) {
-  const transaction = (await database).transaction(STORE, "readwrite", {
+  const transaction = (await connect()).transaction(STORE, "readwrite", {
     durability: "strict",
   });
   transaction.objectStore(STORE).put(value, key);

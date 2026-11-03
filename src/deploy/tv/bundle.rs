@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 const WASM: &str = "wasm32-unknown-unknown";
-const PUBLIC: &str = "target/dx/streamvault/release/web/public";
+const PUBLIC: &str = "dx/streamvault/release/web/public";
 const ENTRY: &str = r#"<script type="module" async src=""#;
 const BOOT: &str = include_str!("../../../assets/js/boot.js");
 
@@ -52,14 +52,14 @@ fn plain(name: &str) -> Result<&str, String> {
         .file_name()
         .is_some_and(|file| file == name)
         .then_some(name)
-        .ok_or(format!("tv.json lists {name}, which is not a file name."))
+        .ok_or_else(|| format!("tv.json lists {name}, which is not a file name."))
 }
 
 async fn compile(session: &Session, root: &Path) -> Result<PathBuf, String> {
     let dx = dx(session, root).await?;
     target(session).await?;
     say(format!("Building StreamVault {VERSION}…"));
-    let public = root.join(PUBLIC);
+    let public = session.target_dir(root).await?.join(PUBLIC);
     remove(&public);
     session
         .run(
@@ -168,6 +168,12 @@ mod tests {
             )
         );
         assert!(boot("<head></head>").is_err());
+    }
+
+    #[test]
+    fn boot_js_updates_from_the_same_releases() {
+        let releases = format!("const RELEASES = \"{}\";", crate::release::RELEASES);
+        assert!(BOOT.contains(&releases));
     }
 
     #[test]

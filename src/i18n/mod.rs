@@ -93,11 +93,11 @@ pub struct Text {
     pub seasons: &'static str,
     pub season: fn(u32) -> String,
     pub episodes: &'static str,
-    pub episode: fn(u32) -> String,
+    pub episode: fn(&str) -> String,
     pub no_episodes: &'static str,
     pub play: &'static str,
     pub resume: &'static str,
-    pub play_episode: fn(u32, &str) -> String,
+    pub play_episode: fn(&str, &str) -> String,
     pub time_left: fn(&str) -> String,
     pub episodes_failed: &'static str,
     pub next_season_failed: &'static str,
@@ -137,10 +137,10 @@ pub struct Desktop {
     pub finishing: &'static str,
     pub downloaded: &'static str,
     pub retry: &'static str,
-    pub download_this: fn(Option<u32>) -> String,
-    pub play_this: fn(Option<u32>) -> String,
-    pub retry_this: fn(Option<u32>) -> String,
-    pub show_this: fn(Option<u32>) -> String,
+    pub download_this: fn(Option<&str>) -> String,
+    pub play_this: fn(Option<&str>) -> String,
+    pub retry_this: fn(Option<&str>) -> String,
+    pub show_this: fn(Option<&str>) -> String,
     pub empty: &'static str,
     pub empty_hint: &'static str,
     pub browse: &'static str,
@@ -208,5 +208,15 @@ mod tests {
         let counts = |text: &Text| [0, 1, 2].map(text.result_count);
         assert_eq!(counts(en), ["0 results", "1 result", "2 results"]);
         assert_eq!(counts(it), ["0 risultati", "1 risultato", "2 risultati"]);
+        let left = ["1 min", "2 min", "1 h", "1 h 5 min"].map(it.time_left);
+        assert_eq!(
+            left,
+            [
+                "Manca 1 min",
+                "Mancano 2 min",
+                "Manca 1 h",
+                "Mancano 1 h 5 min"
+            ]
+        );
     }
 }
