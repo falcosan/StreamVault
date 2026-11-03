@@ -7,6 +7,7 @@ const POSTER_COLORS: [&str; 16] = [
     "#8b1a1a", "#0d3b66", "#3b0a5c", "#144014", "#6b3a00", "#5c0e0e", "#0a2a4a", "#400a50",
     "#4a0e0e", "#003a3a", "#3e2123", "#1b2a41", "#2d1b00", "#1a0a2e", "#0e331a", "#331a0e",
 ];
+pub(super) const GHOST_CARDS: usize = 18;
 
 pub(super) fn poster_color(name: &str) -> &'static str {
     let index = stable_hash(name) % POSTER_COLORS.len() as u64;
@@ -69,6 +70,20 @@ pub(super) fn PosterCard(entry: MediaEntry) -> Element {
                         span { class: "poster-year", "{year}" }
                     }
                 }
+            }
+        }
+    }
+}
+
+#[component]
+pub(super) fn GhostCards(count: usize, label: &'static str) -> Element {
+    rsx! {
+        div {
+            class: "media-grid skeleton",
+            role: "progressbar",
+            aria_label: label,
+            for index in 0..count {
+                div { key: "{index}", class: "poster-card ghost" }
             }
         }
     }

@@ -1,24 +1,19 @@
-use super::poster::{PosterCard, card_background};
-use super::{CLOSE_ICON, LOGO};
+use super::CLOSE_ICON;
+use super::poster::{GHOST_CARDS, GhostCards, PosterCard, card_background};
 use crate::app::AppState;
 use crate::i18n::text;
 use crate::watch::WatchItem;
 use dioxus::prelude::*;
+
+const GHOST_ROW: usize = 6;
 
 #[component]
 pub fn HomeView() -> Element {
     let app = use_context::<AppState>();
     let catalog = app.catalog.items.read();
     let watching = app.watch.read();
+    let loading = *app.catalog.loading.read();
     let t = text();
-
-    if catalog.is_empty() && *app.catalog.loading.read() {
-        return rsx! {
-            div { class: "center-msg", role: "progressbar", aria_label: t.loading,
-                div { class: "splash-logo", dangerous_inner_html: LOGO }
-            }
-        };
-    }
 
     rsx! {
         div { class: "catalog-view",
@@ -37,7 +32,9 @@ pub fn HomeView() -> Element {
                     }
                 }
             }
-            if catalog.is_empty() {
+            if catalog.is_empty() && loading {
+                GhostCards { count: GHOST_CARDS, label: t.loading }
+            } else if catalog.is_empty() {
                 div { class: "center-msg compact",
                     span { class: "empty-msg", "{t.no_media}" }
                     button {
@@ -54,7 +51,7 @@ pub fn HomeView() -> Element {
                 }
             }
             if *app.catalog.loading_more.read() {
-                div { class: "loading-msg", role: "status", "{t.loading_more}" }
+                GhostCards { count: GHOST_ROW, label: t.loading_more }
             }
         }
     }

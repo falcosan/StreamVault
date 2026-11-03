@@ -282,11 +282,6 @@ svg {
   padding: 20px;
 }
 
-.splash-logo {
-  width: 100px;
-  height: 100px;
-}
-
 .catalog-view {
   padding: 16px 0 20px;
 }
@@ -907,9 +902,12 @@ svg {
   color: var(--text2);
 }
 
+.skeleton {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
 .episode.skeleton {
   cursor: default;
-  animation: pulse 1.4s ease-in-out infinite;
 }
 
 .skeleton-line {
@@ -922,6 +920,44 @@ svg {
 
 .skeleton-line.short {
   width: 120px;
+}
+
+.hero-desc.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 5px 0;
+}
+
+.hero-desc .skeleton-line {
+  width: min(520px, 100%);
+}
+
+.hero-desc .skeleton-line.short {
+  width: min(320px, 60%);
+}
+
+.skeleton-line.inline {
+  display: inline-block;
+  width: 70px;
+  height: 10px;
+  vertical-align: middle;
+}
+
+.season-chip.ghost {
+  color: transparent;
+  border-color: transparent;
+  background: var(--surface2);
+  cursor: default;
+}
+
+.poster-card.ghost {
+  background: var(--surface2);
+  cursor: default;
+}
+
+.poster-card.ghost:hover {
+  transform: none;
 }
 
 @keyframes pulse {
@@ -1586,12 +1622,6 @@ svg {
   height: 14px;
 }
 
-.loading-msg {
-  font-size: 13px;
-  color: var(--text3);
-  padding: 10px 24px;
-}
-
 :focus {
   outline: none;
 }
@@ -1660,7 +1690,8 @@ svg {
     transition-duration: 0.01ms !important;
   }
 
-  .dl-item {
+  .dl-item,
+  .skeleton {
     animation: none;
   }
 

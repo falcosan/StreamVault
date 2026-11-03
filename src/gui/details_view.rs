@@ -17,6 +17,7 @@ pub fn DetailsView(entry: MediaEntry) -> Element {
     let (tone, label) = badge(t, &entry);
     let score = entry.score.as_deref().map(|score| format_score(t, score));
     let seasons = app.details.seasons.read().len();
+    let loading_title = seasons == 0 && *app.details.loading.read();
     let resume = app
         .watch
         .read()
@@ -54,11 +55,21 @@ pub fn DetailsView(entry: MediaEntry) -> Element {
                         }
                         if seasons > 0 {
                             span { class: "hero-fact", "{(t.season_count)(seasons)}" }
+                        } else if loading_title && !movie {
+                            span { class: "hero-fact", aria_hidden: true,
+                                span { class: "skeleton-line inline skeleton" }
+                            }
                         }
                         span { class: "hero-fact", "{entry.provider_name}" }
                     }
                     if let Some(description) = &entry.description {
                         p { class: "hero-desc", "{description}" }
+                    } else if loading_title {
+                        div { class: "hero-desc skeleton", aria_hidden: true,
+                            span { class: "skeleton-line" }
+                            span { class: "skeleton-line" }
+                            span { class: "skeleton-line short" }
+                        }
                     }
                     div { class: "hero-actions",
                         PlayButton { entry: entry.clone(), resume: resume.clone() }
@@ -159,6 +170,8 @@ fn Episodes(entry: MediaEntry, resume: Option<WatchItem>) -> Element {
                     }
                 } else if let Some(number) = selected {
                     span { class: "season-label", "{(t.season)(number)}" }
+                } else if loading {
+                    span { class: "season-chip ghost skeleton", aria_hidden: true, "{(t.season)(1)}" }
                 }
             }
             if episodes.is_empty() && loading {
