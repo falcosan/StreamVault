@@ -19,6 +19,7 @@ const HLS: Asset = asset!(
     "/assets/js/hls.min.js",
     AssetOptions::js().with_minify(false)
 );
+pub const CAST_SCREEN: Option<fn()> = None;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SKIP_SECONDS: f64 = 30.0;
 const SEEK_BAR: &str = "#seek";

@@ -690,6 +690,13 @@ fatal media error once before reporting it. Each `<video>` is its own Dioxus
 component keyed by URL, so the session is detached exactly when the episode
 changes or the player closes, and the last position is saved at that moment.
 
+The Cast button follows the Remote Playback API: `video.remote.watchAvailability`
+shows it while the macOS webview sees an AirPlay receiver, and `prompt()` opens
+the AirPlay picker (verified in a `WKWebView` on a `dioxus://` page with native
+HLS). Windows documents no URI for its Cast panel, so on Windows the button is
+always shown and sends Win+K, which Microsoft documents as "Open Cast from Quick
+Settings to connect to a display" (Windows 10: "Open the Connect quick action").
+
 CDP screenshots show the video area white: the TV composites video on a
 hardware plane underneath the web layer.
 

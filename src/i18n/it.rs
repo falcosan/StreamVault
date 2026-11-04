@@ -64,6 +64,7 @@ pub static TEXT: Text = Text {
     next_episode: "Episodio successivo",
     fullscreen: "Schermo intero",
     exit_fullscreen: "Esci dallo schermo intero",
+    cast: "Trasmetti a un dispositivo",
     #[cfg(feature = "desktop")]
     desktop: Desktop {
         downloads: "Download",

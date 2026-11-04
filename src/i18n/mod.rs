@@ -115,6 +115,7 @@ pub struct Text {
     pub next_episode: &'static str,
     pub fullscreen: &'static str,
     pub exit_fullscreen: &'static str,
+    pub cast: &'static str,
     #[cfg(feature = "desktop")]
     pub desktop: Desktop,
 }

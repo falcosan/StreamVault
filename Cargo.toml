@@ -1,6 +1,6 @@
 [package]
 name = "streamvault"
-version = "1.2.1"
+version = "1.2.2"
 edition = "2024"
 build = "src/build.rs"
 
@@ -29,6 +29,7 @@ desktop = [
   "dep:dirs",
   "dep:embed-resource",
   "dep:image",
+  "dep:windows-sys",
   "reqwest/default-tls",
   "uuid/serde",
   "tokio/rt",
@@ -123,6 +124,11 @@ tokio = { version = "1", features = ["time", "macros"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { version = "1", features = ["macros"] }
 gloo-timers = { version = "0.4", features = ["futures"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_UI_Input_KeyboardAndMouse",
+], optional = true }
 
 [build-dependencies]
 embed-resource = { version = "3", optional = true }

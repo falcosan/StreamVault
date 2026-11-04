@@ -93,6 +93,7 @@ function applySubtitles(player, prefs) {
 
 function attach(video, url, start, prefs, languages, send) {
   let started = false;
+  let available = false;
   let player;
   const chosen = new Set();
   const status = () =>
@@ -103,6 +104,7 @@ function attach(video, url, start, prefs, languages, send) {
       paused: video.paused,
       waiting: buffering(video, started),
       fullscreen: Boolean(document.fullscreenElement),
+      castable: available && video.readyState >= HTMLMediaElement.HAVE_METADATA,
     });
   const tracks = () =>
     send({
@@ -135,10 +137,17 @@ function attach(video, url, start, prefs, languages, send) {
   for (const [name, listener] of Object.entries(listeners))
     video.addEventListener(name, listener);
   document.addEventListener("fullscreenchange", status);
+  video.remote
+    ?.watchAvailability((found) => {
+      available = found;
+      status();
+    })
+    .catch(() => {});
   const unlisten = () => {
     for (const [name, listener] of Object.entries(listeners))
       video.removeEventListener(name, listener);
     document.removeEventListener("fullscreenchange", status);
+    video.remote?.cancelWatchAvailability().catch(() => {});
   };
   const session = (stop) => ({
     video,
@@ -264,5 +273,6 @@ async function control(channel) {
     else if (command.type === "select")
       session.select(command.menu, command.index);
     else if (command.type === "fullscreen") fullscreen(video);
+    else if (command.type === "cast") video.remote?.prompt().catch(() => {});
   }
 }

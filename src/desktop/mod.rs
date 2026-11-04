@@ -35,6 +35,8 @@ use macos as os;
 #[cfg(windows)]
 use windows as os;
 
+pub use os::CAST_SCREEN;
+
 const MAX_DOWNLOADS: usize = 2;
 static DOWNLOAD_SLOTS: Semaphore = Semaphore::const_new(MAX_DOWNLOADS);
 

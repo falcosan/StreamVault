@@ -1159,7 +1159,8 @@ svg {
 }
 
 .player-control.next,
-#control-fullscreen:not(.next + *) {
+#control-cast:not(.next + *),
+#control-fullscreen:not(.next + *, #control-cast + *) {
   margin-left: auto;
 }
 

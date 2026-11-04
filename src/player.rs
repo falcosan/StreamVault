@@ -1,6 +1,6 @@
 use crate::app::{AppState, cancel, restart};
 use crate::i18n::{Lang, Text, text};
-use crate::platform::focus;
+use crate::platform::{self, focus};
 use crate::prefs::PlayerPrefs;
 use crate::time::{now_ms, sleep};
 use crate::watch;
@@ -113,6 +113,7 @@ pub struct Status {
     pub paused: bool,
     pub waiting: bool,
     pub fullscreen: bool,
+    pub castable: bool,
 }
 
 #[derive(Serialize)]
@@ -135,6 +136,7 @@ enum Command<'a> {
         index: i32,
     },
     Fullscreen,
+    Cast,
 }
 
 #[derive(Deserialize)]
@@ -358,6 +360,13 @@ impl Player {
 
     pub fn fullscreen(self) {
         self.send(Command::Fullscreen);
+    }
+
+    pub fn cast(self) {
+        match platform::CAST_SCREEN {
+            Some(cast_screen) => cast_screen(),
+            None => self.send(Command::Cast),
+        }
     }
 
     pub fn toggle_menu(mut self, menu: Menu) {
@@ -588,7 +597,7 @@ mod tests {
     #[test]
     fn events_parse_the_player_script_messages() {
         let parse = |value| serde_json::from_value::<Event>(value).unwrap();
-        let status = json!({"type": "status", "time": 5.5, "duration": 60, "paused": false, "waiting": true, "fullscreen": true});
+        let status = json!({"type": "status", "time": 5.5, "duration": 60, "paused": false, "waiting": true, "fullscreen": true, "castable": true});
         assert!(matches!(
             parse(status),
             Event::Status(Status {
@@ -596,7 +605,8 @@ mod tests {
                 duration: 60.0,
                 paused: false,
                 waiting: true,
-                fullscreen: true
+                fullscreen: true,
+                castable: true
             })
         ));
         let tracks = json!({"type": "tracks", "audio": [{"language": "ita", "label": "Italian"}], "audio_index": 0, "subtitles": [], "subtitle_index": -1});
@@ -610,7 +620,7 @@ mod tests {
     #[test]
     fn only_events_of_the_current_playback_are_kept() {
         let message = |generation| {
-            let status = json!({"type": "status", "time": 5, "duration": 60, "paused": false, "waiting": false, "fullscreen": false, "generation": generation});
+            let status = json!({"type": "status", "time": 5, "duration": 60, "paused": false, "waiting": false, "fullscreen": false, "castable": false, "generation": generation});
             serde_json::from_value::<Message>(status).unwrap()
         };
         assert!(matches!(
@@ -666,6 +676,10 @@ mod tests {
             .unwrap(),
             json!({"type": "select", "menu": "subtitles", "index": -1})
         );
+        assert_eq!(
+            serde_json::to_value(Command::Cast).unwrap(),
+            json!({"type": "cast"})
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -677,7 +691,7 @@ mod tests {
 
         fn eval(expression: &str) -> Value {
             run_js(&format!(
-                "var HTMLMediaElement = {{ HAVE_FUTURE_DATA: 3 }};{}JSON.stringify({expression});",
+                "var HTMLMediaElement = {{ HAVE_METADATA: 1, HAVE_FUTURE_DATA: 3 }};{}Promise.resolve({expression}).then(JSON.stringify);",
                 include_str!("../assets/js/player.js")
             ))
         }
@@ -731,6 +745,58 @@ mod tests {
                     })()"#
                 ),
                 json!([1, 0])
+            );
+        }
+
+        #[test]
+        fn casting_is_offered_once_a_device_is_available_and_the_video_has_loaded() {
+            assert_eq!(
+                eval(
+                    r#"(() => {
+                        let available;
+                        const sent = [];
+                        const listeners = {};
+                        globalThis.document = { addEventListener() {}, removeEventListener() {} };
+                        const remote = {
+                            watchAvailability: async (callback) => (available = callback),
+                            cancelWatchAvailability: async () => (available = undefined),
+                        };
+                        const video = { remote, readyState: 0, addEventListener: (name, listener) => (listeners[name] = listener), removeEventListener() {}, play: async () => {}, removeAttribute() {}, load() {} };
+                        const prefs = { audio_lang: "", subtitle_lang: "", subtitles_on: false, speed: 1 };
+                        const session = attach(video, "movie.mp4", 0, prefs, [], (event) => sent.push(event));
+                        const idle = sent.at(-1).castable;
+                        available(true);
+                        const loading = sent.at(-1).castable;
+                        video.readyState = HTMLMediaElement.HAVE_METADATA;
+                        listeners.timeupdate();
+                        const loaded = sent.at(-1).castable;
+                        session.detach();
+                        return [idle, loading, loaded, available === undefined];
+                    })()"#
+                ),
+                json!([false, false, true, true])
+            );
+        }
+
+        #[test]
+        fn the_cast_command_opens_the_device_picker() {
+            assert_eq!(
+                eval(
+                    r#"(async () => {
+                        const prompts = [];
+                        const remote = { watchAvailability: async () => {}, cancelWatchAvailability: async () => {}, prompt: async () => prompts.push("picker") };
+                        const video = { remote, addEventListener() {}, removeEventListener() {}, play: async () => {}, removeAttribute() {}, load() {} };
+                        globalThis.document = { addEventListener() {}, removeEventListener() {}, querySelector: () => video };
+                        const prefs = { audio_lang: "", subtitle_lang: "", subtitles_on: false, speed: 1 };
+                        const commands = [{ type: "attach", url: "movie.mp4", start: 0, prefs, languages: [], generation: 1 }, { type: "cast" }];
+                        let drained;
+                        const idle = new Promise((resolve) => (drained = resolve));
+                        control({ send() {}, recv: () => (commands.length ? Promise.resolve(commands.shift()) : (drained(), new Promise(() => {}))) });
+                        await idle;
+                        return prompts;
+                    })()"#
+                ),
+                json!(["picker"])
             );
         }
 

@@ -1,10 +1,11 @@
 use super::{BackButton, Choice, PLAY_ICON, Picker};
 use crate::app::{AppState, Playback};
 use crate::i18n::text;
-use crate::platform::focus;
+use crate::platform::{self, focus};
 use crate::player::{Menu, OSD_SECONDS, SEEK_SECONDS, clock, offset_label};
 use dioxus::prelude::*;
 
+const CAST_ICON: &str = include_str!("../../assets/img/vector/cast.svg");
 const PAUSE_ICON: &str = include_str!("../../assets/img/vector/pause.svg");
 const FULLSCREEN_ICON: &str = include_str!("../../assets/img/vector/fullscreen.svg");
 const FULLSCREEN_EXIT_ICON: &str = include_str!("../../assets/img/vector/fullscreen-exit.svg");
@@ -149,6 +150,15 @@ pub fn PlayerView() -> Element {
                                     app.play_next();
                                 },
                                 "{t.next_episode}"
+                            }
+                        }
+                        if status.castable || platform::CAST_SCREEN.is_some() {
+                            button {
+                                id: "control-cast",
+                                class: "player-control icon",
+                                aria_label: t.cast,
+                                onclick: move |_| player.cast(),
+                                span { class: "control-icon", dangerous_inner_html: CAST_ICON }
                             }
                         }
                         button {

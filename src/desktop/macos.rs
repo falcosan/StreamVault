@@ -5,6 +5,7 @@ use tokio::process::Command;
 
 pub const INSTALLER: &str = "StreamVault-install-macos";
 pub const HLS: Option<&str> = None;
+pub const CAST_SCREEN: Option<fn()> = None;
 const RELAUNCH: &str = "while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; exec open -n \"$2\"";
 
 pub fn command(program: impl AsRef<OsStr>) -> Command {
