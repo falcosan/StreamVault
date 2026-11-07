@@ -56,8 +56,11 @@ only. vixcloud's embed page, which StreamingCommunity's playback goes through,
 answers 403 without a `Referer`. `MainActivity` sends the app's origin, so
 Android TVs play it, after a new TV install since an in-app update does not
 replace the Java host. A Samsung TV runs the app as a `file://` page, and such
-a page sends no `Referer` whatever the request asks for (measured in Brave, not
-on a TV), so StreamingCommunity's titles are listed there but do not play.
+a page sends an empty `Referer` whatever `fetch` or XHR asks for (measured on a
+TV). The widget may script a frame from another site, though, so the app loads
+vixcloud's `robots.txt` in a hidden frame and fetches the embed page from
+there, with that page as `Referer` (`assets/js/referer.js`). The frame is
+sandboxed without scripts, so whatever that site serves there cannot run.
 
 ## TVs
 

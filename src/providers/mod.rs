@@ -23,6 +23,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use streaming_community::StreamingCommunity;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
 
 const DOMAINS_URL: &str =
     "https://raw.githubusercontent.com/falcosan/StreamVault/main/assets/js/domains.json";
@@ -337,13 +339,32 @@ pub fn stable_hash(text: &str) -> u64 {
         & MAX_SAFE_INTEGER
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(module = "/assets/js/referer.js")]
+extern "C" {
+    #[wasm_bindgen(js_name = refererMissing)]
+    fn referer_missing() -> bool;
+
+    #[wasm_bindgen(catch, js_name = fetchFromSite)]
+    async fn fetch_from_site(url: &str, seconds: f64) -> Result<JsValue, JsValue>;
+}
+
 async fn fetch_vixcloud(
     http: &Http,
     site: &str,
     embed: impl AsyncFn() -> ProviderResult<String>,
 ) -> ProviderResult<StreamUrl> {
     let referer = format!("{site}/");
-    let fetch = async |url: String| fetch_text(http.get(url).header(REFERER, &referer)).await;
+    let fetch = async |url: String| {
+        #[cfg(target_arch = "wasm32")]
+        if referer_missing() {
+            return fetch_from_site(&url, http.timeout.as_secs_f64())
+                .await
+                .map(|page| page.as_string().unwrap_or_default())
+                .map_err(|e| ProviderError::Network(e.as_string().unwrap_or_default()));
+        }
+        fetch_text(http.get(url).header(REFERER, &referer)).await
+    };
     let player = match fetch(embed().await?).await {
         Ok(player) => player,
         Err(e) => {
@@ -815,5 +836,98 @@ mod tests {
     #[test]
     fn vixcloud_playlist_requires_token() {
         assert!(vixcloud_playlist(r#"expires: "e", url: "https://v.co/p/1""#).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    mod referer {
+        use crate::check::run_js;
+        use serde_json::{Value, json};
+
+        const SCRIPT: &str = include_str!("../../assets/js/referer.js");
+
+        fn fetch_from_site(status: u16, loads: bool) -> Value {
+            run_js(&format!(
+                r#"
+                var location = {{ protocol: "file:" }};
+                var AbortSignal = {{
+                  timeout: () => {{
+                    const signal = {{ reason: new Error("signal timed out") }};
+                    if (!{loads}) setTimeout(() => signal.onabort(), 0);
+                    return signal;
+                  }},
+                }};
+                var URL = class {{
+                  constructor(path, base) {{
+                    this.href = base.match(/^https:\/\/[^/]+/)[0] + path;
+                  }}
+                }};
+                var frames = [];
+                var document = {{
+                  body: {{
+                    append: (frame) => {{
+                      frames.push(frame);
+                      if ({loads}) setTimeout(frame.onload, 0);
+                    }},
+                  }},
+                  createElement: () => {{
+                    const frame = {{
+                      removed: false,
+                      remove: () => (frame.removed = true),
+                      contentWindow: {{
+                        fetch: async (url) => ({{
+                          ok: {ok},
+                          status: {status},
+                          text: async () => `${{url}} from ${{frame.src}}`,
+                        }}),
+                      }},
+                    }};
+                    return frame;
+                  }},
+                }};
+                {script}
+                var left = () => frames.map(({{ sandbox, removed }}) => ({{ sandbox, removed }}));
+                fetchFromSite("https://vixcloud.cc/embed/1?token=t", 30).then(
+                  (page) => JSON.stringify({{ page, missing: refererMissing(), frames: left() }}),
+                  (error) => JSON.stringify({{ error, frames: left() }}),
+                )
+                "#,
+                ok = status == 200,
+                script = SCRIPT.replace("export ", ""),
+            ))
+        }
+
+        #[test]
+        fn a_page_that_sends_no_referer_fetches_inside_a_sandboxed_frame_of_the_site() {
+            assert_eq!(
+                fetch_from_site(200, true),
+                json!({
+                    "page": "https://vixcloud.cc/embed/1?token=t from https://vixcloud.cc/robots.txt",
+                    "missing": true,
+                    "frames": [{ "sandbox": "allow-same-origin", "removed": true }],
+                })
+            );
+        }
+
+        #[test]
+        fn a_refused_page_fails_and_leaves_no_frame() {
+            assert_eq!(
+                fetch_from_site(403, true),
+                json!({
+                    "error": "HTTP 403",
+                    "frames": [{ "sandbox": "allow-same-origin", "removed": true }],
+                })
+            );
+        }
+
+        #[test]
+        fn a_frame_that_never_loads_times_out_and_leaves_no_frame() {
+            assert_eq!(
+                fetch_from_site(200, false),
+                json!({
+                    "error": "signal timed out",
+                    "frames": [{ "sandbox": "allow-same-origin", "removed": true }],
+                })
+            );
+        }
     }
 }
