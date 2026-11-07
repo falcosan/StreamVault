@@ -1,4 +1,4 @@
-use crate::deploy::{Session, VERSION, copy, say};
+use crate::deploy::{Session, VERSION, copy, remove, say};
 use std::path::Path;
 use tokio::process::Command;
 
@@ -128,7 +128,7 @@ fn swap(staged: &Path, path: &Path) -> Result<(), String> {
             _ => failed,
         }
     })?;
-    let _ = std::fs::remove_file(old);
+    remove(&old);
     Ok(())
 }
 

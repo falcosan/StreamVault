@@ -1,6 +1,6 @@
 use super::{
     Episode, Http, MediaEntry, Provider, ProviderError, ProviderResult, StreamUrl, fetch_json,
-    items, stable_hash, uint,
+    find_saved, items, stable_hash, uint,
 };
 use async_trait::async_trait;
 use base64::Engine;
@@ -51,8 +51,9 @@ struct Video {
 }
 
 impl Video {
-    fn is(&self, season: Option<u32>, wanted: &Episode) -> bool {
-        Some(self.season) == season && self.episode.matches(wanted)
+    fn of<'a>(videos: &'a [Self], season: Option<u32>, wanted: &Episode) -> Option<&'a Self> {
+        let listed = videos.iter().filter(|v| Some(v.season) == season);
+        find_saved(listed, |v| &v.episode, wanted)
     }
 }
 
@@ -230,9 +231,7 @@ impl Provider for Aurora {
             self.env
         ));
         let (videos, home) = tokio::try_join!(self.videos(entry), fetch_json(home))?;
-        let video = videos
-            .into_iter()
-            .find(|v| v.is(season, wanted))
+        let video = Video::of(&videos, season, wanted)
             .ok_or_else(|| ProviderError::StreamExtraction("Episode data not found".into()))?;
         let token = realm_token(&home, video.realm)?;
         let playback = fetch_json(
@@ -404,12 +403,15 @@ mod tests {
             ..Episode::numbered(4, "Episodio 4")
         };
         let videos = parse_videos(&saved, &json).unwrap();
-        let picked = |season| videos.iter().find(|v| v.is(season, &long)).map(|v| &v.id);
+        let picked = |season| Video::of(&videos, season, &long).map(|v| &v.id);
         assert_eq!(picked(Some(2)).map(String::as_str), Some("b"));
         assert_eq!(picked(Some(3)), None);
         let fresh = parse_videos(&found, &json).unwrap();
         assert_eq!(videos[1].episode.id, fresh[1].episode.id);
-        assert!(videos[1].is(Some(2), &fresh[1].episode));
+        assert_eq!(
+            Video::of(&videos, Some(2), &fresh[1].episode).map(|v| &v.id),
+            Some(&videos[1].id)
+        );
     }
 
     #[test]

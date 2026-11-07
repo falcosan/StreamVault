@@ -82,6 +82,10 @@ impl Episode {
         (self.number, self.part)
     }
 
+    pub fn sequence(&self) -> (EpisodeOrder, u64) {
+        (self.order(), self.id)
+    }
+
     pub fn label(&self, season: u32) -> String {
         let code = self.code(season);
         if self.name.is_empty() {
@@ -91,13 +95,18 @@ impl Episode {
         }
     }
 
-    pub fn matches(&self, saved: &Self) -> bool {
-        self.id == saved.id || saved.id > MAX_SAFE_INTEGER && self.was_saved_as(saved)
+    fn matches(&self, saved: &Self) -> bool {
+        self.has_id_of(saved)
+            || saved.id > MAX_SAFE_INTEGER
+                && !saved.name.is_empty()
+                && self.name == saved.name
+                && self.order() == saved.order()
     }
 
-    fn was_saved_as(&self, saved: &Self) -> bool {
-        (saved.id & MAX_SAFE_INTEGER).abs_diff(self.id) <= JSON_ROUNDING
-            || !saved.name.is_empty() && self.name == saved.name && self.order() == saved.order()
+    fn has_id_of(&self, saved: &Self) -> bool {
+        self.id == saved.id
+            || saved.id > MAX_SAFE_INTEGER
+                && (saved.id & MAX_SAFE_INTEGER).abs_diff(self.id) <= JSON_ROUNDING
     }
 }
 
@@ -149,8 +158,19 @@ impl MediaEntry {
 pub fn next_episode<'a>(episodes: &'a [Episode], current: &Episode) -> Option<&'a Episode> {
     episodes
         .iter()
-        .filter(|e| (e.order(), e.id) > (current.order(), current.id))
-        .min_by_key(|e| (e.order(), e.id))
+        .filter(|e| e.sequence() > current.sequence())
+        .min_by_key(|e| e.sequence())
+}
+
+pub fn find_saved<T>(
+    candidates: impl IntoIterator<Item = T>,
+    episode: impl Fn(&T) -> &Episode,
+    saved: &Episode,
+) -> Option<T> {
+    candidates
+        .into_iter()
+        .filter(|candidate| episode(candidate).matches(saved))
+        .min_by_key(|candidate| !episode(candidate).has_id_of(saved))
 }
 
 #[cfg(test)]

@@ -196,6 +196,21 @@ impl Replica {
         true
     }
 
+    pub fn merge(&mut self, session: &Self) {
+        let blind = session.document.is_none() && self.entries.contains_key(PREFS_KEY);
+        let merged = |key: &str| !(blind && key == PREFS_KEY);
+        for record in session.entries.values().filter(|r| merged(&r.key)) {
+            if self.entries.get(&record.key).is_none_or(|current| {
+                wins((record.at, &record.device), (current.at, &current.device))
+            }) {
+                self.entries.insert(record.key.clone(), record.clone());
+            }
+        }
+        for change in session.pending.values().filter(|c| merged(&c.key)) {
+            self.write(change.key.clone(), change.value.clone(), change.at);
+        }
+    }
+
     fn write(&mut self, key: String, value: Option<Value>, at: u64) {
         let at = self
             .entries
@@ -312,6 +327,49 @@ mod tests {
             entries,
             ..Response::default()
         }
+    }
+
+    #[test]
+    fn a_session_merges_its_prefs_only_if_it_knew_the_saved_ones() {
+        let mut saved = Replica::new("tv");
+        let stored = PlayerPrefs {
+            audio_lang: "ita".into(),
+            subtitle_lang: "eng".into(),
+            subtitles_on: true,
+            speed: 1.25,
+        };
+        saved.record_prefs(&stored, 1_000);
+        saved.pending.clear();
+        let mut session = Replica::fresh();
+        session.record_prefs(
+            &PlayerPrefs {
+                audio_lang: "jpn".into(),
+                ..PlayerPrefs::default()
+            },
+            2_000,
+        );
+        let mut blind = saved.clone();
+        blind.merge(&session);
+        assert_eq!(blind.prefs(), Some(stored));
+        let mut unset = Replica::new("tv");
+        unset.merge(&session);
+        assert_eq!(unset.prefs().map(|p| p.audio_lang), Some("jpn".into()));
+        session.document = Some("synced".into());
+        saved.merge(&session);
+        assert_eq!(saved.prefs().map(|p| p.audio_lang), Some("jpn".into()));
+    }
+
+    #[test]
+    fn changes_made_before_the_saved_state_was_read_go_on_top_of_it() {
+        let mut saved = Replica::new("tv");
+        saved.record_watch(&[item(1, 5.0)], 1_000);
+        saved.pending.clear();
+        let mut session = Replica::default();
+        session.record_watch(&[item(2, 7.0)], 2_000);
+        saved.merge(&session);
+        assert_eq!(ids(&saved.watch()), [2, 1]);
+        assert_eq!(saved.device, "tv");
+        assert_eq!(saved.changes().len(), 1);
     }
 
     #[test]
@@ -697,6 +755,26 @@ mod tests {
                 let body = serde_json::to_string(&replica.request("token", &changes)).unwrap();
                 replica.apply(&changes, self.post(&body)).unwrap();
             }
+        }
+
+        #[test]
+        fn a_state_read_late_keeps_what_the_session_pulled_meanwhile() {
+            let mut server = Server::new(Value::Null);
+            let mut mac = Replica::new("mac");
+            mac.record_watch(&[item(1, 10.0)], 1_000);
+            server.sync(&mut mac);
+            let mut stored = Replica::new("tv");
+            server.sync(&mut stored);
+            mac.record_watch(&[item(1, 50.0)], 2_000);
+            server.sync(&mut mac);
+            let mut session = Replica::fresh();
+            server.sync(&mut session);
+            let in_flight =
+                server.post(&serde_json::to_string(&session.request("token", &[])).unwrap());
+            stored.merge(&session);
+            stored.apply(&[], in_flight).unwrap();
+            server.sync(&mut stored);
+            assert_eq!(stored.watch()[0].current_time, 50.0);
         }
 
         #[test]

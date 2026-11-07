@@ -6,6 +6,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Base64;
+import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -30,6 +31,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class MainActivity extends Activity {
+    private static final String TAG = "StreamVault";
     private static final String HOST = "appassets.androidplatform.net";
     private static final String INDEX = "index.html";
     private static final String BODY = "x-streamvault-body";
@@ -139,6 +141,7 @@ public final class MainActivity extends Activity {
         try {
             return forward(url.toString(), method, headers, body, origin);
         } catch (IOException | RuntimeException e) {
+            Log.w(TAG, "Cannot forward a request to " + url.getHost(), e);
             return new WebResourceResponse(null, null, null);
         }
     }

@@ -96,5 +96,7 @@ mod tests {
         let pinned = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
         let unpacked = tool(&session, (&url, pinned), "ffmpeg").await.unwrap_err();
         assert!(!unpacked.contains("is not the file"), "{unpacked}");
+        remove(&session.out);
+        remove(&session.log);
     }
 }

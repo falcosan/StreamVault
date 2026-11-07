@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StreamVault Sync
 // @namespace    https://github.com/falcosan/StreamVault
-// @version      2.1.1
+// @version      2.1.2
 // @description  Continue watching, progress and player preferences synced with StreamVault
 // @include      /^https:\/\/(www\.)?streamingcommunity[^/]*\//
 // @include      /^https:\/\/(www\.)?(vixcloud|vixsrc)[^/]*\//
@@ -261,7 +261,11 @@
       );
       return exact >= 0
         ? exact
-        : list.findIndex((t) => tag(t).includes(wanted));
+        : list.findIndex((t) =>
+            tag(t)
+              .split(/[^\p{L}\p{N}]+/u)
+              .some((word) => word.startsWith(wanted)),
+          );
     }
 
     function applyTracks(prefs) {

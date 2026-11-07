@@ -8,7 +8,7 @@ use crate::providers::{
 };
 use crate::search;
 use crate::sync::{self, Replica};
-use crate::time::now_ms;
+use crate::time::{now_ms, sleep};
 use crate::watch::{self, WatchItem};
 use dioxus::core::{Task, spawn_forever};
 use dioxus::prelude::*;
@@ -22,6 +22,7 @@ use std::time::Duration;
 
 const CSS: &str = include_str!("../assets/style/style.css");
 const LOAD_MORE_THRESHOLD: f64 = 1200.0;
+const STATE_RETRY: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -622,10 +623,32 @@ impl AppState {
         changed
     }
 
-    async fn load_state(mut self) {
-        let replica = platform::load_replica()
-            .await
-            .unwrap_or_else(Replica::fresh);
+    async fn load_state(self) {
+        match platform::load_replica().await {
+            Ok(saved) => self.adopt(saved.unwrap_or_else(Replica::fresh)),
+            Err(e) => {
+                warn!("cannot read the saved state: {e}");
+                self.adopt(Replica::fresh());
+                spawn_forever(self.reload_state());
+            }
+        }
+    }
+
+    async fn reload_state(self) {
+        let saved = loop {
+            sleep(STATE_RETRY).await;
+            match platform::load_replica().await {
+                Ok(saved) => break saved,
+                Err(e) => warn!("cannot read the saved state yet: {e}"),
+            }
+        };
+        if let Some(saved) = saved {
+            self.adopt(saved);
+        }
+    }
+
+    fn adopt(mut self, mut replica: Replica) {
+        replica.merge(&self.replica.peek());
         self.replica.set(replica);
         self.publish();
     }

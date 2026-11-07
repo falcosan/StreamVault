@@ -717,7 +717,14 @@ Relaunching right after the app closes fails `indexedDB.open` with "Internal
 error opening backing store" while the previous process still holds the
 database lock, which left that session without Continue Watching;
 `storage.js` retries the open for up to 5 s, and `boot.js` does the same for
-the update store (§13.6).
+the update store (§13.6). If the state still cannot be read, the app starts
+from an empty one that it never writes over the stored one, and reads again
+every 10 s; once that read succeeds, the session, with what it pulled from sync
+and what it changed, is merged into the stored state. Its player settings are
+left out when it never reached the sync server and settings were stored: they
+started from the defaults, so one track pick would reset the stored subtitles
+and speed. A language choice holds nothing to merge, so it is written even when
+its read failed.
 
 ### 11.3 Tooling quirks
 
@@ -1207,6 +1214,11 @@ Samsung installs use no external tool on either.
 | 56  | queued downloads wait after a Windows update                 | Windows starts the new app before the old one exits, so the new one lost the download lock                                                                          | the claim is retried for ten seconds and passes on when the old app exits     |
 | 57  | Aurora titles show no poster                                 | `image.url` points at a private S3 bucket; nove.tv asks its CloudFront image service, with the bucket and key in base64                                             | build that address from the same `url`: no request per result                 |
 | 58  | a failed Windows update leaves no app                        | `replace` moves the old file aside first, and nothing put it back when the new one could not take its place                                                         | move it back, and name where it stays if that fails too                       |
+| 59  | the website picks French subtitles for `en`                  | the userscript keeps its own copy of the language match, and it still found `en` inside `french`                                                                    | match whole words as `player.js` does; a test runs both copies                |
+| 60  | auto-advance skips an episode at the start of a season       | `first_episode` took whichever of two episodes sharing the lowest number came first, while `next_episode` orders them by id                                         | both order episodes by `sequence()`                                           |
+| 61  | two windows download one title on a new install              | the lock was tried before the first save made the `state` folder; the failed open counted as holding it                                                             | make the folder first; a lock that still fails is logged                      |
+| 62  | a slow TV start keeps nothing from that session              | the guard of gotcha 53 refused every save, because the state was read only once, at start                                                                           | read again every 10 s, then merge that session in, but not prefs it never had |
+| 63  | an old RaiPlay card opens a newer episode                    | the first card with the saved title and place won over a later card that kept the bits of the saved id                                                              | a card matching by id comes first, in `find_saved`                            |
 
 ---
 

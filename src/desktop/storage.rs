@@ -14,7 +14,7 @@ use dioxus::logger::tracing::warn;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::fs;
+use std::fs::{self, TryLockError};
 use std::io;
 use std::path::Path;
 use std::time::Duration;
@@ -26,8 +26,8 @@ pub fn load_sync_config() -> SyncConfig {
     setting(&sync_file())
 }
 
-pub async fn load_replica() -> Option<Replica> {
-    migrate(state_dir())
+pub async fn load_replica() -> Result<Option<Replica>, String> {
+    Ok(migrate(state_dir()))
 }
 
 pub fn save_replica(replica: &Replica) {
@@ -68,19 +68,26 @@ async fn claim_soon(path: &Path) -> bool {
 }
 
 fn claim(path: &Path) -> bool {
-    let Ok(lock) = fs::File::options()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)
-    else {
-        return true;
-    };
-    let claimed = lock.try_lock().is_ok();
-    if claimed {
-        std::mem::forget(lock);
+    let claimed = path
+        .parent()
+        .map_or(Ok(()), fs::create_dir_all)
+        .and_then(|()| {
+            fs::File::options()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(path)
+        })
+        .map_err(TryLockError::Error)
+        .and_then(|lock| lock.try_lock().map(|()| std::mem::forget(lock)));
+    match claimed {
+        Ok(()) => true,
+        Err(TryLockError::WouldBlock) => false,
+        Err(TryLockError::Error(e)) => {
+            warn!("{} cannot be locked: {e}", path.display());
+            true
+        }
     }
-    claimed
 }
 
 fn language(dir: &Path) -> Option<Lang> {
@@ -249,6 +256,24 @@ mod tests {
         let started = tokio::time::Instant::now();
         assert!(!claim_soon(&path).await);
         assert_eq!(started.elapsed(), CLAIM_PAUSE * CLAIM_ATTEMPTS);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_first_app_holds_the_downloads_before_anything_is_saved() {
+        let dir = scratch_dir("claim_fresh");
+        let path = dir.join("state").join(DOWNLOADS_LOCK);
+        assert!(claim(&path));
+        assert!(!claim(&path));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_lock_that_cannot_be_made_does_not_stop_the_downloads() {
+        let dir = scratch_dir("claim_impossible");
+        let file = dir.join("state");
+        fs::write(&file, "").unwrap();
+        assert!(claim(&file.join(DOWNLOADS_LOCK)));
         let _ = fs::remove_dir_all(&dir);
     }
 

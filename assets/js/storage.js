@@ -45,6 +45,10 @@ export async function packaged(name) {
 
 export async function save(key, value) {
   if (!read.has(key)) throw new Error(`${key} was not read yet`);
+  return replace(key, value);
+}
+
+export async function replace(key, value) {
   const transaction = (await connect()).transaction(STORE, "readwrite", {
     durability: "strict",
   });

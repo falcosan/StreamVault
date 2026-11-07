@@ -1,6 +1,6 @@
 use super::{
     Episode, Http, MediaEntry, MediaType, Provider, ProviderError, ProviderResult, StreamUrl,
-    fetch_json, items, non_blank, stable_hash, year,
+    fetch_json, find_saved, items, non_blank, stable_hash, year,
 };
 use async_trait::async_trait;
 use dioxus::logger::tracing::warn;
@@ -186,10 +186,8 @@ fn parse_cards(slug: &str, json: &Value) -> Vec<(Episode, String)> {
 }
 
 fn page_of(cards: Vec<(Episode, String)>, wanted: &Episode) -> Option<String> {
-    cards
-        .into_iter()
-        .find(|(episode, link)| episode.matches(wanted) && !link.is_empty())
-        .map(|(_, link)| absolute(&link))
+    let playable = cards.into_iter().filter(|(_, link)| !link.is_empty());
+    find_saved(playable, |(episode, _)| episode, wanted).map(|(_, link)| absolute(&link))
 }
 
 fn program_url(slug: &str) -> String {
@@ -391,14 +389,14 @@ mod tests {
         let cards = parse_cards(
             "/programmi/x.json",
             &json!({ "cards": [
-                { "weblink": "/video/new.html" },
-                { "weblink": "/video/a.html" }
+                { "weblink": "/video/new.html", "name": "Report" },
+                { "weblink": "/video/a.html", "name": "Report" }
             ]}),
         );
         for id in [14_173_498_472_382_319_551, 14_173_498_472_382_319_000] {
             let saved = Episode {
                 id,
-                ..Episode::numbered(1, "")
+                ..Episode::numbered(1, "Report")
             };
             assert_eq!(
                 page_of(cards.clone(), &saved).as_deref(),

@@ -103,7 +103,7 @@ pub fn next_season(seasons: &[u32], after: u32) -> Option<u32> {
 }
 
 pub fn first_episode(episodes: &[Episode]) -> Option<&Episode> {
-    episodes.iter().min_by_key(|e| e.order())
+    episodes.iter().min_by_key(|e| e.sequence())
 }
 
 #[cfg(test)]
@@ -295,6 +295,26 @@ mod tests {
         ];
         assert_eq!(first_episode(&episodes).map(|e| e.number), Some(0));
         assert!(first_episode(&[]).is_none());
+    }
+
+    #[test]
+    fn playing_from_the_first_episode_reaches_every_episode() {
+        let episodes = [
+            Episode {
+                id: 900,
+                ..Episode::numbered(1, "")
+            },
+            Episode {
+                id: 100,
+                ..Episode::numbered(1, "")
+            },
+            Episode::numbered(2, ""),
+        ];
+        let walk: Vec<u64> =
+            std::iter::successors(first_episode(&episodes), |e| next_episode(&episodes, e))
+                .map(|e| e.id)
+                .collect();
+        assert_eq!(walk, [100, 900, 2]);
     }
 
     #[test]

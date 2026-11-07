@@ -106,7 +106,12 @@ fn tidy(program: &Path, args: &[&str]) {
 }
 
 fn remove(path: &Path) {
-    if let Err(e) = fs::remove_dir_all(path)
+    let removed = if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    };
+    if let Err(e) = removed
         && e.kind() != ErrorKind::NotFound
     {
         eprintln!("  Cannot remove {}: {e}", path.display());
@@ -397,6 +402,16 @@ mod tests {
     use crate::check::scratch_dir;
 
     #[test]
+    fn a_file_is_removed_like_a_folder() {
+        let dir = scratch_dir("deploy_remove");
+        write(&dir.join("app.exe.old"), "old").unwrap();
+        remove(&dir.join("app.exe.old"));
+        assert!(!dir.join("app.exe.old").exists());
+        remove(&dir);
+        assert!(!dir.exists());
+    }
+
+    #[test]
     fn files_are_found_anywhere_under_a_directory() {
         let dir = scratch_dir("deploy_find");
         write(&dir.join("ffmpeg-8/LICENSE"), "").unwrap();
@@ -424,6 +439,8 @@ mod tests {
         fs::write(&session.log, b"caf\xe9 stopped\n").unwrap();
         let failure = session.check(&Command::new("tool"), false).unwrap_err();
         assert!(failure.contains("stopped"), "{failure}");
+        remove(&session.out);
+        remove(&session.log);
     }
 
     #[test]

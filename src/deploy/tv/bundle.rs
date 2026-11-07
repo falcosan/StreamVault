@@ -28,22 +28,22 @@ struct File {
 pub async fn build(session: &Session) -> Result<PathBuf, String> {
     match &session.source {
         Some(root) => compile(session, root).await,
-        None => download(session).await,
+        None => download(session, asset).await,
     }
 }
 
-async fn download(session: &Session) -> Result<PathBuf, String> {
+async fn download(session: &Session, url: impl Fn(&str) -> String) -> Result<PathBuf, String> {
     say(format!("Downloading StreamVault {VERSION}…"));
-    let manifest = session.download(&asset("tv.json"), "tv.json").await?;
+    let manifest = session.download(&url("tv.json"), "tv.json").await?;
     let manifest: Manifest = serde_json::from_str(&read(&manifest)?)
         .map_err(|e| format!("tv.json is not a TV release: {e}"))?;
     session
-        .download(&asset("index.html"), "public/index.html")
+        .download(&url("index.html"), "public/index.html")
         .await?;
     try_join_all(manifest.files.iter().map(|file| async {
         let name = plain(&file.name)?;
         let saved = session
-            .download(&asset(name), &format!("public/assets/{name}"))
+            .download(&url(name), &format!("public/assets/{name}"))
             .await?;
         if sha256(&saved)? == file.sha256 {
             Ok(())
@@ -164,6 +164,33 @@ async fn target(session: &Session) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::check::serve;
+
+    #[tokio::test]
+    async fn a_file_that_is_not_the_one_tv_json_lists_is_refused() {
+        let (site, _) = serve(&[
+            (200, r#"{ "files": [{ "name": "app.js", "sha256": "other" }] }"#),
+            (200, "<html>"),
+            (200, "abc"),
+            (
+                200,
+                r#"{ "files": [{ "name": "app.js", "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" }] }"#,
+            ),
+            (200, "<html>"),
+            (200, "abc"),
+        ])
+        .await;
+        let session = Session::new("deploy_bundle").unwrap();
+        let url = |name: &str| format!("{site}/{name}");
+        let refused = download(&session, url).await.unwrap_err();
+        assert!(
+            refused.contains("is not the file tv.json lists"),
+            "{refused}"
+        );
+        assert!(download(&session, url).await.is_ok());
+        remove(&session.out);
+        remove(&session.log);
+    }
 
     #[test]
     fn the_page_starts_through_boot_js() {

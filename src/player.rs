@@ -822,6 +822,25 @@ mod tests {
         }
 
         #[test]
+        fn the_website_script_picks_the_tracks_the_app_picks() {
+            let (_, website) = include_str!("../assets/js/streamvault.user.js")
+                .split_once("const norm")
+                .unwrap();
+            let (website, _) = website.split_once("function applyTracks").unwrap();
+            let cases = format!(
+                r#"[[[{{ label: "French" }}, {{ label: "English" }}], "en"], [[{{ label: "Français (France)" }}], "français"], [[{{ label: "Italiano" }}], "ital"], ...["ita", "forced-ita", "Italian"].map((lang) => [{TRACKS}, lang])]"#
+            );
+            assert_eq!(
+                run_js(&format!(
+                    "const norm{website}JSON.stringify({cases}.map(([tracks, lang]) => pickIndex(tracks, lang)));"
+                )),
+                eval(&format!(
+                    "{cases}.map(([tracks, lang]) => pick(tracks, lang))"
+                ))
+            );
+        }
+
+        #[test]
         fn a_track_the_viewer_picked_survives_a_track_list_update() {
             assert_eq!(
                 eval(

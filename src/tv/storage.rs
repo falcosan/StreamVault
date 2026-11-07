@@ -16,6 +16,9 @@ extern "C" {
     #[wasm_bindgen(catch)]
     async fn save(key: &str, value: &str) -> Result<JsValue, JsValue>;
 
+    #[wasm_bindgen(catch)]
+    async fn replace(key: &str, value: &str) -> Result<JsValue, JsValue>;
+
     async fn packaged(name: &str) -> JsValue;
 }
 
@@ -28,16 +31,20 @@ pub async fn sync_config() -> SyncConfig {
         .unwrap_or_default()
 }
 
-pub async fn load_replica() -> Option<Replica> {
-    let json = stored(REPLICA_KEY).await?;
-    serde_json::from_str(&json)
-        .inspect_err(|e| warn!("discarding unreadable saved state: {e}"))
-        .ok()
+pub async fn load_replica() -> Result<Option<Replica>, String> {
+    let saved = load(REPLICA_KEY).await.map_err(|e| format!("{e:?}"))?;
+    Ok(saved.as_string().and_then(|json| {
+        serde_json::from_str(&json)
+            .inspect_err(|e| warn!("discarding unreadable saved state: {e}"))
+            .ok()
+    }))
 }
 
 pub fn save_replica(replica: &Replica) {
     match serde_json::to_string(replica) {
-        Ok(json) => store(REPLICA_KEY, json),
+        Ok(json) => {
+            spawn_forever(async move { report(REPLICA_KEY, save(REPLICA_KEY, &json).await) });
+        }
         Err(e) => warn!("cannot encode the state: {e}"),
     }
 }
@@ -47,7 +54,7 @@ pub async fn load_language() -> Option<Lang> {
 }
 
 pub fn save_language(lang: Lang) {
-    store(LANGUAGE_KEY, lang.code().to_owned());
+    spawn_forever(async move { report(LANGUAGE_KEY, replace(LANGUAGE_KEY, lang.code()).await) });
 }
 
 async fn stored(key: &str) -> Option<String> {
@@ -58,12 +65,10 @@ async fn stored(key: &str) -> Option<String> {
         .as_string()
 }
 
-fn store(key: &'static str, value: String) {
-    spawn_forever(async move {
-        if let Err(e) = save(key, &value).await {
-            warn!("cannot save the {key}: {e:?}");
-        }
-    });
+fn report(key: &str, written: Result<JsValue, JsValue>) {
+    if let Err(e) = written {
+        warn!("cannot save the {key}: {e:?}");
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -126,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn what_could_not_be_read_is_never_overwritten() {
+    fn a_failed_read_holds_back_the_state_but_not_a_choice() {
         let result = run_js(&format!(
             r#"
             var later = setTimeout;
@@ -171,16 +176,17 @@ mod tests {
               const first = await load("replica").then(() => "loaded", () => "failed");
               locked = false;
               const refused = await save("replica", "fresh").then(() => "written", () => "refused");
+              const chosen = await replace("language", "it").then(() => saved, () => "refused");
               await load("replica");
               await save("replica", "newer");
-              return JSON.stringify({{ first, refused, saved }});
+              return JSON.stringify({{ first, refused, chosen, saved }});
             }})()
             "#,
             storage = STORAGE.replace("export ", ""),
         ));
         assert_eq!(
             result,
-            json!({ "first": "failed", "refused": "refused", "saved": "newer" })
+            json!({ "first": "failed", "refused": "refused", "chosen": "it", "saved": "newer" })
         );
     }
 }
