@@ -16,6 +16,7 @@ const WEBVIEW: &str = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
 const RUNTIME: &str = r"Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
 const UNINSTALL: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\StreamVault";
 const EXE: &str = "StreamVault.exe";
+const QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
 
 pub async fn install(session: &Session) -> Result<(), String> {
     webview(session).await?;
@@ -23,8 +24,10 @@ pub async fn install(session: &Session) -> Result<(), String> {
         .ok_or("Windows has no local app data folder.")?
         .join(r"Programs\StreamVault");
     let exe = app.join(EXE);
-    replace(&super::app(session).await?, &exe)?;
-    for tool in super::tools(session).await? {
+    let built = super::app(session).await?;
+    let tools = super::tools(session).await?;
+    replace(&built, &exe)?;
+    for tool in tools {
         replace(
             &tool,
             &app.join("bin").join(tool.file_name().unwrap_or_default()),
@@ -101,16 +104,44 @@ fn installed(query: &str) -> bool {
 }
 
 fn replace(file: &Path, path: &Path) -> Result<(), String> {
+    let staged = path.with_added_extension("new");
+    copy(file, &staged)?;
+    swap(&staged, path)
+}
+
+fn swap(staged: &Path, path: &Path) -> Result<(), String> {
+    let old = path.with_added_extension("old");
     if path.exists() {
-        let old = path.with_added_extension("old");
         std::fs::rename(path, &old)
             .map_err(|e| format!("Cannot move {} aside: {e}", path.display()))?;
     }
-    copy(file, path)
+    std::fs::rename(staged, path).map_err(|e| {
+        let failed = format!(
+            "Cannot move {} to {}: {e}",
+            staged.display(),
+            path.display()
+        );
+        match std::fs::rename(&old, path) {
+            Err(e) if old.exists() => {
+                format!("{failed}; the old version stays at {}: {e}", old.display())
+            }
+            _ => failed,
+        }
+    })?;
+    let _ = std::fs::remove_file(old);
+    Ok(())
 }
 
 fn quote(text: impl std::fmt::Display) -> String {
-    format!("'{}'", text.to_string().replace('\'', "''"))
+    let text = text.to_string();
+    let doubled = text.chars().fold(String::new(), |mut quoted, c| {
+        quoted.push(c);
+        if QUOTES.contains(&c) {
+            quoted.push(c);
+        }
+        quoted
+    });
+    format!("'{doubled}'")
 }
 
 #[cfg(test)]
@@ -128,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_file_is_moved_aside_before_the_new_one_lands() {
+    fn an_existing_file_makes_way_for_the_new_one() {
         let dir = scratch_dir("replace");
         let (new, path) = (dir.join("new.exe"), dir.join(r"app\StreamVault.exe"));
         std::fs::write(&new, "new").unwrap();
@@ -136,15 +167,24 @@ mod tests {
         std::fs::write(&path, "old").unwrap();
         replace(&new, &path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
-        assert_eq!(
-            std::fs::read_to_string(dir.join(r"app\StreamVault.exe.old")).unwrap(),
-            "old"
-        );
+        assert!(!dir.join(r"app\StreamVault.exe.old").exists());
+        assert!(!dir.join(r"app\StreamVault.exe.new").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_that_cannot_take_its_place_leaves_the_old_one() {
+        let dir = scratch_dir("swap");
+        let path = dir.join("StreamVault.exe");
+        std::fs::write(&path, "old").unwrap();
+        assert!(swap(&dir.join("missing.new"), &path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn quotes_survive_in_powershell_strings() {
         assert_eq!(quote(r"C:\Users\O'Neil"), r"'C:\Users\O''Neil'");
+        assert_eq!(quote("D\u{2019}Angelo"), "'D\u{2019}\u{2019}Angelo'");
     }
 }

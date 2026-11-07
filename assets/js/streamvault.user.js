@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         StreamVault Sync
 // @namespace    https://github.com/falcosan/StreamVault
-// @version      2.1.0
+// @version      2.1.1
 // @description  Continue watching, progress and player preferences synced with StreamVault
 // @include      /^https:\/\/(www\.)?streamingcommunity[^/]*\//
 // @include      /^https:\/\/(www\.)?(vixcloud|vixsrc)[^/]*\//
@@ -32,16 +32,14 @@
     (typeof GM_xmlhttpRequest !== "undefined" && GM_xmlhttpRequest) ||
     null;
 
-  function gmFetch(method, url, body) {
+  function gmFetch(body) {
     return new Promise((resolve, reject) => {
       gmRequest({
-        method,
-        url,
+        method: "POST",
+        url: ENDPOINT,
         data: body,
         anonymous: true,
-        headers: body
-          ? { "Content-Type": "text/plain;charset=utf-8" }
-          : undefined,
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
         timeout: TIMEOUT_MS,
         onload: (r) => resolve(r.responseText),
         onerror: () => reject(new Error("network error")),
@@ -50,15 +48,13 @@
     });
   }
 
-  function webFetch(method, url, body) {
-    return fetch(url, {
-      method,
+  function webFetch(body) {
+    return fetch(ENDPOINT, {
+      method: "POST",
       body,
       credentials: "omit",
       signal: AbortSignal.timeout(TIMEOUT_MS),
-      headers: body
-        ? { "Content-Type": "text/plain;charset=utf-8" }
-        : undefined,
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
     }).then((r) => r.text());
   }
 
@@ -70,18 +66,18 @@
     }
   }
 
-  async function http(method, url, body) {
+  async function http(body) {
     if (gmRequest) {
       try {
-        return parseJson(await gmFetch(method, url, body));
+        return parseJson(await gmFetch(body));
       } catch (_) {}
     }
     try {
-      return parseJson(await webFetch(method, url, body));
+      return parseJson(await webFetch(body));
     } catch (err) {
       if (!gmRequest) throw err;
       await new Promise((r) => setTimeout(r, 1000));
-      return parseJson(await gmFetch(method, url, body));
+      return parseJson(await gmFetch(body));
     }
   }
 
@@ -89,6 +85,7 @@
   const MAX_WATCH = 100;
   const MAX_CHANGES = 500;
   const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+  const END_MARGIN = 20;
   const PREFS_DEFAULTS = {
     audio_lang: "",
     subtitle_lang: "",
@@ -113,7 +110,8 @@
   const persisted =
     typeof GM_getValue === "function"
       ? {
-          get: () => GM_getValue(STORE_KEY, null) ?? localStorage.getItem(STORE_KEY),
+          get: () =>
+            GM_getValue(STORE_KEY, null) ?? localStorage.getItem(STORE_KEY),
           set: (text) => {
             GM_setValue(STORE_KEY, text);
             localStorage.removeItem(STORE_KEY);
@@ -183,8 +181,6 @@
       const before = this.load();
       const sent = Object.values(before.pending).slice(0, MAX_CHANGES);
       this.inflight = http(
-        "POST",
-        ENDPOINT,
         JSON.stringify({
           token: TOKEN,
           device: before.device,
@@ -535,7 +531,7 @@
     const existing = store.item(ctx.mediaId);
     if (!existing && !ctx.hasTitle) return Promise.resolve();
     const mediaType = existing ? existing.entry.media_type : ctx.mediaType;
-    const finished = duration > 0 && duration - current <= 20;
+    const finished = duration > 0 && duration - current <= END_MARGIN;
     if (finished && mediaType === "Movie") {
       return existing ? store.write(key, null) : Promise.resolve();
     }

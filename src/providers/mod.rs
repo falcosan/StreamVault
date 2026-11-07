@@ -15,8 +15,8 @@ use dioxus::logger::tracing::{info, warn};
 use futures::future::join_all;
 use raiplay::RaiPlay;
 use regex::Regex;
+use reqwest::header::REFERER;
 use reqwest::{Client, IntoUrl, RequestBuilder, Response, Url};
-use scraper::{Html, Selector};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -31,6 +31,7 @@ const ATTEMPTS: u32 = 4;
 const RETRY_DELAY: Duration = Duration::from_millis(400);
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 
 #[derive(Debug)]
 pub enum ProviderError {
@@ -55,7 +56,7 @@ impl std::error::Error for ProviderError {}
 
 impl From<reqwest::Error> for ProviderError {
     fn from(e: reqwest::Error) -> Self {
-        Self::Network(e.to_string())
+        Self::Network(e.without_url().to_string())
     }
 }
 
@@ -333,24 +334,28 @@ fn non_blank(text: &str) -> Option<String> {
 pub fn stable_hash(text: &str) -> u64 {
     text.bytes()
         .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)))
+        & MAX_SAFE_INTEGER
 }
 
 async fn fetch_vixcloud(
     http: &Http,
+    site: &str,
     embed: impl AsyncFn() -> ProviderResult<String>,
 ) -> ProviderResult<StreamUrl> {
-    let player = match fetch_text(http.get(embed().await?)).await {
+    let referer = format!("{site}/");
+    let fetch = async |url: String| fetch_text(http.get(url).header(REFERER, &referer)).await;
+    let player = match fetch(embed().await?).await {
         Ok(player) => player,
         Err(e) => {
             warn!("vixcloud embed failed, retrying with a new link: {e}");
-            fetch_text(http.get(embed().await?)).await?
+            fetch(embed().await?).await?
         }
     };
     vixcloud_stream(&player)
 }
 
 fn vixcloud_stream(player: &str) -> ProviderResult<StreamUrl> {
-    let url = vixcloud_playlist(&scripts(player))
+    let url = vixcloud_playlist(player)
         .ok_or_else(|| ProviderError::StreamExtraction("No HLS params in script".into()))?;
     Ok(StreamUrl {
         url,
@@ -359,27 +364,18 @@ fn vixcloud_stream(player: &str) -> ProviderResult<StreamUrl> {
     })
 }
 
-fn scripts(html: &str) -> String {
-    static SCRIPT: LazyLock<Selector> = LazyLock::new(|| Selector::parse("script").unwrap());
-    Html::parse_document(html)
-        .select(&SCRIPT)
-        .map(|s| s.inner_html())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn vixcloud_playlist(script: &str) -> Option<String> {
+fn vixcloud_playlist(player: &str) -> Option<String> {
     static TOKEN: LazyLock<Regex> = LazyLock::new(|| field("token", "[^'\"]+"));
     static EXPIRES: LazyLock<Regex> = LazyLock::new(|| field("expires", "[^'\"]+"));
     static URL: LazyLock<Regex> = LazyLock::new(|| field("url", "https?://[^'\"]+"));
     static FHD: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"window\.canPlayFHD\s*=\s*true\b").unwrap());
 
-    let capture = |re: &Regex| re.captures(script).map(|c| c[1].to_owned());
+    let capture = |re: &Regex| re.captures(player).map(|c| c[1].to_owned());
     let token = capture(&TOKEN)?;
     let expires = capture(&EXPIRES)?;
     let mut url = Url::parse(&capture(&URL)?).ok()?;
-    let fhd = FHD.is_match(script);
+    let fhd = FHD.is_match(player);
     let bandwidth = url.query_pairs().any(|(k, v)| k == "b" && v == "1");
     {
         let mut query = url.query_pairs_mut();
@@ -399,7 +395,7 @@ fn vixcloud_playlist(script: &str) -> Option<String> {
 
 fn field(name: &str, value: &str) -> Regex {
     Regex::new(&format!(
-        r#"(?:['"]{name}['"]|{name})\s*:\s*['"]({value})['"]"#
+        r#"(?:['"]{name}['"]|\b{name})\s*:\s*['"]({value})['"]"#
     ))
     .unwrap()
 }
@@ -671,6 +667,26 @@ mod tests {
     fn stable_hash_is_pinned_because_ids_are_persisted() {
         assert_eq!(stable_hash("abc"), 96354);
         assert_eq!(stable_hash(""), 0);
+        assert_eq!(
+            stable_hash("/programmi/montalbano.json"),
+            2_640_782_405_220_837
+        );
+    }
+
+    #[test]
+    fn stable_hash_stays_exact_as_a_json_number() {
+        let id = stable_hash("/programmi/montalbano.json");
+        assert!(id > u64::from(u32::MAX) && id <= MAX_SAFE_INTEGER);
+    }
+
+    #[tokio::test]
+    async fn network_errors_never_repeat_the_signed_address() {
+        let (url, _) = serve(&[(403, "")]).await;
+        let error = fetch_text(Client::new().get(format!("{url}/embed?token=secret")))
+            .await
+            .unwrap_err();
+        assert!(!error.to_string().contains("secret"), "{error}");
+        assert!(error.to_string().contains("403"), "{error}");
     }
 
     #[test]
@@ -707,11 +723,29 @@ mod tests {
             Ok::<_, ProviderError>(url.clone())
         };
         assert_eq!(
-            fetch_vixcloud(&http, &embed).await.unwrap().url,
+            fetch_vixcloud(&http, "https://site", &embed)
+                .await
+                .unwrap()
+                .url,
             "https://v.co/p/1?token=t&expires=e"
         );
-        assert!(fetch_vixcloud(&http, &embed).await.is_err());
+        assert!(fetch_vixcloud(&http, "https://site", &embed).await.is_err());
         assert_eq!((links.get(), requests.lock().unwrap().len()), (4, 4));
+    }
+
+    #[tokio::test]
+    async fn every_vixcloud_embed_request_names_the_site_as_referer() {
+        let (url, requests) = serve(&[(403, ""), (403, "")]).await;
+        let http = Http::new(Duration::from_secs(1));
+        let embed = async || Ok::<_, ProviderError>(url.clone());
+        assert!(fetch_vixcloud(&http, "https://site", &embed).await.is_err());
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|r| r.contains("referer: https://site/"))
+        );
     }
 
     #[test]
@@ -754,6 +788,24 @@ mod tests {
     fn vixcloud_playlist_omits_optional_flags() {
         let script =
             r#"token: "t", expires: "e", url: "https://v.co/p/1"; window.canPlayFHD = false"#;
+        assert_eq!(
+            vixcloud_playlist(script).as_deref(),
+            Some("https://v.co/p/1?token=t&expires=e")
+        );
+    }
+
+    #[test]
+    fn vixcloud_stream_keeps_the_address_of_the_page_as_written() {
+        let player = "<script>window.masterPlaylist = { params: { 'token': 't', 'expires': 'e' }, url: 'https://v.co/p/1?ub=1&b=1' }</script>";
+        assert_eq!(
+            vixcloud_stream(player).unwrap().url,
+            "https://v.co/p/1?b=1&token=t&expires=e"
+        );
+    }
+
+    #[test]
+    fn vixcloud_playlist_ignores_longer_keys() {
+        let script = "a = { csrf_token: 'no', poster_url: 'https://img/p.jpg' }; b = { 'token': 't', 'expires': 'e', url: 'https://v.co/p/1' }";
         assert_eq!(
             vixcloud_playlist(script).as_deref(),
             Some("https://v.co/p/1?token=t&expires=e")

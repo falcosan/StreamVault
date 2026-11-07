@@ -58,10 +58,11 @@ mod tests {
             r#"
             var window = globalThis;
             var outcome;
+            var state;
             var location = {{ reload: () => (outcome = "reloaded") }};
             var atob = (text) => text;
             var TextEncoder = class {{ encode(text) {{ return text; }} }};
-            var TextDecoder = class {{ decode() {{ outcome = "started the bundle"; return ""; }} }};
+            var TextDecoder = class {{ decode() {{ outcome = "started the bundle"; state = stored.get("status").state; return ""; }} }};
             var crypto = {{
               subtle: {{
                 importKey: async () => ({{}}),
@@ -128,7 +129,7 @@ mod tests {
               {BOOT}
             }}).then(async () => {{
               {then}
-              return JSON.stringify({{ opens, warnings, stored: Object.fromEntries(stored), outcome }});
+              return JSON.stringify({{ opens, warnings, stored: Object.fromEntries(stored), outcome, state }});
             }})
             "#,
             entry = Value::from(entry.to_string_lossy()),
@@ -185,6 +186,29 @@ mod tests {
             assert!(outcome.contains(refusal), "{name}: {outcome}");
             assert_eq!(refused["stored"], json!({}), "{name}");
         }
+    }
+
+    #[test]
+    fn a_new_update_starts_as_a_trial_so_a_crash_rolls_it_back() {
+        let stored = json!({
+            "status": { "version": "1.1.2", "installed": "1.1.1", "state": "new" },
+            "bundle": { "manifest": MANIFEST, "signature": "sig", "files": { "e.js": "code" } },
+        });
+        let started = boot("boot_trial", "0", &stored, "");
+        assert_eq!(started["outcome"], "started the bundle");
+        assert_eq!(started["state"], "trying");
+    }
+
+    #[test]
+    fn an_update_stored_for_another_installation_is_discarded() {
+        let stored = json!({
+            "status": { "version": "1.1.2", "installed": "1.1.0", "state": "good" },
+            "bundle": { "manifest": MANIFEST, "signature": "sig", "files": { "e.js": "code" } },
+        });
+        assert_eq!(
+            boot("boot_other_install", "0", &stored, ""),
+            json!({ "opens": 1, "warnings": [], "stored": {} })
+        );
     }
 
     #[test]

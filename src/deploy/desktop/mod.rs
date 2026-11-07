@@ -8,10 +8,8 @@ use macos as os;
 #[cfg(windows)]
 use windows as os;
 
-use super::{Session, VERSION, asset, binary, find, say};
-use rsa::sha2::{Digest, Sha256};
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use super::{Session, VERSION, asset, binary, find, say, sha256};
+use std::path::PathBuf;
 use tokio::process::Command;
 
 pub async fn deploy() -> Result<(), String> {
@@ -70,26 +68,10 @@ async fn tool(
     find(&dir, &|found| file == found).ok_or_else(|| format!("{url} has no {}.", file.display()))
 }
 
-fn sha256(file: &Path) -> Result<String, String> {
-    let mut reader =
-        std::fs::File::open(file).map_err(|e| format!("Cannot read {}: {e}", file.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0; 1 << 16];
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|e| format!("Cannot read {}: {e}", file.display()))?;
-        if read == 0 {
-            return Ok(format!("{:x}", hasher.finalize()));
-        }
-        hasher.update(&buffer[..read]);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::check::scratch_dir;
+    use crate::check::{scratch_dir, serve};
     use crate::deploy::{remove, write};
 
     #[test]
@@ -102,5 +84,17 @@ mod tests {
         );
         assert!(sha256(&dir.join("missing")).is_err());
         remove(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_download_that_is_not_the_pinned_file_is_refused() {
+        let (site, _) = serve(&[(200, "abc"), (200, "abc")]).await;
+        let session = Session::new("deploy_pin").unwrap();
+        let url = format!("{site}/tool.zip");
+        let refused = tool(&session, (&url, "other"), "ffmpeg").await.unwrap_err();
+        assert!(refused.contains("is not the file"), "{refused}");
+        let pinned = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let unpacked = tool(&session, (&url, pinned), "ffmpeg").await.unwrap_err();
+        assert!(!unpacked.contains("is not the file"), "{unpacked}");
     }
 }

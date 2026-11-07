@@ -32,7 +32,6 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  scrollbar-width: none;
   overflow: hidden;
 }
 
@@ -260,6 +259,8 @@ svg {
 
 .error-bar>span {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .error-bar .dismiss {
@@ -283,6 +284,7 @@ svg {
 }
 
 .catalog-view {
+  min-height: calc(100% + 1px);
   padding: 16px 0 20px;
 }
 

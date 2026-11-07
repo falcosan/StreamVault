@@ -64,7 +64,9 @@ function migrate_(legacy) {
 }
 
 function readState_(f) {
-  const doc = JSON.parse(f.getBlob().getDataAsString());
+  const content = f.getBlob().getDataAsString();
+  if (!content.trim()) return { state: emptyState_(), migrated: true };
+  const doc = JSON.parse(content);
   if (doc && doc.v === 2) {
     if (doc.id) return { state: doc, migrated: false };
     doc.id = Utilities.getUuid();
@@ -151,6 +153,9 @@ function doPost(e) {
     const { changed, response } = sync_(state, body, Date.now());
     if (changed || migrated) f.setContent(JSON.stringify(state));
     return out_(response);
+  } catch (error) {
+    console.error(error);
+    return out_({ ok: false, error: String(error) });
   } finally {
     lock.releaseLock();
   }

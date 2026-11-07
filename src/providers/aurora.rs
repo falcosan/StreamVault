@@ -3,11 +3,16 @@ use super::{
     items, stable_hash, uint,
 };
 use async_trait::async_trait;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashSet};
 
 const BASE: &str = "https://public.aurora.enhanced.live";
 const SHOW_BLOCKS: [&str; 2] = ["sonicShowBlock", "sonicPlaylistBlock"];
+const IMAGE_BUCKETS: &str = "https://s3.eu-west-1.amazonaws.com/";
+const IMAGE_SERVICE: &str = "https://d2v9mhsiek5lbq.cloudfront.net/";
+const IMAGE_WIDTH: u32 = 400;
 
 pub struct Aurora {
     client: Http,
@@ -45,6 +50,12 @@ struct Video {
     realm: Realm,
 }
 
+impl Video {
+    fn is(&self, season: Option<u32>, wanted: &Episode) -> bool {
+        Some(self.season) == season && self.episode.matches(wanted)
+    }
+}
+
 impl Aurora {
     pub fn new(client: Http, env: &'static str, name: &'static str) -> Self {
         Self { client, env, name }
@@ -75,7 +86,7 @@ impl Aurora {
             .filter_map(|item| {
                 let title = item["title"].as_str().filter(|t| !t.is_empty())?;
                 Some(MediaEntry {
-                    image_url: item["image"]["url"].as_str().map(String::from),
+                    image_url: item["image"]["url"].as_str().map(served_image),
                     ..self.show(
                         title,
                         item["slug"].as_str().unwrap_or_default(),
@@ -114,19 +125,19 @@ fn parse_videos(entry: &MediaEntry, json: &Value) -> ProviderResult<Vec<Video>> 
             seen.insert(id.clone()).then(|| Video {
                 season,
                 episode: Episode {
-                    id: stable_hash(&format!("{}-{season}-{id}", entry.id)),
+                    id: stable_hash(&format!("{}-{season}-{id}", entry.safe_id())),
                     number,
                     part: None,
                     name: item["title"].as_str().unwrap_or_default().to_owned(),
                     duration: item["videoDuration"]
                         .as_u64()
-                        .filter(|ms| *ms > 0)
-                        .and_then(|ms| u32::try_from(ms / 60_000).ok()),
+                        .and_then(|ms| u32::try_from(ms / 60_000).ok())
+                        .filter(|minutes| *minutes > 0),
                     image_url: ["poster", "image"]
                         .iter()
                         .find_map(|k| item[k]["src"].as_str())
                         .or_else(|| item["image"]["url"].as_str())
-                        .map(String::from),
+                        .map(served_image),
                     description: None,
                 },
                 realm: if item["channel"].is_null() {
@@ -138,6 +149,21 @@ fn parse_videos(entry: &MediaEntry, json: &Value) -> ProviderResult<Vec<Video>> 
             })
         })
         .collect())
+}
+
+fn served_image(url: &str) -> String {
+    let Some((bucket, key)) = url
+        .strip_prefix(IMAGE_BUCKETS)
+        .and_then(|path| path.split_once('/'))
+    else {
+        return url.to_owned();
+    };
+    let request = json!({
+        "bucket": bucket,
+        "key": key,
+        "edits": { "resize": { "fit": "cover", "width": IMAGE_WIDTH } }
+    });
+    format!("{IMAGE_SERVICE}{}", STANDARD.encode(request.to_string()))
 }
 
 fn video_id(item: &Value) -> Option<String> {
@@ -194,7 +220,7 @@ impl Provider for Aurora {
     async fn stream(
         &self,
         entry: &MediaEntry,
-        _season: Option<u32>,
+        season: Option<u32>,
         episode: Option<&Episode>,
     ) -> ProviderResult<StreamUrl> {
         let wanted =
@@ -206,7 +232,7 @@ impl Provider for Aurora {
         let (videos, home) = tokio::try_join!(self.videos(entry), fetch_json(home))?;
         let video = videos
             .into_iter()
-            .find(|v| v.episode.id == wanted.id)
+            .find(|v| v.is(season, wanted))
             .ok_or_else(|| ProviderError::StreamExtraction("Episode data not found".into()))?;
         let token = realm_token(&home, video.realm)?;
         let playback = fetch_json(
@@ -275,6 +301,34 @@ mod tests {
     }
 
     #[test]
+    fn images_in_the_private_bucket_come_from_the_image_service() {
+        let image = json!({ "url": "https://s3.eu-west-1.amazonaws.com/loma-media-it/nove-it-image-a.jpg" });
+        let shows = json!({ "data": [{ "type": "showpage", "title": "Show", "image": image }] });
+        let served = aurora().parse_search(&shows).unwrap()[0]
+            .image_url
+            .clone()
+            .unwrap();
+        let request = served.strip_prefix(IMAGE_SERVICE).unwrap();
+        let request: Value = serde_json::from_slice(&STANDARD.decode(request).unwrap()).unwrap();
+        assert_eq!(
+            request,
+            json!({ "bucket": "loma-media-it", "key": "nove-it-image-a.jpg",
+                    "edits": { "resize": { "fit": "cover", "width": IMAGE_WIDTH } } })
+        );
+        let public = "https://images.aurora.enhanced.live/it/images/video/EHD_1/default.jpg";
+        let videos = json!({ "blocks": [{ "type": "sonicShowBlock", "items": [
+            { "id": "a", "seasonNumber": 1, "episodeNumber": 1, "image": image },
+            { "id": "b", "seasonNumber": 1, "episodeNumber": 2, "poster": { "src": public } }
+        ]}]});
+        let videos = parse_videos(&MediaEntry::default(), &videos).unwrap();
+        assert_eq!(
+            videos[0].episode.image_url.as_deref(),
+            Some(served.as_str())
+        );
+        assert_eq!(videos[1].episode.image_url.as_deref(), Some(public));
+    }
+
+    #[test]
     fn parse_videos_filters_to_show_and_dedupes() {
         let entry = MediaEntry {
             id: 7,
@@ -327,6 +381,44 @@ mod tests {
         assert!(
             playback_url(&json!({ "errors": [{ "code": "access.denied.geoblocked" }] })).is_err()
         );
+    }
+
+    #[test]
+    fn a_card_saved_before_ids_were_cut_still_finds_its_video() {
+        let json = json!({ "blocks": [{ "type": "sonicShowBlock", "items": [
+            { "id": "a", "show": { "id": "s" }, "seasonNumber": 1, "title": "Episodio 4" },
+            { "id": "b", "show": { "id": "s" }, "seasonNumber": 2, "title": "Episodio 4" }
+        ]}]});
+        let url = "https://public.aurora.enhanced.live/site/page/show/";
+        let found = MediaEntry {
+            id: stable_hash(url),
+            slug: url.into(),
+            ..Default::default()
+        };
+        let saved = MediaEntry {
+            id: 11_000_000_000_000_000_000,
+            ..found.clone()
+        };
+        let long = Episode {
+            id: 14_173_498_472_382_319_551,
+            ..Episode::numbered(4, "Episodio 4")
+        };
+        let videos = parse_videos(&saved, &json).unwrap();
+        let picked = |season| videos.iter().find(|v| v.is(season, &long)).map(|v| &v.id);
+        assert_eq!(picked(Some(2)).map(String::as_str), Some("b"));
+        assert_eq!(picked(Some(3)), None);
+        let fresh = parse_videos(&found, &json).unwrap();
+        assert_eq!(videos[1].episode.id, fresh[1].episode.id);
+        assert!(videos[1].is(Some(2), &fresh[1].episode));
+    }
+
+    #[test]
+    fn a_clip_under_a_minute_shows_no_duration() {
+        let json = json!({ "blocks": [{ "type": "sonicShowBlock", "items": [
+            { "id": "a", "show": { "id": "s" }, "seasonNumber": 1, "episodeNumber": 1,
+              "videoDuration": 45_000 } ]}]});
+        let videos = parse_videos(&MediaEntry::default(), &json).unwrap();
+        assert_eq!(videos[0].episode.duration, None);
     }
 
     #[test]

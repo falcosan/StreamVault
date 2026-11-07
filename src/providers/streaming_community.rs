@@ -311,7 +311,7 @@ impl Provider for StreamingCommunity {
         episode: Option<&Episode>,
     ) -> ProviderResult<StreamUrl> {
         let lang = self.langs[0];
-        fetch_vixcloud(&self.client, async || {
+        fetch_vixcloud(&self.client, &self.base, async || {
             let mut iframe = self
                 .client
                 .get(format!("{}/{lang}/iframe/{}", self.base, entry.id));
@@ -379,7 +379,7 @@ impl Provider for StreamingCommunity {
             .await;
             let count = json
                 .as_ref()
-                .map_or(0, |json| items(&json["titles"]).count());
+                .map_or(BROWSE_PAGE_SIZE, |json| items(&json["titles"]).count());
             self.browse(|b| {
                 if let Some(b) = b {
                     b.advance(count);
@@ -561,20 +561,24 @@ mod tests {
         let (base, requests) = serve(&[
             (
                 200,
-                r#"<div id="app" data-page='{"props":{"titles":[{"id":1,"name":"A"}]}}'></div>"#,
+                r#"<div id="app" data-page='{"props":{"titles":[{"id":1,"name":"A"}],"genres":[{"name":"Drama"}]}}'></div>"#,
             ),
+            (200, r#"[{"titles":[{"id":2,"name":"B"}]}]"#),
+            (200, "[]"),
             (404, ""),
-            (200, r#"{"titles":[{"id":2,"name":"B"}]}"#),
+            (200, r#"{"titles":[{"id":3,"name":"C"}]}"#),
+            (200, r#"{"titles":[]}"#),
+            (200, r#"{"titles":[]}"#),
         ])
         .await;
         let provider = StreamingCommunity { base, ..provider() };
-        assert_eq!(ids(&provider.catalog().await.unwrap()), [1]);
+        assert_eq!(ids(&provider.catalog().await.unwrap()), [1, 2]);
         assert!(provider.catalog_more().await.is_err());
-        assert_eq!(ids(&provider.catalog_more().await.unwrap()), [2]);
+        assert_eq!(ids(&provider.catalog_more().await.unwrap()), [3]);
         assert!(provider.catalog_more().await.unwrap().is_empty());
+        let requests = requests.lock().unwrap();
+        assert!(requests[1].contains(r#""genre":"Drama""#));
         let paths: Vec<_> = requests
-            .lock()
-            .unwrap()
             .iter()
             .map(|r| r.split(' ').nth(1).unwrap_or_default().to_owned())
             .collect();
@@ -582,8 +586,12 @@ mod tests {
             paths,
             [
                 "/it",
+                "/api/sliders/fetch?lang=it",
+                "/api/sliders/fetch?lang=en",
                 "/it/browse/trending?lang=it&page=1",
-                "/it/browse/latest?lang=it&page=1"
+                "/it/browse/trending?lang=it&page=2",
+                "/it/browse/latest?lang=it&page=1",
+                "/it/browse/genre?lang=it&page=1&g=Drama"
             ]
         );
     }

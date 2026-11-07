@@ -124,4 +124,63 @@ mod tests {
             json!({ "first": "failed", "second": "saved", "opens": 21 })
         );
     }
+
+    #[test]
+    fn what_could_not_be_read_is_never_overwritten() {
+        let result = run_js(&format!(
+            r#"
+            var later = setTimeout;
+            setTimeout = (run) => later(run, 0);
+            var saved = "saved";
+            var locked = true;
+            var request = (outcome) => {{
+              const request = {{}};
+              later(() => outcome(request), 0);
+              return request;
+            }};
+            var connection = {{
+              transaction: () => {{
+                const transaction = {{
+                  objectStore: () => ({{
+                    get: () => request((get) => {{
+                      get.result = saved;
+                      get.onsuccess();
+                    }}),
+                    put: (value) => {{
+                      saved = value;
+                      later(() => transaction.oncomplete(), 0);
+                    }},
+                  }}),
+                }};
+                return transaction;
+              }},
+            }};
+            var indexedDB = {{
+              open: () => request((open) => {{
+                if (locked) {{
+                  open.error = new Error("locked");
+                  open.onerror();
+                }} else {{
+                  open.result = connection;
+                  open.onsuccess();
+                }}
+              }}),
+            }};
+            {storage}
+            (async () => {{
+              const first = await load("replica").then(() => "loaded", () => "failed");
+              locked = false;
+              const refused = await save("replica", "fresh").then(() => "written", () => "refused");
+              await load("replica");
+              await save("replica", "newer");
+              return JSON.stringify({{ first, refused, saved }});
+            }})()
+            "#,
+            storage = STORAGE.replace("export ", ""),
+        ));
+        assert_eq!(
+            result,
+            json!({ "first": "failed", "refused": "refused", "saved": "newer" })
+        );
+    }
 }

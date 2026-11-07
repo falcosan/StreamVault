@@ -88,7 +88,7 @@ async fn install(
     if !outcome.contains(OTHER_AUTHOR) {
         return Ok(outcome);
     }
-    if !confirmed(ask(REINSTALL).as_deref()) {
+    if !confirmed(ask(REINSTALL).await.as_deref()) {
         return Err(refused(&outcome));
     }
     tv.shell(&format!("0 vd_appuninstall {app}"))

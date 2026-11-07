@@ -60,17 +60,18 @@ pub async fn choose(session: &Session) -> Result<Tv, String> {
             say(format!("Found {} · {}", tv.name, tv.address));
             Ok(tv)
         }
-        _ => pick(found),
+        _ => pick(found).await,
     }
 }
 
-fn pick(mut tvs: Vec<Tv>) -> Result<Tv, String> {
+async fn pick(mut tvs: Vec<Tv>) -> Result<Tv, String> {
     for (number, tv) in tvs.iter().enumerate() {
         say(format!("{}) {} · {}", number + 1, tv.name, tv.address));
     }
     loop {
-        let answer =
-            ask("TV number:").ok_or("Several TVs found; run it in a terminal to choose one.")?;
+        let answer = ask("TV number:")
+            .await
+            .ok_or("Several TVs found; run it in a terminal to choose one.")?;
         if let Some(number) = answer
             .parse::<usize>()
             .ok()

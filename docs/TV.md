@@ -50,8 +50,14 @@ cross-site request natively, answering CORS itself; a small script added to
 `index.html` hands request bodies to it, since the WebView does not expose
 them. What a browser still forbids also applies on both: requests cannot set
 `Cookie`, `Referer` or `User-Agent`, and responses do not expose `Set-Cookie`.
-StreamingCommunity, RaiPlay and Aurora do not need them; AnimeUnity's login
-flow needs them, so AnimeUnity works in the desktop app only.
+RaiPlay, Aurora and StreamingCommunity's catalogue do not need them;
+AnimeUnity's login flow needs them, so AnimeUnity works in the desktop app
+only. vixcloud's embed page, which StreamingCommunity's playback goes through,
+answers 403 without a `Referer`. `MainActivity` sends the app's origin, so
+Android TVs play it, after a new TV install since an in-app update does not
+replace the Java host. A Samsung TV runs the app as a `file://` page, and such
+a page sends no `Referer` whatever the request asks for (measured in Brave, not
+on a TV), so StreamingCommunity's titles are listed there but do not play.
 
 ## TVs
 
@@ -100,8 +106,8 @@ missing. It:
 - when the desktop app's `sync.json` is active (see
   [CONFIGURATION.md](CONFIGURATION.md#sync)), asks whether this TV syncs with
   it: Enter builds it with that endpoint and token, `n` leaves them out, so a
-  TV in someone else's home keeps its state locally; `SYNC=on` or `SYNC=off`
-  answers in advance;
+  TV in someone else's home keeps its state locally; with no terminal to ask,
+  it leaves them out and says so; `SYNC=on` or `SYNC=off` answers in advance;
 - installs what is missing: from a clone, on macOS the Command Line Tools and
   for the build the `wasm32-unknown-unknown` target and the `dx` of the
   `dioxus` version in `Cargo.lock`; for Android a JDK and the SDK build tools
@@ -169,7 +175,8 @@ TV and Fire TV alike, because what changes between versions is the web bundle
 - Who needs what: every installed TV updates from this repository's releases,
   with nothing to configure. Only the publisher needs the private key; a fork
   that publishes its own releases sets its own key in `TV_UPDATE_KEY` and its
-  public key and repository in `PUBLIC_KEY` and `RELEASES` of `boot.js`.
+  public key and repository in `PUBLIC_KEY` and `RELEASES` of `boot.js`, and
+  the same repository in `src/release.rs` and `scripts/install`.
 - Installing: the app compares its version with the latest release when it
   starts and every hour after, since a TV resumes the app instead of
   restarting it. The update is accepted only when the manifest's signature

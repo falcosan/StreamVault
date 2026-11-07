@@ -1,5 +1,7 @@
 use super::{between, os};
-use crate::deploy::{Session, VERSION, asset, binary, copy_dir, read, remove, say, tidy, write};
+use crate::deploy::{
+    Session, VERSION, asset, binary, copy_dir, read, remove, say, sha256, tidy, write,
+};
 use crate::settings::{SYNC_FILE, SyncConfig};
 use futures::future::try_join_all;
 use serde::Deserialize;
@@ -20,6 +22,7 @@ struct Manifest {
 #[derive(Deserialize)]
 struct File {
     name: String,
+    sha256: String,
 }
 
 pub async fn build(session: &Session) -> Result<PathBuf, String> {
@@ -39,9 +42,14 @@ async fn download(session: &Session) -> Result<PathBuf, String> {
         .await?;
     try_join_all(manifest.files.iter().map(|file| async {
         let name = plain(&file.name)?;
-        session
+        let saved = session
             .download(&asset(name), &format!("public/assets/{name}"))
-            .await
+            .await?;
+        if sha256(&saved)? == file.sha256 {
+            Ok(())
+        } else {
+            Err(format!("{name} is not the file tv.json lists."))
+        }
     }))
     .await?;
     Ok(session.scratch.join("public"))

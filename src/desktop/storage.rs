@@ -1,12 +1,14 @@
 use super::config::{
-    DOWNLOADS_FILE, LANGUAGE_FILE, PREFS_FILE, REPLICA_FILE, WATCH_FILE, missing_ok, read_json,
-    state_dir, write_json,
+    DOWNLOADS_FILE, DOWNLOADS_LOCK, LANGUAGE_FILE, PREFS_FILE, REPLICA_FILE, WATCH_FILE,
+    missing_ok, read_json, state_dir, write_json,
 };
 use super::download::Download;
+use crate::folders::sync_file;
 use crate::i18n::Lang;
 use crate::prefs::PlayerPrefs;
+use crate::settings::SyncConfig;
 use crate::sync::Replica;
-use crate::time::{epoch_ms, now_ms};
+use crate::time::{epoch_ms, now_ms, sleep};
 use crate::watch::WatchItem;
 use dioxus::logger::tracing::warn;
 use serde::Serialize;
@@ -15,6 +17,14 @@ use serde_json::Value;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::time::Duration;
+
+const CLAIM_ATTEMPTS: u32 = 20;
+const CLAIM_PAUSE: Duration = Duration::from_millis(500);
+
+pub fn load_sync_config() -> SyncConfig {
+    setting(&sync_file())
+}
 
 pub async fn load_replica() -> Option<Replica> {
     migrate(state_dir())
@@ -41,6 +51,36 @@ pub fn load_downloads(root: &Path) -> Vec<Download> {
 
 pub fn save_downloads(downloads: &[Download]) {
     save(&state_dir().join(DOWNLOADS_FILE), downloads);
+}
+
+pub async fn claim_downloads() -> bool {
+    claim_soon(&state_dir().join(DOWNLOADS_LOCK)).await
+}
+
+async fn claim_soon(path: &Path) -> bool {
+    for _ in 0..CLAIM_ATTEMPTS {
+        if claim(path) {
+            return true;
+        }
+        sleep(CLAIM_PAUSE).await;
+    }
+    false
+}
+
+fn claim(path: &Path) -> bool {
+    let Ok(lock) = fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+    else {
+        return true;
+    };
+    let claimed = lock.try_lock().is_ok();
+    if claimed {
+        std::mem::forget(lock);
+    }
+    claimed
 }
 
 fn language(dir: &Path) -> Option<Lang> {
@@ -72,7 +112,16 @@ fn migrate(dir: &Path) -> Option<Replica> {
     Some(replica)
 }
 
-pub fn load<T: DeserializeOwned + Default>(path: &Path) -> T {
+fn setting<T: DeserializeOwned + Default>(path: &Path) -> T {
+    read_json(path).unwrap_or_else(|e| {
+        if e.kind() != io::ErrorKind::NotFound {
+            warn!("ignoring unreadable {}: {e}", path.display());
+        }
+        T::default()
+    })
+}
+
+fn load<T: DeserializeOwned + Default>(path: &Path) -> T {
     read_json(path).unwrap_or_else(|e| {
         if e.kind() != io::ErrorKind::NotFound {
             warn!("{} read error: {e}", path.display());
@@ -155,6 +204,51 @@ mod tests {
             fs::read_to_string(path.with_added_extension("unreadable")).unwrap(),
             "{ not json"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hand_written_setting_that_does_not_parse_stays_where_it_is() {
+        let dir = scratch_dir("setting");
+        let path = dir.join("sync.json");
+        fs::write(&path, r#"{ "enabled": true, }"#).unwrap();
+        assert!(!setting::<SyncConfig>(&path).enabled);
+        assert!(path.is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_first_claim_of_the_downloads_succeeds() {
+        let dir = scratch_dir("claim");
+        let path = dir.join(DOWNLOADS_LOCK);
+        assert!(claim(&path));
+        assert!(!claim(&path));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn the_downloads_pass_on_once_the_old_app_has_quit() {
+        let dir = scratch_dir("claim_handover");
+        let path = dir.join(DOWNLOADS_LOCK);
+        let old_app = fs::File::create(&path).unwrap();
+        old_app.try_lock().unwrap();
+        let quits = tokio::spawn(async move {
+            sleep(CLAIM_PAUSE / 2).await;
+            drop(old_app);
+        });
+        assert!(claim_soon(&path).await);
+        quits.await.unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_second_app_stops_asking_for_downloads_it_cannot_get() {
+        let dir = scratch_dir("claim_refused");
+        let path = dir.join(DOWNLOADS_LOCK);
+        assert!(claim(&path));
+        let started = tokio::time::Instant::now();
+        assert!(!claim_soon(&path).await);
+        assert_eq!(started.elapsed(), CLAIM_PAUSE * CLAIM_ATTEMPTS);
         let _ = fs::remove_dir_all(&dir);
     }
 

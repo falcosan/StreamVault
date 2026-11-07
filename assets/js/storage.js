@@ -14,6 +14,7 @@ const open = (attempt) =>
     return open(attempt + 1);
   });
 
+const read = new Set();
 let database;
 const connect = () =>
   (database ??= open(1).catch((error) => {
@@ -25,7 +26,10 @@ export async function load(key) {
   const store = (await connect()).transaction(STORE).objectStore(STORE);
   return new Promise((resolve, reject) => {
     const request = store.get(key);
-    request.onsuccess = () => resolve(request.result ?? null);
+    request.onsuccess = () => {
+      read.add(key);
+      resolve(request.result ?? null);
+    };
     request.onerror = () => reject(request.error);
   });
 }
@@ -40,6 +44,7 @@ export async function packaged(name) {
 }
 
 export async function save(key, value) {
+  if (!read.has(key)) throw new Error(`${key} was not read yet`);
   const transaction = (await connect()).transaction(STORE, "readwrite", {
     durability: "strict",
   });

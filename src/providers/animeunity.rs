@@ -14,6 +14,7 @@ use web_time::Instant;
 
 const AUTH_TTL: Duration = Duration::from_secs(300);
 const EPISODE_PAGE: u32 = 120;
+const MAX_EPISODE_PAGES: usize = 100;
 
 #[derive(Clone)]
 struct Auth {
@@ -200,7 +201,7 @@ impl Provider for AnimeUnity {
         let total = uint(&fetch_json(info).await?["episodes_count"])
             .ok_or_else(|| ProviderError::Parse("No episodes_count".into()))?;
         let mut pages = Vec::new();
-        for (start, end) in page_ranges(total) {
+        for (start, end) in page_ranges(total).take(MAX_EPISODE_PAGES) {
             let request = self
                 .authed(
                     self.client
@@ -239,7 +240,7 @@ impl Provider for AnimeUnity {
                 .map(|ep| ep.id)
                 .ok_or_else(|| ProviderError::StreamExtraction("No episodes".into()))?,
         };
-        fetch_vixcloud(&self.client, async || {
+        fetch_vixcloud(&self.client, &self.base, async || {
             let embed = self
                 .authed(self.client.get(format!("{}/embed-url/{id}", self.base)))
                 .await?;
@@ -256,6 +257,47 @@ impl Provider for AnimeUnity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::check::serve;
+
+    fn signed_in(base: String) -> AnimeUnity {
+        let auth = Auth {
+            cookie: "XSRF-TOKEN=x".into(),
+            xsrf: "x".into(),
+        };
+        AnimeUnity {
+            client: Http::new(Duration::from_secs(1)),
+            base,
+            auth: Mutex::new(Some((auth, Instant::now()))),
+        }
+    }
+
+    #[tokio::test]
+    async fn episodes_are_read_page_by_page_until_one_comes_back_empty() {
+        let (base, requests) = serve(&[
+            (200, r#"{"episodes_count":361}"#),
+            (200, r#"{"episodes":[{"id":10,"number":"1"}]}"#),
+            (200, r#"{"episodes":[{"id":11,"number":"OVA"}]}"#),
+            (200, r#"{"episodes":[]}"#),
+        ])
+        .await;
+        let episodes = signed_in(base)
+            .episodes(&MediaEntry::default(), 1)
+            .await
+            .unwrap();
+        let listed: Vec<_> = episodes.iter().map(|e| (e.id, e.number)).collect();
+        assert_eq!(listed, [(10, 1), (11, 2)]);
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        assert!(requests[2].contains("start_range=121&end_range=240"));
+    }
+
+    #[tokio::test]
+    async fn a_title_found_twice_in_a_search_is_listed_once() {
+        const FOUND: &str = r#"{"records":[{"id":7,"title":"Naruto"}]}"#;
+        let (base, _) = serve(&[(200, FOUND), (200, FOUND)]).await;
+        let entries = signed_in(base).search("naruto").await.unwrap();
+        assert_eq!(entries.iter().map(|e| e.id).collect::<Vec<_>>(), [7]);
+    }
 
     fn set_cookies(values: &[&str]) -> HeaderMap {
         let mut headers = HeaderMap::new();

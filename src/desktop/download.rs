@@ -18,6 +18,8 @@ use uuid::Uuid;
 
 const ERROR_LINES: usize = 5;
 const MAX_ROW: usize = 4096;
+const DONE: &[u8] = b"INFO : Done";
+const TRACK: &str = "track";
 const SAVE_PATTERN: &str = "<SaveName>.<Language>.<Id>";
 const ASSETS: &str = "assets";
 const SUBTITLES: &str = "subtitles";
@@ -84,7 +86,7 @@ impl Download {
     pub fn restored(self, root: &Path) -> Option<Self> {
         match self.status {
             Status::Completed => (self.file.is_file() || !root.is_dir()).then_some(self),
-            Status::Failed(_) => None,
+            Status::Failed(_) => Some(self),
             _ => Some(Self {
                 status: Status::Queued,
                 ..self
@@ -243,11 +245,10 @@ async fn fetch(
     work: &Path,
     report: &mut impl FnMut(Status),
 ) -> Result<(), String> {
-    let (Some(dir), Some(name), Some(file)) = (
-        download.file.parent(),
-        download.file.file_stem(),
-        download.file.file_name(),
-    ) else {
+    if !stream.url.starts_with("http") {
+        return Err(format!("Not a stream address: {}", stream.url));
+    }
+    let (Some(dir), Some(file)) = (download.file.parent(), download.file.file_name()) else {
         return Err(format!("Invalid output path: {}", download.file.display()));
     };
     let tmp = work.join("tmp");
@@ -259,7 +260,7 @@ async fn fetch(
         .await
         .map_err(|e| format!("Cannot create tracks dir: {e}"))?;
     let ffmpeg = find_binary("ffmpeg");
-    let mut child = downloader(config, stream, name, &tracks, &tmp, &ffmpeg, Pass::Media)
+    let mut child = downloader(config, stream, &tracks, &tmp, &ffmpeg, Pass::Media)
         .spawn()
         .map_err(|e| format!("Failed to start N_m3u8DL-RE: {e}"))?;
 
@@ -277,8 +278,7 @@ async fn fetch(
             }
         }),
         async {
-            if let Some(status) =
-                download_subtitles(config, stream, name, &tracks, work, &ffmpeg).await
+            if let Some(status) = download_subtitles(config, stream, &tracks, work, &ffmpeg).await
                 && !status.as_ref().is_ok_and(ExitStatus::success)
             {
                 warn!("subtitle download failed: {status:?}");
@@ -292,6 +292,9 @@ async fn fetch(
         .map_err(|e| format!("Process error: {e}"))?;
     if !exit.success() {
         return Err(exit_message(exit, &errors));
+    }
+    if !progress.finished() {
+        return Err("N_m3u8DL-RE could not download every track".into());
     }
     let (media, subtitles) = scan_tracks(&tracks).await;
     report(Status::Muxing);
@@ -344,6 +347,10 @@ impl Progress {
             percent
         })
     }
+
+    fn finished(&self) -> bool {
+        self.pending.windows(DONE.len()).any(|bytes| bytes == DONE)
+    }
 }
 
 fn segments(row: &[u8]) -> Option<(String, (u64, u64))> {
@@ -390,7 +397,6 @@ async fn each_line(source: Option<impl AsyncRead + Unpin>, mut handle: impl FnMu
 async fn download_subtitles(
     config: &AppConfig,
     stream: &StreamUrl,
-    name: &OsStr,
     tracks: &Path,
     work: &Path,
     ffmpeg: &Path,
@@ -399,7 +405,7 @@ async fn download_subtitles(
         return None;
     }
     let tmp = work.join("subtitles");
-    let mut command = downloader(config, stream, name, tracks, &tmp, ffmpeg, Pass::Subtitles);
+    let mut command = downloader(config, stream, tracks, &tmp, ffmpeg, Pass::Subtitles);
     Some(
         command
             .stdout(Stdio::null())
@@ -412,7 +418,6 @@ async fn download_subtitles(
 fn downloader(
     config: &AppConfig,
     stream: &StreamUrl,
-    name: &OsStr,
     tracks: &Path,
     tmp: &Path,
     ffmpeg: &Path,
@@ -423,15 +428,13 @@ fn downloader(
     cmd.kill_on_drop(true)
         .arg(&stream.url)
         .arg("--save-name")
-        .arg(name)
+        .arg(TRACK)
         .arg("--save-pattern")
         .arg(SAVE_PATTERN)
         .arg("--save-dir")
         .arg(tracks)
         .arg("--tmp-dir")
         .arg(tmp)
-        .arg("--ffmpeg-binary-path")
-        .arg(ffmpeg)
         .args([
             "--no-log",
             "--binary-merge",
@@ -443,6 +446,9 @@ fn downloader(
             "--force-ansi-console",
             "--no-ansi-color",
         ]);
+    if ffmpeg.is_absolute() {
+        cmd.arg("--ffmpeg-binary-path").arg(ffmpeg);
+    }
     if settings.concurrent_download {
         cmd.arg("--concurrent-download");
     }
@@ -476,24 +482,9 @@ fn downloader(
 
 async fn mux(ffmpeg: &Path, output: &Path, media: &[PathBuf]) -> Result<(), String> {
     if media.is_empty() {
-        return Err("No .ts files found after download".into());
+        return Err("No media files found after download".into());
     }
-    let mut cmd = os::command(ffmpeg);
-    cmd.kill_on_drop(true).arg("-y");
-    for input in media {
-        cmd.arg("-i").arg(input);
-    }
-    for i in 0..media.len() {
-        cmd.arg("-map")
-            .arg(format!("{i}:v?"))
-            .arg("-map")
-            .arg(format!("{i}:a?"));
-    }
-    cmd.args(["-c:v", "copy", "-c:a", "copy"]);
-    let result = cmd
-        .arg(output)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+    let result = muxer(ffmpeg, output, media)
         .output()
         .await
         .map_err(|e| e.to_string())?;
@@ -507,6 +498,22 @@ async fn mux(ffmpeg: &Path, output: &Path, media: &[PathBuf]) -> Result<(), Stri
         .collect();
     let tail = lines[lines.len().saturating_sub(ERROR_LINES)..].join("\n");
     Err(format!("ffmpeg exited: {}\n{tail}", result.status))
+}
+
+fn muxer(ffmpeg: &Path, output: &Path, media: &[PathBuf]) -> Command {
+    let mut cmd = os::command(ffmpeg);
+    cmd.kill_on_drop(true).arg("-y");
+    for input in media {
+        cmd.arg("-i").arg(input);
+    }
+    for i in 0..media.len() {
+        cmd.arg("-map")
+            .arg(format!("{i}:v?"))
+            .arg("-map")
+            .arg(format!("{i}:a?"));
+    }
+    cmd.args(["-c:v", "copy", "-c:a", "copy"]).arg(output);
+    cmd
 }
 
 pub async fn discard(download: &Download) {
@@ -569,7 +576,7 @@ async fn scan_tracks(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             match path.extension().and_then(|x| x.to_str()) {
-                Some("ts") => {
+                Some("ts" | "mp4" | "m4a") => {
                     let size = entry.metadata().await.map_or(0, |m| m.len());
                     media.push((path, size));
                 }
@@ -623,7 +630,7 @@ async fn remove_if_empty(dir: &Path) -> std::io::Result<bool> {
 
 async fn remove_subtitles(video: &Path) -> std::io::Result<()> {
     for subtitle in subtitles(video) {
-        tokio::fs::remove_file(subtitle.file).await?;
+        missing_ok(tokio::fs::remove_file(subtitle.file).await)?;
     }
     Ok(())
 }
@@ -635,11 +642,16 @@ async fn save_subtitles(files: &[PathBuf], video: &Path) -> std::io::Result<()> 
         tokio::fs::create_dir_all(&dir).await?;
     }
     for file in files {
-        if let Some(name) = file.file_name() {
+        if let Some(name) = sidecar_name(file, video) {
             move_file(file, &dir.join(name)).await?;
         }
     }
     Ok(())
+}
+
+fn sidecar_name(track: &Path, video: &Path) -> Option<String> {
+    let tags = track.file_name()?.to_str()?.strip_prefix(TRACK)?;
+    Some(format!("{}{tags}", video.file_stem()?.to_str()?))
 }
 
 async fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -698,13 +710,22 @@ fn sanitize_filename(name: &str) -> String {
             c => c,
         })
         .collect();
+    let clean = if cfg!(windows) {
+        without_trailing_dots(&clean)
+    } else {
+        &clean
+    };
     if clean.trim_matches('.').is_empty() {
         "_".into()
-    } else if cfg!(windows) && is_device_name(&clean) {
+    } else if cfg!(windows) && is_device_name(clean) {
         format!("_{clean}")
     } else {
-        clean
+        clean.to_owned()
     }
+}
+
+fn without_trailing_dots(name: &str) -> &str {
+    name.trim_end_matches(['.', ' '])
 }
 
 fn is_device_name(name: &str) -> bool {
@@ -813,7 +834,8 @@ mod tests {
         for status in [Status::Queued, Status::Downloading(40), Status::Muxing] {
             assert_eq!(with(status).restored(&dir), Some(with(Status::Queued)));
         }
-        assert_eq!(with(Status::Failed("boom".into())).restored(&dir), None);
+        let failed = with(Status::Failed("boom".into()));
+        assert_eq!(failed.clone().restored(&dir), Some(failed));
         let deleted = Download {
             file: dir.join("deleted.mp4"),
             ..with(Status::Completed)
@@ -1020,6 +1042,13 @@ mod tests {
     }
 
     #[test]
+    fn names_lose_what_windows_would_drop_from_a_folder() {
+        assert_eq!(without_trailing_dots("E adesso..."), "E adesso");
+        assert_eq!(without_trailing_dots("Foo. . "), "Foo");
+        assert_eq!(without_trailing_dots("Dr. House"), "Dr. House");
+    }
+
+    #[test]
     fn sanitize_never_yields_a_traversal_name() {
         assert_eq!(sanitize_filename(".."), "_");
         assert_eq!(sanitize_filename("."), "_");
@@ -1064,22 +1093,35 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn an_address_the_downloader_would_read_as_an_option_is_refused() {
+        let dir = scratch_dir("option_address");
+        let config = AppConfig::default();
+        let download = Download::new(&config, &MediaEntry::default(), None, None);
+        let stream = StreamUrl {
+            url: "--save-dir=/x".into(),
+            headers: Vec::new(),
+        };
+        assert_eq!(
+            fetch(&config, &download, &stream, &dir, &mut |_| {}).await,
+            Err("Not a stream address: --save-dir=/x".into())
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn downloader_args(config: &AppConfig, pass: Pass) -> String {
         let tracks = Path::new("tracks");
-        downloader(
-            config,
-            &stream(),
-            OsStr::new("Ep"),
-            tracks,
-            tracks,
-            tracks,
-            pass,
-        )
-        .as_std()
-        .get_args()
-        .map(OsStr::to_string_lossy)
-        .collect::<Vec<_>>()
-        .join(" ")
+        arguments(&downloader(config, &stream(), tracks, tracks, tracks, pass))
+    }
+
+    fn arguments(command: &Command) -> String {
+        command
+            .as_std()
+            .get_args()
+            .map(OsStr::to_string_lossy)
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     #[tokio::test]
@@ -1091,7 +1133,7 @@ mod tests {
         assert!(downloader_args(&config, Pass::Media).contains("--drop-audio all"));
         let dir = Path::new("tracks");
         assert!(
-            download_subtitles(&config, &stream(), OsStr::new("Ep"), dir, dir, dir)
+            download_subtitles(&config, &stream(), dir, dir, dir)
                 .await
                 .is_none()
         );
@@ -1107,6 +1149,35 @@ mod tests {
         let subtitles = downloader_args(&config, Pass::Subtitles);
         assert!(subtitles.contains("--select-subtitle lang=ita"));
         assert!(!subtitles.contains("--select-video") && !subtitles.contains("--select-audio"));
+    }
+
+    #[test]
+    fn ffmpeg_is_named_only_when_it_was_found_on_disk() {
+        let config = AppConfig::default();
+        let tracks = Path::new("tracks");
+        let args = |ffmpeg: &str| {
+            arguments(&downloader(
+                &config,
+                &stream(),
+                tracks,
+                tracks,
+                Path::new(ffmpeg),
+                Pass::Media,
+            ))
+        };
+        assert!(!args("ffmpeg").contains("--ffmpeg-binary-path"));
+        let bundled = std::env::temp_dir().join("ffmpeg");
+        assert!(args(&bundled.to_string_lossy()).contains("--ffmpeg-binary-path"));
+    }
+
+    #[test]
+    fn every_downloaded_track_is_merged_with_its_video_and_audio() {
+        let media = [PathBuf::from("video.ts"), PathBuf::from("audio.m4a")];
+        let command = muxer(Path::new("ffmpeg"), Path::new("out.mp4"), &media);
+        assert_eq!(
+            arguments(&command),
+            "-y -i video.ts -i audio.m4a -map 0:v? -map 0:a? -map 1:v? -map 1:a? -c:v copy -c:a copy out.mp4"
+        );
     }
 
     #[test]
@@ -1138,6 +1209,23 @@ mod tests {
             ),
             Some(100)
         );
+    }
+
+    #[test]
+    fn only_the_downloader_saying_done_finishes_a_download() {
+        let healthy =
+            "Aud ita ━━━ 4/4 100.00%57.65KB - 00:00:0023:57:33.275 INFO : Done\x1b[?12l\x1b[?25h";
+        let failed = "Aud ita ━━━ 3/4 75.00% 38.74KB/51.65KB38.74KBps00:00:0023:57:34.326 ERROR: Failed\x1b[?12l\x1b[?25h";
+        for size in [1, 7, healthy.len()] {
+            let mut progress = Progress::default();
+            for chunk in healthy.as_bytes().chunks(size) {
+                progress.update(chunk);
+            }
+            assert!(progress.finished(), "chunks of {size} bytes");
+        }
+        let mut progress = Progress::default();
+        progress.update(failed);
+        assert!(!progress.finished());
     }
 
     #[test]
@@ -1269,8 +1357,8 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let video = out.join("Ep.mp4");
         std::fs::write(out.join("Ep.fre.4.vtt"), "old").unwrap();
-        std::fs::write(work.join("Ep.ita.3.vtt"), "new").unwrap();
-        save_subtitles(&[work.join("Ep.ita.3.vtt")], &video)
+        std::fs::write(work.join("track.ita.3.vtt"), "new").unwrap();
+        save_subtitles(&[work.join("track.ita.3.vtt")], &video)
             .await
             .unwrap();
         assert_eq!(
@@ -1284,6 +1372,22 @@ mod tests {
             std::fs::read_to_string(out.join("assets/subtitles/Ep.ita.3.vtt")).unwrap(),
             "new"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn subtitles_stay_with_a_video_whatever_its_name() {
+        let dir = scratch_dir("subtitle_names");
+        let work = dir.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        for name in ["Il ritorno... S01E03", "A__B", "_Weird Al_ (2022)"] {
+            let video = dir.join(format!("{name}.mp4"));
+            std::fs::write(work.join("track.ita.3.vtt"), "new").unwrap();
+            save_subtitles(&[work.join("track.ita.3.vtt")], &video)
+                .await
+                .unwrap();
+            assert_eq!(subtitles(&video).len(), 1, "{name}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1379,10 +1483,20 @@ mod tests {
         std::fs::create_dir_all(dir.join("tmp")).unwrap();
         std::fs::write(dir.join("small.ts"), [0u8; 1]).unwrap();
         std::fs::write(dir.join("large.ts"), [0u8; 8]).unwrap();
+        std::fs::write(dir.join("video.mp4"), [0u8; 6]).unwrap();
+        std::fs::write(dir.join("audio.m4a"), [0u8; 4]).unwrap();
         std::fs::write(dir.join("it.vtt"), "WEBVTT").unwrap();
         std::fs::write(dir.join("notes.txt"), "x").unwrap();
         let (media, subtitles) = scan_tracks(&dir).await;
-        assert_eq!(media, [dir.join("large.ts"), dir.join("small.ts")]);
+        assert_eq!(
+            media,
+            [
+                dir.join("large.ts"),
+                dir.join("video.mp4"),
+                dir.join("audio.m4a"),
+                dir.join("small.ts")
+            ]
+        );
         assert_eq!(subtitles, [dir.join("it.vtt")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1420,11 +1534,15 @@ mod tests {
     async fn copy_atomically_never_exposes_a_partial_file() {
         let dir = scratch_dir("copy_atomically");
         let (from, to) = (dir.join("work.mp4"), dir.join("out/final.mp4"));
-        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        let partial = to.with_extension("part");
+        std::fs::create_dir_all(&partial).unwrap();
         std::fs::write(&from, "video").unwrap();
+        assert!(copy_atomically(&from, &to).await.is_err());
+        assert!(!to.exists());
+        std::fs::remove_dir(&partial).unwrap();
         copy_atomically(&from, &to).await.unwrap();
         assert_eq!(std::fs::read_to_string(&to).unwrap(), "video");
-        assert!(!to.with_extension("part").exists());
+        assert!(!partial.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1433,6 +1551,6 @@ mod tests {
         let err = mux(Path::new("ffmpeg"), Path::new("/tmp/out.mp4"), &[])
             .await
             .unwrap_err();
-        assert_eq!(err, "No .ts files found after download");
+        assert_eq!(err, "No media files found after download");
     }
 }

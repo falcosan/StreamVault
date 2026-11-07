@@ -38,6 +38,7 @@ const ISSUER: &str = "https://svdca.samsungqbe.com/apis/v3";
 const SIGNED_IN: &str = "Signed in: go back to the terminal.";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const ISSUE_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_REQUEST: usize = 1 << 16;
 const LEGACY: &str = "SamsungCertificate";
 const KEY_ALIAS: &str = "UserCertificate";
 const KEY_BITS: usize = 2048;
@@ -347,7 +348,7 @@ async fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
         if let Some((name, value)) = header.split_once(':')
             && name.eq_ignore_ascii_case("content-length")
         {
-            length = value.trim().parse().ok()?;
+            length = value.trim().parse().ok().filter(|n| *n <= MAX_REQUEST)?;
         }
     }
     let mut body = vec![0; length];
@@ -412,6 +413,20 @@ mod tests {
         .unwrap()
         .to_der()
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_request_claiming_an_absurd_length_is_dropped() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        client
+            .write_all(b"POST / HTTP/1.1\r\ncontent-length: 18446744073709551615\r\n\r\n")
+            .await
+            .unwrap();
+        let (mut server, _) = listener.accept().await.unwrap();
+        assert_eq!(read_request(&mut server).await, None);
     }
 
     #[test]

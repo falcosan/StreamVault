@@ -12,7 +12,7 @@ pub const ADB: u16 = 5555;
 pub const REMOTE: u16 = 6466;
 const API: &str = "36";
 const BUILD_TOOLS: &str = "36.0.0";
-const MIN_API: &str = "21";
+const MIN_API: &str = "23";
 const JAVA_RELEASE: &str = "17";
 const DEBUG_PASSWORD: &str = "android";
 const WEBVIEW_MIN: u32 = 96;
@@ -260,7 +260,7 @@ impl Sdk {
             }
         }
         if let Some(pairing) = self.service(target, "pairing").await
-            && let Some(code) = ask("Pairing code shown on the TV:")
+            && let Some(code) = ask("Pairing code shown on the TV:").await
         {
             attempt(self.adb().args(["pair", &pairing, &code])).await;
         }

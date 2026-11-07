@@ -54,7 +54,7 @@ pub fn launch(app: fn() -> Element) {
 }
 
 pub async fn sync_config() -> SyncConfig {
-    storage::load(&crate::folders::sync_file())
+    storage::load_sync_config()
 }
 
 pub fn nav() -> [(Screen, &'static str); 1] {
@@ -201,11 +201,18 @@ impl Device {
     }
 
     fn resume_downloads(self, app: AppState) {
-        for download in self.downloads.peek().iter() {
-            if download.status == Status::Queued {
-                self.fetch(app, download.clone());
+        spawn_forever(async move {
+            if !storage::claim_downloads().await {
+                return;
             }
-        }
+            for download in self.downloads.peek().iter() {
+                if download.status == Status::Queued
+                    && !self.tasks.peek().contains_key(&download.id)
+                {
+                    self.fetch(app, download.clone());
+                }
+            }
+        });
     }
 
     fn stop_downloads(mut self) {

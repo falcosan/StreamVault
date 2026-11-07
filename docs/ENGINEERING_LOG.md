@@ -525,9 +525,12 @@ headers: StreamingCommunity returned its 324 KB page, AnimeUnity and RaiPlay
 answered 200, and Aurora accepted an `Authorization` header. The Tizen web
 runtime does not apply CORS to an installed widget. Browser rules on headers
 still apply: requests cannot set `Cookie`, `Referer` or `User-Agent`, and
-responses do not expose `Set-Cookie`. StreamingCommunity, RaiPlay and Aurora
-do not need them; AnimeUnity's login flow does, so it works in the desktop
-app only.
+responses do not expose `Set-Cookie`. RaiPlay, Aurora and StreamingCommunity's
+catalogue do not need them; AnimeUnity's login flow does, so it works in the
+desktop app only. vixcloud's embed page, which StreamingCommunity's playback
+goes through, answers 403 without a `Referer` (gotcha 48): the Android host
+sends the app's origin, and a local page sends none, so StreamingCommunity's
+titles do not play on a Samsung TV.
 
 ### 9.2 Making the providers build for WASM
 
@@ -860,7 +863,7 @@ The same web bundle runs on Android in a WebView, wrapped by one Java class
 links the manifest, the icon (`assets/img/raster/logo_raster_small.png`), the
 banner (`banner.xml`, a 320×180 dp layer list centring the icon on its own
 background) and the bundle as assets, `javac` + `d8` compile the activity (D8
-backports `Map.of` and `String.join` down to API 21), `zipalign` and `apksigner`
+backports `Map.of` and `String.join` down to API 23), `zipalign` and `apksigner`
 finish it with `~/.android/debug.keystore`, so every build updates the previous
 one in place. Verified on Android TV emulators (Android 16 / WebView 143 and
 Android 12 / WebView 91) driven with `adb shell input keyevent`.
@@ -1193,6 +1196,17 @@ Samsung installs use no external tool on either.
 | 45  | _Invalid format of certificate in signature_ (118, -12)      | the TV decodes `X509Certificate` with a line-based base64 reader; one 1,800-character line fails although XML allows it                                             | write signature values and certificates in lines of 76 characters             |
 | 46  | _Author certificate not match_ (118, -11)                    | Tizen updates an app only from an author certificate with the same public key; this computer lost that key, or another one installed it                             | renew with the stored author key; without it, uninstall first                 |
 | 47  | a download stays at 0% until it ends                         | from 0.6.0 (Spectre.Console 0.57) N_m3u8DL-RE writes each line break on its own, and its writer for piped output drops it: the rows of every redraw arrive glued    | read the output as it arrives; a row starts at `Vid `, `Aud ` or `Sub `       |
+| 48  | _Failed to get stream_ (403) on every vixcloud title         | vixcloud's embed page answers 403 to a request with no `Referer`; any value passes, and the playlist, variants and segments do not check it                         | desktop sends the site as `Referer`, Android its origin; Samsung cannot       |
+| 49  | every device stops syncing, with nothing on screen           | an empty `streamvault_state.json` made `JSON.parse` throw; Apps Script turned that into an HTML page with status 200, which clients only log                        | an empty file counts as deleted; any other failure answers `ok: false`        |
+| 50  | a download missing a track ends _Completed_                  | N_m3u8DL-RE prints `ERROR: Failed` but exits 0, so the exit code hid a lost track and the tracks left were muxed                                                    | only `INFO : Done` in its output counts as success                            |
+| 51  | RaiPlay and Aurora cards stop resuming or removing           | `stable_hash` used all 64 bits; the Apps Script reads numbers as doubles, so ids above 2^53 came back rounded                                                       | hashed ids stay under 2^53; removal uses the stored key                       |
+| 52  | the subtitles of a title ending in `...` vanish              | N_m3u8DL-RE rewrites `--save-name`: it collapses `..` and `__` and trims a leading `_` or `.`                                                                       | a constant save name; the app names the files after the video                 |
+| 53  | a slow start erases Continue Watching on a TV                | a failed IndexedDB read looked like nothing saved, so the fresh state was written over the stored one                                                               | `storage.js` refuses to write a key it could not read                         |
+| 54  | old cards fail: _Episode URL not found_                      | cutting ids to 53 bits changed every saved id, and most RaiPlay cards have no number of their own                                                                   | `key()` rebuilds a long id from the slug; a long episode id matches on the bits it kept, or on place and title|
+| 55  | a saved episode queues one of another season                 | starting a saved file keeps the list Details shows, which can belong to another season                                                                              | `progress` and `finished` read that list only when it is the playing season   |
+| 56  | queued downloads wait after a Windows update                 | Windows starts the new app before the old one exits, so the new one lost the download lock                                                                          | the claim is retried for ten seconds and passes on when the old app exits     |
+| 57  | Aurora titles show no poster                                 | `image.url` points at a private S3 bucket; nove.tv asks its CloudFront image service, with the bucket and key in base64                                             | build that address from the same `url`: no request per result                 |
+| 58  | a failed Windows update leaves no app                        | `replace` moves the old file aside first, and nothing put it back when the new one could not take its place                                                         | move it back, and name where it stays if that fails too                       |
 
 ---
 
@@ -1200,8 +1214,6 @@ Samsung installs use no external tool on either.
 
 **Done**
 
-- Tizen Studio 6.1 + TV extensions, headless, ~3 GB.
-- `streamvault-samsung` certificate profile (author + distributor, DUID-locked).
 - One crate for every device: shared app state, views, player, providers,
   sync and assets; device modules only add what the device alone has.
 - The TV app is standalone: providers, playback and sync run on the TV (§9).
@@ -1305,4 +1317,3 @@ sdb forward tcp:<port> tcp:<port>             # then http://127.0.0.1:<port>/jso
 - **Device:** UE50CU8072UXXH · Tizen 9.0 · armv7l · device id `7XCI7KNS2VUXI`
 - **sdb port:** 26101 · **control API:** 8001 (`/api/v2/`)
 - **Package id:** `AR6J1YmstG` (exactly 10 chars — non-negotiable)
-- **Certificate profile:** `streamvault-samsung`

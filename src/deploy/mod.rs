@@ -2,11 +2,12 @@ mod desktop;
 mod tv;
 
 use crate::release::RELEASES;
+use rsa::sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::env::consts::EXE_SUFFIX;
 use std::fs::{self, File, OpenOptions};
 use std::future::Future;
-use std::io::{BufRead, ErrorKind, IsTerminal, Write};
+use std::io::{BufRead, ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
 use std::time::Duration;
@@ -18,6 +19,7 @@ const TAR: &str = if cfg!(windows) { "tar" } else { "/usr/bin/tar" };
 const LOG_TAIL: usize = 20;
 const POLL: Duration = Duration::from_secs(3);
 const ATTEMPTS: usize = 3;
+const STALLED: Duration = Duration::from_secs(60);
 
 pub async fn main() -> ExitCode {
     let deploy = async {
@@ -44,15 +46,20 @@ fn say(message: impl std::fmt::Display) {
     println!("  {message}");
 }
 
-fn ask(question: &str) -> Option<String> {
+async fn ask(question: &str) -> Option<String> {
     let stdin = std::io::stdin();
     if !stdin.is_terminal() {
         return None;
     }
     print!("  {question} ");
     std::io::stdout().flush().ok()?;
-    let mut answer = String::new();
-    (stdin.lock().read_line(&mut answer).ok()? > 0).then(|| answer.trim().to_owned())
+    let (answered, answer) = futures::channel::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let read = stdin.lock().read_line(&mut line).is_ok_and(|read| read > 0);
+        let _ = answered.send(read.then(|| line.trim().to_owned()));
+    });
+    answer.await.ok().flatten()
 }
 
 async fn wait_until<T, F: Future<Output = Option<T>>>(
@@ -163,10 +170,26 @@ fn create(dir: &Path) -> Result<(), String> {
 fn replace_dir(dir: &Path, fill: impl FnOnce(&Path) -> Result<(), String>) -> Result<(), String> {
     let staged = dir.with_extension("new");
     remove(&staged);
-    fill(&staged)?;
+    fill(&staged).inspect_err(|_| remove(&staged))?;
     remove(dir);
     fs::rename(&staged, dir)
         .map_err(|e| format!("Cannot move {} to {}: {e}", staged.display(), dir.display()))
+}
+
+fn sha256(file: &Path) -> Result<String, String> {
+    let mut reader =
+        File::open(file).map_err(|e| format!("Cannot read {}: {e}", file.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; 1 << 16];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|e| format!("Cannot read {}: {e}", file.display()))?;
+        if read == 0 {
+            return Ok(format!("{:x}", hasher.finalize()));
+        }
+        hasher.update(&buffer[..read]);
+    }
 }
 
 fn target_directory(metadata: &str) -> Option<PathBuf> {
@@ -212,6 +235,7 @@ impl Session {
         File::create(&log).map_err(|e| format!("Cannot write {}: {e}", log.display()))?;
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
+            .read_timeout(STALLED)
             .build()
             .map_err(|e| e.to_string())?;
         let lan = reqwest::Client::builder()
@@ -346,7 +370,8 @@ impl Session {
         if success {
             return Ok(());
         }
-        let log = fs::read_to_string(&self.log).unwrap_or_default();
+        let log = fs::read(&self.log).unwrap_or_default();
+        let log = String::from_utf8_lossy(&log);
         let lines: Vec<&str> = log.lines().collect();
         Err(format!(
             "{}\n\n  Failed: {} (log: {})",
@@ -394,6 +419,14 @@ mod tests {
     }
 
     #[test]
+    fn a_log_with_foreign_bytes_still_shows_its_tail() {
+        let session = Session::new("deploy_log").unwrap();
+        fs::write(&session.log, b"caf\xe9 stopped\n").unwrap();
+        let failure = session.check(&Command::new("tool"), false).unwrap_err();
+        assert!(failure.contains("stopped"), "{failure}");
+    }
+
+    #[test]
     fn a_folder_is_replaced_only_once_its_new_copy_is_complete() {
         let home = scratch_dir("deploy_replace");
         let dir = home.join("StreamVault.app");
@@ -403,6 +436,7 @@ mod tests {
             Err("disk full".to_owned())
         });
         assert!(failed.is_err());
+        assert!(!dir.with_extension("new").exists());
         assert_eq!(read(&dir.join("old")).unwrap(), "old");
         replace_dir(&dir, |staged| write(&staged.join("new"), "new")).unwrap();
         assert_eq!(read(&dir.join("new")).unwrap(), "new");

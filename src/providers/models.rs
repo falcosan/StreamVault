@@ -1,4 +1,7 @@
+use super::{MAX_SAFE_INTEGER, stable_hash};
 use serde::{Deserialize, Serialize};
+
+const JSON_ROUNDING: u64 = 1 << 11;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MediaType {
@@ -87,11 +90,28 @@ impl Episode {
             format!("{code} - {}", self.name)
         }
     }
+
+    pub fn matches(&self, saved: &Self) -> bool {
+        self.id == saved.id || saved.id > MAX_SAFE_INTEGER && self.was_saved_as(saved)
+    }
+
+    fn was_saved_as(&self, saved: &Self) -> bool {
+        (saved.id & MAX_SAFE_INTEGER).abs_diff(self.id) <= JSON_ROUNDING
+            || !saved.name.is_empty() && self.name == saved.name && self.order() == saved.order()
+    }
 }
 
 impl MediaEntry {
     pub fn key(&self) -> (usize, u64) {
-        (self.provider, self.id)
+        (self.provider, self.safe_id())
+    }
+
+    pub(super) fn safe_id(&self) -> u64 {
+        if self.id > MAX_SAFE_INTEGER {
+            stable_hash(&self.slug)
+        } else {
+            self.id
+        }
     }
 
     pub fn key_at(
@@ -99,7 +119,12 @@ impl MediaEntry {
         season: Option<u32>,
         episode: Option<&Episode>,
     ) -> (usize, u64, Option<u32>, Option<EpisodeOrder>) {
-        (self.provider, self.id, season, episode.map(Episode::order))
+        (
+            self.provider,
+            self.safe_id(),
+            season,
+            episode.map(Episode::order),
+        )
     }
 
     pub fn is_movie(&self) -> bool {
@@ -124,8 +149,8 @@ impl MediaEntry {
 pub fn next_episode<'a>(episodes: &'a [Episode], current: &Episode) -> Option<&'a Episode> {
     episodes
         .iter()
-        .filter(|e| e.order() > current.order())
-        .min_by_key(|e| e.order())
+        .filter(|e| (e.order(), e.id) > (current.order(), current.id))
+        .min_by_key(|e| (e.order(), e.id))
 }
 
 #[cfg(test)]
@@ -146,6 +171,9 @@ impl Episode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const LONG_ID: u64 = 1_723_015_840_060_750_309;
+    const ROUNDED_ID: u64 = 1_723_015_840_060_750_300;
 
     fn movie() -> MediaEntry {
         MediaEntry {
@@ -229,6 +257,25 @@ mod tests {
     }
 
     #[test]
+    fn episodes_sharing_a_number_are_all_visited() {
+        let special = Episode {
+            id: 99,
+            ..Episode::numbered(4, "")
+        };
+        let episodes = [
+            Episode::numbered(3, ""),
+            special.clone(),
+            Episode::numbered(4, ""),
+            Episode::numbered(5, ""),
+        ];
+        let walk: Vec<u64> =
+            std::iter::successors(episodes.first(), |e| next_episode(&episodes, e))
+                .map(|e| e.id)
+                .collect();
+        assert_eq!(walk, [3, 4, 99, 5]);
+    }
+
+    #[test]
     fn a_fractional_episode_keeps_its_own_place_name_and_identity() {
         let half = Episode {
             id: 75,
@@ -255,6 +302,65 @@ mod tests {
         assert!(whole.get("part").is_none());
         let restored: Episode = serde_json::from_value(whole).unwrap();
         assert_eq!(restored.part, None);
+    }
+
+    #[test]
+    fn a_title_saved_before_ids_were_cut_is_the_title_a_search_finds() {
+        let slug = "/programmi/montalbano.json";
+        let found = MediaEntry {
+            id: stable_hash(slug),
+            slug: slug.into(),
+            ..Default::default()
+        };
+        let pilot = Episode::numbered(1, "");
+        for id in [LONG_ID, ROUNDED_ID] {
+            let saved = MediaEntry {
+                id,
+                ..found.clone()
+            };
+            assert_eq!(saved.key(), found.key());
+            assert_eq!(
+                saved.key_at(Some(1), Some(&pilot)),
+                found.key_at(Some(1), Some(&pilot))
+            );
+        }
+    }
+
+    #[test]
+    fn an_episode_saved_before_ids_were_cut_keeps_the_bits_of_its_id() {
+        let current = Episode {
+            id: stable_hash("/programmi/montalbano.json"),
+            ..Episode::numbered(3, "")
+        };
+        for id in [LONG_ID, ROUNDED_ID] {
+            let moved = Episode {
+                id,
+                ..Episode::numbered(9, "")
+            };
+            assert!(current.matches(&moved));
+            assert!(!Episode::numbered(9, "").matches(&moved));
+        }
+    }
+
+    #[test]
+    fn an_episode_hashed_differently_is_found_by_its_place_and_title() {
+        let saved = Episode {
+            id: LONG_ID,
+            ..Episode::numbered(3, "Finale")
+        };
+        assert!(Episode::numbered(3, "Finale").matches(&saved));
+        assert!(!Episode::numbered(3, "Pilot").matches(&saved));
+        assert!(!Episode::numbered(4, "Finale").matches(&saved));
+    }
+
+    #[test]
+    fn an_episode_saved_with_a_current_id_is_found_by_that_id_alone() {
+        let saved = Episode {
+            id: 41,
+            ..Episode::numbered(3, "")
+        };
+        assert!(saved.matches(&saved));
+        assert!(!Episode::numbered(3, "").matches(&saved));
     }
 
     #[test]

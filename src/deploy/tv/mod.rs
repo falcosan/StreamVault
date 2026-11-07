@@ -22,7 +22,7 @@ const ICON: &[u8] = include_bytes!("../../../assets/img/raster/logo_raster_small
 pub async fn deploy() -> Result<(), String> {
     let session = Session::new("tv")?;
     let tv = discover::choose(&session).await?;
-    let sync = sync();
+    let sync = sync().await;
     match &tv.target {
         Target::Tizen(ip) => tizen::deploy(&session, *ip, sync.as_ref()).await?,
         Target::Android(target) => android::deploy(&session, target, sync.as_ref()).await?,
@@ -40,13 +40,18 @@ fn between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
     Some(&rest[..rest.find(end)?])
 }
 
-fn sync() -> Option<SyncConfig> {
+async fn sync() -> Option<SyncConfig> {
     let saved = std::fs::read_to_string(folders::sync_file()).ok();
     let config = sync_config(saved.as_deref(), |name| std::env::var(name).ok())?;
-    let answer = std::env::var("SYNC").ok().or_else(|| {
-        ask("Sync this TV with your Continue Watching and preferences? Answer n on someone else's TV. [Y/n]")
-    });
-    wanted(answer.as_deref().unwrap_or_default()).then_some(config)
+    let answer = match std::env::var("SYNC") {
+        Ok(answer) => Some(answer),
+        Err(_) => ask("Sync this TV with your Continue Watching and preferences? Answer n on someone else's TV. [Y/n]").await,
+    };
+    let Some(answer) = answer else {
+        say("Not syncing this TV; run it in a terminal or with SYNC=on to sync it.");
+        return None;
+    };
+    wanted(&answer).then_some(config)
 }
 
 fn sync_config(saved: Option<&str>, env: impl Fn(&str) -> Option<String>) -> Option<SyncConfig> {

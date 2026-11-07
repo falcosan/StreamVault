@@ -394,15 +394,16 @@ impl AppState {
     }
 
     pub fn prepare_details(mut self, entry: &MediaEntry, season: Option<u32>) {
-        let loaded = self.details.entry.peek().as_ref() == Some(entry)
+        let shown = self.details.entry.peek().as_ref() == Some(entry);
+        let listed = shown
             && !self.details.seasons.peek().is_empty()
             && !self.details.episodes.peek().is_empty()
             && *self.details.season.peek() == season;
         self.details.entry.set(Some(entry.clone()));
-        match season {
-            Some(_) if loaded => {}
-            _ if reloads(entry, season) => self.load_details(entry.clone(), season),
-            _ => self.clear_episodes(),
+        match next_list(entry, season, shown, listed) {
+            List::Keep => {}
+            List::Load => self.load_details(entry.clone(), season),
+            List::Clear => self.clear_episodes(),
         }
     }
 
@@ -503,7 +504,8 @@ impl AppState {
             return;
         };
         let episodes = self.details.episodes.peek();
-        self.update_watch(|items| watch::record(items, playback.at(time, duration), &episodes));
+        let episodes = of_season(*self.details.season.peek(), &episodes, playback.season);
+        self.update_watch(|items| watch::record(items, playback.at(time, duration), episodes));
     }
 
     pub fn finished(self) {
@@ -513,7 +515,8 @@ impl AppState {
         let item = playback.at(0.0, 0.0);
         let handled = {
             let episodes = self.details.episodes.peek();
-            self.update_watch(|items| watch::finish(items, &item, &episodes))
+            let episodes = of_season(*self.details.season.peek(), &episodes, item.season);
+            self.update_watch(|items| watch::finish(items, &item, episodes))
         };
         if handled {
             return;
@@ -676,8 +679,31 @@ fn lists(listed: Option<u32>, episodes: &[Episode], season: u32) -> bool {
     listed == Some(season) && !episodes.is_empty()
 }
 
-fn reloads(entry: &MediaEntry, season: Option<u32>) -> bool {
-    season.is_some() || entry.is_movie()
+fn of_season(listed: Option<u32>, episodes: &[Episode], season: Option<u32>) -> &[Episode] {
+    if season.is_some_and(|season| lists(listed, episodes, season)) {
+        episodes
+    } else {
+        &[]
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum List {
+    Keep,
+    Load,
+    Clear,
+}
+
+fn next_list(entry: &MediaEntry, season: Option<u32>, shown: bool, listed: bool) -> List {
+    if season.is_some() && listed {
+        List::Keep
+    } else if season.is_some() || entry.is_movie() {
+        List::Load
+    } else if shown {
+        List::Keep
+    } else {
+        List::Clear
+    }
 }
 
 pub fn restart(mut slot: CopyValue<Option<Task>>, future: impl Future<Output = ()> + 'static) {
@@ -861,15 +887,37 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_episode_ignores_the_list_of_another_season() {
+        let first_season = [Episode::numbered(3, ""), Episode::numbered(4, "")];
+        let show = MediaEntry::default();
+        let playing =
+            Playback::new(show, Some(2), Some(Episode::numbered(3, "")), 0.0).at(0.0, 0.0);
+        let mut items = vec![playing.clone()];
+        let list = of_season(Some(1), &first_season, playing.season);
+        assert!(!watch::finish(&mut items, &playing, list));
+        assert_eq!(items, std::slice::from_ref(&playing));
+        let list = of_season(Some(2), &first_season, playing.season);
+        assert!(watch::finish(&mut items, &playing, list));
+        assert!(of_season(Some(1), &first_season, None).is_empty());
+    }
+
+    #[test]
     fn details_shown_for_a_playback_reload_films_and_seasons() {
         let film = MediaEntry {
             media_type: crate::providers::MediaType::Movie,
             ..Default::default()
         };
         let series = MediaEntry::default();
-        assert!(reloads(&film, None));
-        assert!(reloads(&series, Some(1)));
-        assert!(!reloads(&series, None));
+        assert_eq!(next_list(&film, None, true, true), List::Load);
+        assert_eq!(next_list(&series, Some(1), false, false), List::Load);
+        assert_eq!(next_list(&series, Some(1), true, true), List::Keep);
+    }
+
+    #[test]
+    fn a_saved_episode_keeps_the_list_of_the_title_on_screen() {
+        let series = MediaEntry::default();
+        assert_eq!(next_list(&series, None, true, false), List::Keep);
+        assert_eq!(next_list(&series, None, false, false), List::Clear);
     }
 
     #[test]

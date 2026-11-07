@@ -1,7 +1,7 @@
 use crate::providers::{Episode, MediaEntry, MediaType, next_episode};
 use serde::{Deserialize, Serialize};
 
-const END_MARGIN: f64 = 20.0;
+pub const END_MARGIN: f64 = 20.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WatchItem {

@@ -14,7 +14,11 @@ const pick = (tracks, lang) => {
   );
   return exact >= 0
     ? exact
-    : tracks.findIndex((t) => describe(t).includes(wanted));
+    : tracks.findIndex((t) =>
+        describe(t)
+          .split(/[^\p{L}\p{N}]+/u)
+          .some((word) => word.startsWith(wanted)),
+      );
 };
 const primary = (language) => normalize(language).split(/[-_]/)[0];
 const spoken = (tracks, languages) =>
@@ -192,9 +196,9 @@ function attach(video, url, start, prefs, languages, send) {
 
   const hls = new Hls({
     startPosition: start > 0 ? start : -1,
-    subtitleDisplay: prefs.subtitles_on,
   });
   player = hlsPlayer(hls);
+  video.removeEventListener("error", listeners.error);
   let recovered = false;
   hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
     if (!chosen.has("audio")) applyAudio(player, prefs, languages);

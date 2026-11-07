@@ -13,6 +13,7 @@ pub const PREFS_FILE: &str = "player_prefs.json";
 pub const REPLICA_FILE: &str = "sync_replica.json";
 pub const DOWNLOADS_FILE: &str = "downloads.json";
 pub const LANGUAGE_FILE: &str = "language.json";
+pub const DOWNLOADS_LOCK: &str = "downloads.lock";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]

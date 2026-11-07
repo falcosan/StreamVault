@@ -23,7 +23,7 @@ pub fn PlayerView() -> Element {
     let scrub = *player.scrub.read();
     let time = scrub.map_or(status.time, |scrub| scrub.to);
     let offset = scrub.and_then(|scrub| offset_label(scrub.to, scrub.from));
-    let loading = url.is_none() || status.waiting;
+    let loading = app.error.read().is_none() && (url.is_none() || status.waiting);
     let percent = if status.duration > 0.0 {
         time / status.duration * 100.0
     } else {
@@ -54,7 +54,7 @@ pub fn PlayerView() -> Element {
             onkeydown: move |e: KeyboardEvent| {
                 player.wake();
                 match e.key() {
-                    Key::Character(c) if c == " " => player.toggle(),
+                    _ if is_space(&e) => player.toggle(),
                     Key::ArrowLeft => player.seek(-SEEK_SECONDS),
                     Key::ArrowRight => player.seek(SEEK_SECONDS),
                     _ => return,
@@ -74,6 +74,12 @@ pub fn PlayerView() -> Element {
                 class: "player-osd {phase}",
                 class: if pinned { "pinned" },
                 style: "animation-delay: {OSD_SECONDS}s;",
+                onkeydown: move |e: KeyboardEvent| {
+                    if is_space(&e) {
+                        player.wake();
+                        e.stop_propagation();
+                    }
+                },
                 div { class: "player-osd-top",
                     BackButton {}
                     button {
@@ -99,6 +105,11 @@ pub fn PlayerView() -> Element {
                             aria_label: t.seek,
                             aria_valuetext: (t.time_of)(&clock(time), &clock(status.duration)),
                             style: "--progress: {percent}%;",
+                            onkeydown: move |e: KeyboardEvent| {
+                                if is_space(&e) {
+                                    player.toggle();
+                                }
+                            },
                             oninput: move |e| {
                                 if let Ok(time) = e.value().parse() {
                                     player.scrub_to(time);
@@ -234,6 +245,10 @@ fn Video(url: String, start: f64, tracks: Vec<(String, String)>) -> Element {
             }
         }
     }
+}
+
+fn is_space(e: &KeyboardEvent) -> bool {
+    matches!(e.key(), Key::Character(c) if c == " ")
 }
 
 fn is_language_code(language: &str) -> bool {

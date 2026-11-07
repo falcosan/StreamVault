@@ -139,18 +139,23 @@ impl Replica {
     }
 
     pub fn watch(&self) -> Vec<WatchItem> {
-        self.live_watch().take(MAX_WATCH).collect()
+        self.live_watch()
+            .map(|(_, item)| item)
+            .take(MAX_WATCH)
+            .collect()
     }
 
-    fn live_watch(&self) -> impl Iterator<Item = WatchItem> {
+    fn live_watch(&self) -> impl Iterator<Item = (&str, WatchItem)> {
         let mut live: Vec<&Record> = self
             .entries
             .values()
             .filter(|r| r.key.starts_with(WATCH_PREFIX) && r.value.is_some())
             .collect();
         live.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.key.cmp(&b.key)));
-        live.into_iter()
-            .filter_map(|r| WatchItem::deserialize(r.value.as_ref()?).ok())
+        live.into_iter().filter_map(|r| {
+            let item = WatchItem::deserialize(r.value.as_ref()?).ok()?;
+            Some((r.key.as_str(), item))
+        })
     }
 
     pub fn prefs(&self) -> Option<PlayerPrefs> {
@@ -160,7 +165,7 @@ impl Replica {
     pub fn record_watch(&mut self, after: &[WatchItem], at: u64) {
         let previous: HashMap<String, WatchItem> = self
             .live_watch()
-            .map(|item| (watch_key(&item), item))
+            .map(|(key, item)| (key.to_owned(), item))
             .collect();
         let mut kept = HashSet::new();
         for (index, item) in after.iter().take(MAX_WATCH).enumerate() {
@@ -522,6 +527,23 @@ mod tests {
     }
 
     #[test]
+    fn a_record_the_server_rounded_can_still_be_removed() {
+        let mut replica = Replica::new("tv");
+        let rounded = serde_json::to_value(item(9_007_199_254_740_992, 5.0)).ok();
+        replica
+            .apply(
+                &[],
+                accepted(
+                    1,
+                    vec![record("watch:0:9007199254740993", rounded, 1_000, "mac")],
+                ),
+            )
+            .unwrap();
+        replica.record_watch(&[], 2_000);
+        assert!(replica.watch().is_empty());
+    }
+
+    #[test]
     fn prefs_are_recorded_only_when_they_change() {
         let mut replica = Replica::new("tv");
         assert!(!replica.record_prefs(&PlayerPrefs::default(), 500));
@@ -597,6 +619,8 @@ mod tests {
     mod server {
         use super::*;
         use crate::check::run_js;
+        use crate::providers::stable_hash;
+        use crate::watch::END_MARGIN;
 
         const SCRIPT: &str = include_str!("../assets/js/google_apps_script.gs");
         const USERSCRIPT: &str = include_str!("../assets/js/streamvault.user.js");
@@ -606,6 +630,8 @@ mod tests {
             content: String,
             now: u64,
             readable: bool,
+            trashed: bool,
+            logged: u64,
         }
 
         impl Server {
@@ -614,42 +640,55 @@ mod tests {
                     content: content.to_string(),
                     now: 1_000_000,
                     readable: true,
+                    trashed: false,
+                    logged: 0,
                 }
             }
 
-            fn post(&mut self, body: &str) -> Response {
-                let result = run_js(&format!(
+            fn world(&self) -> String {
+                format!(
                     r#"{SCRIPT}
-                    var store = {{ content: {content}, props: {{ TOKEN: "token", FILE_ID: "f" }} }};
+                    var store = {{ content: {content}, props: {{ TOKEN: "token", FILE_ID: "f" }}, logged: 0 }};
+                    var console = {{ error: () => {{ store.logged += 1; }} }};
                     var PropertiesService = {{ getScriptProperties: () => ({{
                       getProperty: (k) => store.props[k] || null,
                       setProperty: (k, v) => {{ store.props[k] = v; }},
                     }}) }};
-                    var DriveApp = {{ getFileById: () => ({{
-                      isTrashed: () => false,
+                    var file = {{
+                      isTrashed: () => {trashed},
+                      getId: () => "f",
                       getBlob: () => ({{ getDataAsString: () => {{
                         if (!{readable}) throw new Error("Drive unavailable");
                         return store.content;
                       }} }}),
                       setContent: (c) => {{ store.content = c; }},
-                    }}) }};
+                    }};
+                    var DriveApp = {{
+                      getFileById: () => file,
+                      getFilesByName: () => ({{ hasNext: () => false }}),
+                      createFile: (_, content) => {{ store.content = content; return file; }},
+                    }};
                     var Utilities = {{ getUuid: () => String(Math.random()) }};
                     var LockService = {{ getScriptLock: () => ({{ tryLock: () => true, releaseLock: () => {{}} }}) }};
                     var ContentService = {{ MimeType: {{ JSON: "json" }}, createTextOutput: (s) => ({{ setMimeType: () => s }}) }};
-                    Date.now = () => {now};
-                    let response;
-                    try {{
-                      response = JSON.parse(doPost({{ postData: {{ contents: {body} }} }}));
-                    }} catch (e) {{
-                      response = {{ ok: false, error: String(e) }};
-                    }}
-                    JSON.stringify({{ response, content: store.content }});"#,
+                    Date.now = () => {now};"#,
                     content = serde_json::to_string(&self.content).unwrap(),
                     now = self.now,
                     readable = self.readable,
+                    trashed = self.trashed,
+                )
+            }
+
+            fn post(&mut self, body: &str) -> Response {
+                let result = run_js(&format!(
+                    r#"{world}
+                    const response = JSON.parse(doPost({{ postData: {{ contents: {body} }} }}));
+                    JSON.stringify({{ response, content: store.content, logged: store.logged }});"#,
+                    world = self.world(),
                     body = serde_json::to_string(body).unwrap(),
                 ));
                 self.content = result["content"].as_str().unwrap().to_owned();
+                self.logged += result["logged"].as_u64().unwrap();
                 serde_json::from_value(result["response"].clone()).unwrap()
             }
 
@@ -675,16 +714,62 @@ mod tests {
             let limits: String = USERSCRIPT
                 .lines()
                 .filter(|line| {
-                    ["MAX_WATCH", "MAX_CHANGES", "TOMBSTONE_TTL_MS"]
+                    ["MAX_WATCH", "MAX_CHANGES", "TOMBSTONE_TTL_MS", "END_MARGIN"]
                         .iter()
                         .any(|name| line.trim_start().starts_with(&format!("const {name} =")))
                 })
                 .collect();
             assert_eq!(
                 run_js(&format!(
-                    "{limits}\nJSON.stringify([MAX_WATCH, MAX_CHANGES, TOMBSTONE_TTL_MS]);"
+                    "{limits}\nJSON.stringify([MAX_WATCH, MAX_CHANGES, TOMBSTONE_TTL_MS, END_MARGIN]);"
                 )),
-                json!([MAX_WATCH, MAX_CHANGES, TOMBSTONE_TTL_MS])
+                json!([MAX_WATCH, MAX_CHANGES, TOMBSTONE_TTL_MS, END_MARGIN as u64])
+            );
+        }
+
+        #[test]
+        fn the_userscript_merges_like_the_apps() {
+            let (_, merge) = USERSCRIPT.split_once("const STORE_KEY").unwrap();
+            let (merge, _) = merge.split_once("function mutatePrefs").unwrap();
+            let result = run_js(&format!(
+                r#"{world}
+                var localStorage = {{
+                  data: {{}},
+                  getItem(key) {{ return this.data[key] ?? null; }},
+                  setItem(key, value) {{ this.data[key] = value; }},
+                }};
+                var crypto = {{ randomUUID: () => "web" }};
+                const TOKEN = "token";
+                let during;
+                const http = async (body) => {{
+                  const response = JSON.parse(doPost({{ postData: {{ contents: body }} }}));
+                  await null;
+                  const write = during;
+                  during = undefined;
+                  write?.();
+                  return response;
+                }};
+                const web = (() => {{ const STORE_KEY{merge} return store; }})();
+                (async () => {{
+                  const watch = {{ entry: {{ id: 1, provider: 0 }} }};
+                  await web.write("watch:0:1", watch);
+                  store.content = "";
+                  await web.sync();
+                  await web.sync();
+                  const restored = store.content.includes("watch:0:1");
+                  store.content = JSON.stringify({{ ...JSON.parse(store.content), seq: 0, entries: {{}} }});
+                  await web.sync();
+                  const reset = web.watch().length;
+                  during = () => web.write("prefs", {{ audio_lang: "newer" }});
+                  await web.write("prefs", {{ audio_lang: "older" }});
+                  await web.sync();
+                  return JSON.stringify({{ restored, reset, prefs: web.prefs().audio_lang, stored: store.content.includes("newer") }});
+                }})();"#,
+                world = Server::new(Value::Null).world(),
+            ));
+            assert_eq!(
+                result,
+                json!({ "restored": true, "reset": 0, "prefs": "newer", "stored": true })
             );
         }
 
@@ -779,6 +864,52 @@ mod tests {
             assert_eq!(ids(&tv.watch()), [1]);
             assert_eq!(ids(&mac.watch()), [1]);
             assert!(server.content.contains("watch:0:1"));
+        }
+
+        #[test]
+        fn an_emptied_document_is_restored_from_the_devices() {
+            let mut server = Server::new(Value::Null);
+            let (mut tv, mut mac) = (Replica::new("tv"), Replica::new("mac"));
+            mac.record_watch(&[item(1, 10.0)], 1_000);
+            server.sync(&mut mac);
+            server.content = String::new();
+            server.sync(&mut mac);
+            server.sync(&mut mac);
+            server.sync(&mut tv);
+            assert_eq!(ids(&tv.watch()), [1]);
+            assert!(!mac.is_dirty());
+        }
+
+        #[test]
+        fn a_deleted_document_is_recreated_and_restored_from_the_devices() {
+            let mut server = Server::new(Value::Null);
+            let (mut tv, mut mac) = (Replica::new("tv"), Replica::new("mac"));
+            mac.record_watch(&[item(1, 10.0)], 1_000);
+            server.sync(&mut mac);
+            let before = mac.document.clone();
+            server.trashed = true;
+            server.sync(&mut mac);
+            assert_ne!(mac.document, before);
+            server.trashed = false;
+            server.sync(&mut mac);
+            server.sync(&mut tv);
+            assert_eq!(ids(&tv.watch()), [1]);
+        }
+
+        #[test]
+        fn hashed_ids_come_back_from_the_script_unchanged() {
+            let id = stable_hash("/programmi/montalbano.json");
+            let mut server = Server::new(Value::Null);
+            let (mut tv, mut mac) = (Replica::new("tv"), Replica::new("mac"));
+            mac.record_watch(&[item(id, 10.0)], 1_000);
+            server.sync(&mut mac);
+            server.sync(&mut tv);
+            assert_eq!(ids(&mac.watch()), [id]);
+            assert_eq!(ids(&tv.watch()), [id]);
+            mac.record_watch(&[], 2_000);
+            server.sync(&mut mac);
+            server.sync(&mut tv);
+            assert!(tv.watch().is_empty());
         }
 
         #[test]
@@ -888,6 +1019,7 @@ mod tests {
             let body = serde_json::to_string(&tv.request("token", &changes)).unwrap();
             assert!(tv.apply(&changes, server.post(&body)).is_err());
             assert_eq!(server.content, r#"{"v":2,"seq":"#);
+            assert_eq!(server.logged, 1);
             assert!(tv.is_dirty());
         }
 

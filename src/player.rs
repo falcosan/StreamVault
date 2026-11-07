@@ -724,6 +724,103 @@ mod tests {
             assert_eq!(spoken(r#"[{ language: "jpn" }]"#), json!(-1));
         }
 
+        const FAKE_HLS: &str = r#"
+            const events = {};
+            const hls = {
+              audioTracks: [{ lang: "ita", name: "Italian" }],
+              subtitleTracks: [],
+              recovered: 0,
+              destroyed: 0,
+              on: (name, handler) => (events[name] ||= []).push(handler),
+              loadSource() {},
+              attachMedia() {},
+              recoverMediaError() { hls.recovered += 1; },
+              destroy() { hls.destroyed += 1; },
+            };
+            const fire = (name, data) => events[name].forEach((handler) => handler(name, data));
+            globalThis.Hls = Object.assign(function () { return hls; }, {
+              Events: { ERROR: "error", AUDIO_TRACK_SWITCHED: "audio-switched", AUDIO_TRACKS_UPDATED: "audio-tracks", SUBTITLE_TRACKS_UPDATED: "subtitle-tracks", SUBTITLE_TRACK_SWITCH: "subtitle-switch" },
+              ErrorTypes: { MEDIA_ERROR: "media" },
+              isSupported: () => true,
+            });
+            globalThis.window = globalThis;
+            globalThis.document = { addEventListener() {}, removeEventListener() {} };
+            const listeners = {};
+            const video = {
+              paused: true,
+              addEventListener: (name, listener) => (listeners[name] = listener),
+              removeEventListener: (name) => delete listeners[name],
+            };
+            const prefs = { audio_lang: "", subtitle_lang: "", subtitles_on: false, speed: 1 };
+            const sent = [];
+            const session = attach(video, "master.m3u8", 0, prefs, [], (event) => sent.push(event));
+        "#;
+
+        #[test]
+        fn hls_gets_one_chance_to_recover_from_a_media_error() {
+            assert_eq!(
+                eval(&format!(
+                    r#"(() => {{{FAKE_HLS}
+                        const failed = () => sent.filter((event) => event.type === "failed").length;
+                        const error = {{ fatal: true, type: "media", details: "decode" }};
+                        listeners.error?.();
+                        fire("error", error);
+                        const recovered = [failed(), hls.recovered, hls.destroyed];
+                        fire("error", error);
+                        return [recovered, [failed(), hls.recovered, hls.destroyed]];
+                    }})()"#
+                )),
+                json!([[0, 1, 0], [1, 1, 1]])
+            );
+        }
+
+        #[test]
+        fn subtitles_come_back_after_an_audio_switch() {
+            assert_eq!(
+                eval(&format!(
+                    r#"(() => {{{FAKE_HLS}
+                        session.select("subtitles", 1);
+                        hls.subtitleTrack = -1;
+                        hls.subtitleDisplay = false;
+                        fire("audio-switched");
+                        return [hls.subtitleTrack, hls.subtitleDisplay];
+                    }})()"#
+                )),
+                json!([1, true])
+            );
+        }
+
+        #[test]
+        fn the_messages_of_the_script_are_the_events_the_app_reads() {
+            let messages = eval(&format!(
+                r#"(() => {{{FAKE_HLS}
+                    hls.audioTrack = 0;
+                    fire("audio-tracks");
+                    return sent;
+                }})()"#
+            ));
+            let events = messages.as_array().unwrap();
+            assert!(events.len() >= 2);
+            for message in events {
+                assert!(
+                    serde_json::from_value::<crate::player::Event>(message.clone()).is_ok(),
+                    "{message}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_saved_language_matches_whole_words_only() {
+            assert_eq!(
+                eval(
+                    r#"[pick([{ label: "French" }, { label: "Italian" }], "en"),
+                        pick([{ label: "Français (France)" }], "français"),
+                        pick([{ label: "Italiano" }], "ital")]"#
+                ),
+                json!([-1, 0, 0])
+            );
+        }
+
         #[test]
         fn a_track_the_viewer_picked_survives_a_track_list_update() {
             assert_eq!(

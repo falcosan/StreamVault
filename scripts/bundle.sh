@@ -15,7 +15,7 @@ tv() {
   shell="$(sed -n 's/^  const SHELL = \([0-9]*\);$/\1/p' "$root/assets/js/boot.js")"
   entry="$(sed -n 's:.*<script type="module" async src="/\./assets/\([^"]*\)"></script>.*:\1:p' "$public/index.html")"
   wasm=("$public"/assets/*.wasm)
-  [[ -n "$version" && -n "$shell" && -n "$entry" && -f "$public/assets/$entry" && ${#wasm[@]} == 1 ]] ||
+  [[ -n "$version" && -n "$shell" && -n "$entry" && -f "$public/assets/$entry" && ${#wasm[@]} == 1 && -f "${wasm[0]}" ]] ||
     die "$public is not a StreamVault web build."
 
   mkdir -p "$out"

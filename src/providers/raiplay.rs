@@ -51,7 +51,7 @@ impl RaiPlay {
     async fn resolve(&self, page: &str) -> ProviderResult<StreamUrl> {
         let json = fetch_json(self.client.get(json_url(page))).await?;
         let video = match json["first_item_path"].as_str() {
-            Some(item) => fetch_json(self.client.get(with_json(&absolute(item)))).await?,
+            Some(item) => fetch_json(self.client.get(json_url(&absolute(item)))).await?,
             None => json,
         };
         let relinker = self
@@ -175,15 +175,21 @@ fn parse_cards(slug: &str, json: &Value) -> Vec<(Episode, String)> {
                     .find_map(|k| card[k].as_str()?.split_whitespace().next()?.parse().ok()),
                 image_url: IMAGE_KEYS
                     .iter()
-                    .find_map(|k| card["images"][k].as_str())
-                    .or_else(|| text(&["immagine", "image"]))
-                    .filter(|i| !i.is_empty())
+                    .find_map(|k| card["images"][k].as_str().filter(|i| !i.is_empty()))
+                    .or_else(|| text(&["immagine", "image"]).filter(|i| !i.is_empty()))
                     .map(absolute),
                 description: text(&["description"]).and_then(non_blank),
             };
             (episode, link.to_owned())
         })
         .collect()
+}
+
+fn page_of(cards: Vec<(Episode, String)>, wanted: &Episode) -> Option<String> {
+    cards
+        .into_iter()
+        .find(|(episode, link)| episode.matches(wanted) && !link.is_empty())
+        .map(|(_, link)| absolute(&link))
 }
 
 fn program_url(slug: &str) -> String {
@@ -198,12 +204,12 @@ fn absolute(path: &str) -> String {
     }
 }
 
-fn with_json(url: &str) -> String {
-    format!("{}.json", url.strip_suffix(".json").unwrap_or(url))
-}
-
 fn json_url(page: &str) -> String {
-    with_json(page.strip_suffix(".html").unwrap_or(page))
+    let stem = page
+        .strip_suffix(".html")
+        .or_else(|| page.strip_suffix(".json"))
+        .unwrap_or(page);
+    format!("{stem}.json")
 }
 
 #[async_trait(?Send)]
@@ -256,14 +262,9 @@ impl Provider for RaiPlay {
                 let season = season.ok_or_else(|| {
                     ProviderError::StreamExtraction("Season required to fetch episode data".into())
                 })?;
-                self.cards(entry, season)
-                    .await?
-                    .into_iter()
-                    .find(|(episode, link)| episode.id == wanted.id && !link.is_empty())
-                    .map(|(_, link)| absolute(&link))
-                    .ok_or_else(|| {
-                        ProviderError::StreamExtraction("Episode URL not found".into())
-                    })?
+                page_of(self.cards(entry, season).await?, wanted).ok_or_else(|| {
+                    ProviderError::StreamExtraction("Episode URL not found".into())
+                })?
             }
         };
         self.resolve(&page).await
@@ -368,11 +369,48 @@ mod tests {
     }
 
     #[test]
+    fn empty_image_fields_do_not_hide_the_next_one() {
+        let json = json!({ "cards": [{ "images":
+            { "landscape": "", "portrait_logo": "", "portrait": "/img/p.jpg" } }] });
+        assert_eq!(
+            parse_cards("/p", &json)[0].0.image_url.as_deref(),
+            Some("https://www.raiplay.it/img/p.jpg")
+        );
+    }
+
+    #[test]
     fn parse_cards_reads_flat_cards() {
         let cards = parse_cards("/p", &json!({ "cards": [{ "toptitle": "Top" }] }));
         assert_eq!(cards[0].0.name, "Top");
         assert_eq!(cards[0].0.number, 1);
         assert_eq!(cards[0].1, "");
+    }
+
+    #[test]
+    fn a_card_saved_before_ids_were_cut_finds_its_episode_after_the_list_moved() {
+        let cards = parse_cards(
+            "/programmi/x.json",
+            &json!({ "cards": [
+                { "weblink": "/video/new.html" },
+                { "weblink": "/video/a.html" }
+            ]}),
+        );
+        for id in [14_173_498_472_382_319_551, 14_173_498_472_382_319_000] {
+            let saved = Episode {
+                id,
+                ..Episode::numbered(1, "")
+            };
+            assert_eq!(
+                page_of(cards.clone(), &saved).as_deref(),
+                Some("https://www.raiplay.it/video/a.html")
+            );
+        }
+        let current = cards[0].0.clone();
+        assert_eq!(
+            page_of(cards.clone(), &current).as_deref(),
+            Some("https://www.raiplay.it/video/new.html")
+        );
+        assert_eq!(page_of(cards, &Episode::numbered(1, "")), None);
     }
 
     #[test]
@@ -399,7 +437,6 @@ mod tests {
         assert_eq!(json_url("https://r/v.html"), "https://r/v.json");
         assert_eq!(json_url("https://r/v.json"), "https://r/v.json");
         assert_eq!(json_url("https://r/v"), "https://r/v.json");
-        assert_eq!(with_json("https://r/v.html"), "https://r/v.html.json");
     }
 
     #[test]

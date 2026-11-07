@@ -135,10 +135,10 @@ public final class MainActivity extends Activity {
         if (body == null && !method.equals("GET") && !method.equals("HEAD")) {
             return null;
         }
-        headers.remove("Referer");
+        headers.put("Referer", origin + "/");
         try {
             return forward(url.toString(), method, headers, body, origin);
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             return new WebResourceResponse(null, null, null);
         }
     }
@@ -232,7 +232,12 @@ public final class MainActivity extends Activity {
                 return connection;
             }
             connection.disconnect();
-            url = new URL(new URL(url), location).toString();
+            URL from = new URL(url);
+            URL to = new URL(from, location);
+            if (!to.getProtocol().equals(from.getProtocol()) || !to.getAuthority().equals(from.getAuthority())) {
+                headers.remove("Authorization");
+            }
+            url = to.toString();
             if (status == 303 || ((status == 301 || status == 302) && method.equals("POST"))) {
                 method = "GET";
                 body = null;
