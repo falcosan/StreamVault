@@ -111,6 +111,7 @@ pub struct Text {
     pub audio_track: fn(&str) -> String,
     pub subtitles_track: fn(&str) -> String,
     pub default_track: &'static str,
+    pub unknown_track: &'static str,
     pub off: &'static str,
     pub next_episode: &'static str,
     pub fullscreen: &'static str,

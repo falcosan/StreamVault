@@ -89,7 +89,9 @@ impl Track {
             })
         });
         localized.unwrap_or_else(|| {
-            if self.label.is_empty() {
+            if self.label.is_empty() && self.language.is_empty() {
+                t.unknown_track.into()
+            } else if self.label.is_empty() {
                 self.language.to_uppercase()
             } else {
                 self.label.clone()
@@ -561,6 +563,12 @@ mod tests {
             ("Japanese".into(), "Japanese".into())
         );
         assert_eq!((bare.name(en), bare.lang()), ("JPN".into(), "jpn".into()));
+    }
+
+    #[test]
+    fn a_track_with_no_name_or_language_still_has_a_name() {
+        assert_eq!(track("", "").name(Lang::En.text()), "Unknown");
+        assert_eq!(track("", "").name(Lang::It.text()), "Sconosciuto");
     }
 
     #[test]

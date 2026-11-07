@@ -1220,6 +1220,7 @@ Samsung installs use no external tool on either.
 | 62  | a slow TV start keeps nothing from that session              | the guard of gotcha 53 refused every save, because the state was read only once, at start                                                                           | read again every 10 s, then merge that session in, but not prefs it never had                                  |
 | 63  | an old RaiPlay card opens a newer episode                    | the first card with the saved title and place won over a later card that kept the bits of the saved id                                                              | a card matching by id comes first, in `find_saved`                                                             |
 | 64  | StreamingCommunity does not play on a Samsung TV             | a `file://` page sends an empty `Referer` whatever `fetch` or XHR asks for (measured on a TV), but the widget may script a frame from another site                  | fetch the embed page from a hidden frame on vixcloud's `robots.txt`                                            |
+| 65  | the subtitle button reads _Subtitles:_ and nothing more      | WebKit adds a caption track found in the stream with no label or language, and with subtitles on and none in the chosen language the first track is picked          | a track with neither is named _Unknown_, as Safari names it                                                    |
 
 ---
 

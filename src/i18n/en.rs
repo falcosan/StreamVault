@@ -57,6 +57,7 @@ pub static TEXT: Text = Text {
     audio_track: |name| format!("Audio: {name}"),
     subtitles_track: |name| format!("Subtitles: {name}"),
     default_track: "Default",
+    unknown_track: "Unknown",
     off: "Off",
     next_episode: "Next episode",
     fullscreen: "Fullscreen",
