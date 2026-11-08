@@ -746,7 +746,14 @@ mod tests {
               destroy() { hls.destroyed += 1; },
             };
             const fire = (name, data) => events[name].forEach((handler) => handler(name, data));
-            globalThis.Hls = Object.assign(function () { return hls; }, {
+            const fragments = {
+              maxTimeToFirstByteMs: 10000,
+              maxLoadTimeMs: 120000,
+              timeoutRetry: { maxNumRetry: 4, retryDelayMs: 0, maxRetryDelayMs: 0 },
+              errorRetry: { maxNumRetry: 6, retryDelayMs: 1000, maxRetryDelayMs: 8000 },
+            };
+            globalThis.Hls = Object.assign(function (config) { hls.config = config; return hls; }, {
+              DefaultConfig: { fragLoadPolicy: { default: fragments } },
               Events: { ERROR: "error", AUDIO_TRACK_SWITCHED: "audio-switched", AUDIO_TRACKS_UPDATED: "audio-tracks", SUBTITLE_TRACKS_UPDATED: "subtitle-tracks", SUBTITLE_TRACK_SWITCH: "subtitle-switch" },
               ErrorTypes: { MEDIA_ERROR: "media" },
               isSupported: () => true,
@@ -779,6 +786,23 @@ mod tests {
                     }})()"#
                 )),
                 json!([[0, 1, 0], [1, 1, 1]])
+            );
+        }
+
+        #[test]
+        fn a_segment_that_times_out_is_retried_like_a_failed_one_for_audio_and_video() {
+            assert_eq!(
+                eval(&format!(
+                    r#"(() => {{{FAKE_HLS}
+                        return hls.config.fragLoadPolicy.default;
+                    }})()"#
+                )),
+                json!({
+                    "maxTimeToFirstByteMs": 10000,
+                    "maxLoadTimeMs": 120000,
+                    "timeoutRetry": { "maxNumRetry": 12, "retryDelayMs": 1000, "maxRetryDelayMs": 8000 },
+                    "errorRetry": { "maxNumRetry": 6, "retryDelayMs": 1000, "maxRetryDelayMs": 8000 },
+                })
             );
         }
 

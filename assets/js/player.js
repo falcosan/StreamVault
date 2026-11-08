@@ -1,4 +1,5 @@
 const PROGRESSIVE = /\.(mp4|m4v|mov|webm|mkv)$/i;
+const AUDIO_AND_VIDEO = 2;
 
 const normalize = (text) =>
   String(text || "")
@@ -194,8 +195,19 @@ function attach(video, url, start, prefs, languages, send) {
     });
   }
 
+  const fragments = Hls.DefaultConfig.fragLoadPolicy.default;
+  const { errorRetry } = fragments;
   const hls = new Hls({
     startPosition: start > 0 ? start : -1,
+    fragLoadPolicy: {
+      default: {
+        ...fragments,
+        timeoutRetry: {
+          ...errorRetry,
+          maxNumRetry: AUDIO_AND_VIDEO * errorRetry.maxNumRetry,
+        },
+      },
+    },
   });
   player = hlsPlayer(hls);
   video.removeEventListener("error", listeners.error);

@@ -1221,6 +1221,7 @@ Samsung installs use no external tool on either.
 | 63  | an old RaiPlay card opens a newer episode                    | the first card with the saved title and place won over a later card that kept the bits of the saved id                                                              | a card matching by id comes first, in `find_saved`                                                             |
 | 64  | StreamingCommunity does not play on a Samsung TV             | a `file://` page sends an empty `Referer` whatever `fetch` or XHR asks for (measured on a TV), but the widget may script a frame from another site                  | fetch the embed page from a hidden frame on vixcloud's `robots.txt`                                            |
 | 65  | the subtitle button reads _Subtitles:_ and nothing more      | WebKit adds a caption track found in the stream with no label or language, and with subtitles on and none in the chosen language the first track is picked          | a track with neither is named _Unknown_, as Safari names it                                                    |
+| 66  | _Playback failed: fragLoadTimeOut_ in the middle of a film   | hls.js retries a timed-out segment only 4 times, with no wait, and audio, video and segmented subtitles share that count, so a stall of 30 to 50 s ends playback    | timeouts get `errorRetry`'s 1–8 s backoff and twice its tries, 6 for each                                      |
 
 ---
 
