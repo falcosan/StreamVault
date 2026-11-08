@@ -68,6 +68,7 @@ pub fn DetailsView(entry: MediaEntry) -> Element {
                         div { class: "hero-desc skeleton", aria_hidden: true,
                             span { class: "skeleton-line" }
                             span { class: "skeleton-line" }
+                            span { class: "skeleton-line" }
                             span { class: "skeleton-line short" }
                         }
                     }
