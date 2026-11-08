@@ -55,7 +55,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
           dx="$(sed -n '/^name = "dioxus"$/{n;s/^version = "\(.*\)"$/\1/p;}' Cargo.lock)"
-          curl -fsSL "https://github.com/DioxusLabs/dioxus/releases/download/v$dx/dx-x86_64-unknown-linux-gnu.tar.gz" |
+          curl -fsSL --retry 5 "https://github.com/DioxusLabs/dioxus/releases/download/v$dx/dx-x86_64-unknown-linux-gnu.tar.gz" |
             tar xz -C "$HOME/.cargo/bin" dx
 
       - name: Build the web bundle
