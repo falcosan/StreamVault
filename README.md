@@ -5,7 +5,7 @@
 <h1 align="center">StreamVault</h1>
 
 <p align="center">
-  <strong>Your streaming catalogue, on your computer and on your TV.</strong><br />
+  <strong>IMDb catalog for streaming on desktop and TV.</strong><br />
   Browse, watch and download in one native app, then pick up on the big screen right where you left off.
 </p>
 
