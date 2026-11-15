@@ -2,8 +2,12 @@
 
 set -euo pipefail
 
+command -v cargo >/dev/null || { echo "cargo not found: install Rust from https://rustup.rs" >&2; exit 1; }
+
 command -v cargo-upgrade >/dev/null || cargo install cargo-edit --locked
 
-cargo upgrade -i allow --exclude x509-cert
+cargo update
+
+cargo upgrade -i allow
 
 cargo update

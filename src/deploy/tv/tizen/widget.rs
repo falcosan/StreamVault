@@ -1,7 +1,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
-use rsa::RsaPrivateKey;
+use rsa::PrivateKey;
 use rsa::pkcs1v15::SigningKey;
 use rsa::pkcs8::DecodePrivateKey;
 use rsa::sha2::{Digest, Sha256};
@@ -37,7 +37,7 @@ pub struct Signer {
 
 impl Signer {
     pub fn new(key: &[u8], chain: Vec<Vec<u8>>) -> Result<Self, String> {
-        let key = RsaPrivateKey::from_pkcs8_der(key)
+        let key = PrivateKey::from_pkcs8_der(key)
             .map_err(|e| format!("The Samsung certificate key is not usable: {e}"))?;
         Ok(Self {
             key: SigningKey::new(key),
@@ -45,7 +45,7 @@ impl Signer {
         })
     }
 
-    pub fn key(&self) -> &RsaPrivateKey {
+    pub fn key(&self) -> &PrivateKey {
         self.key.as_ref()
     }
 
@@ -166,17 +166,17 @@ mod tests {
     use crate::check::scratch_dir;
     use crate::deploy::tv::between;
     use crate::deploy::{remove, write};
+    use getrandom::SysRng;
     use rsa::pkcs1v15::{Signature, VerifyingKey};
     use rsa::pkcs8::EncodePrivateKey;
-    use rsa::rand_core::OsRng;
     use rsa::signature::Verifier;
     use std::io::Read;
     use std::sync::LazyLock;
     use zip::ZipArchive;
 
     const CERTIFICATE: [u8; 200] = [7; 200];
-    static KEY: LazyLock<RsaPrivateKey> =
-        LazyLock::new(|| RsaPrivateKey::new(&mut OsRng, 2048).unwrap());
+    static KEY: LazyLock<PrivateKey> =
+        LazyLock::new(|| PrivateKey::new(&mut SysRng, 2048).unwrap());
 
     fn signer() -> Signer {
         let key = KEY.to_pkcs8_der().unwrap();

@@ -1,6 +1,6 @@
 [package]
 name = "streamvault"
-version = "1.2.8"
+version = "1.2.9"
 edition = "2024"
 build = "src/build.rs"
 
@@ -52,6 +52,7 @@ deploy = [
   "dep:base64",
   "dep:dirs",
   "dep:futures",
+  "dep:getrandom",
   "dep:if-addrs",
   "dep:p12-keystore",
   "dep:reqwest",
@@ -74,8 +75,12 @@ dirs = { version = "7", optional = true }
 if-addrs = { version = "0.15", optional = true }
 base64 = { version = "0.23", optional = true }
 p12-keystore = { version = "0.4", optional = true }
-rsa = { version = "0.9", features = ["getrandom", "sha2"], optional = true }
-x509-cert = { version = "0.2", features = ["builder"], optional = true }
+getrandom = { version = "0.4", features = ["sys_rng"], optional = true }
+rsa = { version = "0.10", features = ["pkcs1v15"], optional = true }
+x509-cert = { version = "0.3", features = [
+  "builder",
+  "hazmat",
+], optional = true }
 zip = { version = "9", default-features = false, features = [
   "deflate-flate2-zlib-rs",
 ], optional = true }

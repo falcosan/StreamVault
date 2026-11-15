@@ -191,7 +191,11 @@ fn sha256(file: &Path) -> Result<String, String> {
             .read(&mut buffer)
             .map_err(|e| format!("Cannot read {}: {e}", file.display()))?;
         if read == 0 {
-            return Ok(format!("{:x}", hasher.finalize()));
+            return Ok(hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect());
         }
         hasher.update(&buffer[..read]);
     }

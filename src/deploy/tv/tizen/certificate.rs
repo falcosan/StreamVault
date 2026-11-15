@@ -2,15 +2,15 @@ use super::os;
 use super::widget::Signer;
 use crate::deploy::{Session, create, parent, read, remove, replace_dir, say, write};
 use crate::folders;
+use getrandom::SysRng;
 use p12_keystore::{
     Certificate as Stored, KeyStore, KeyStoreEntry, Pkcs12ImportPolicy, PrivateKey, PrivateKeyChain,
 };
 use percent_encoding::percent_decode_str;
 use reqwest::multipart::{Form, Part};
-use rsa::RsaPrivateKey;
+use rsa::PrivateKey as RsaPrivateKey;
 use rsa::pkcs1v15::{Signature, SigningKey};
 use rsa::pkcs8::EncodePrivateKey;
-use rsa::rand_core::OsRng;
 use rsa::sha2::Sha512;
 use serde_json::Value;
 use std::error::Error;
@@ -21,15 +21,16 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 use x509_cert::attr::AttributeTypeAndValue;
-use x509_cert::builder::{Builder, RequestBuilder};
-use x509_cert::der::asn1::{Any, Ia5String, Ia5StringRef, SetOfVec, Utf8StringRef};
+use x509_cert::builder::Builder;
+use x509_cert::der::asn1::{Any, Ia5String, Ia5StringRef, Utf8StringRef};
 use x509_cert::der::oid::db::{rfc3280::EMAIL_ADDRESS, rfc4519::CN};
 use x509_cert::der::pem::LineEnding;
 use x509_cert::der::referenced::OwnedToRef;
 use x509_cert::der::{DecodePem, Encode, EncodePem};
 use x509_cert::ext::pkix::name::GeneralName;
 use x509_cert::ext::pkix::{SubjectAltName, SubjectKeyIdentifier};
-use x509_cert::name::{RdnSequence, RelativeDistinguishedName};
+use x509_cert::name::{Name, RdnSequence, RelativeDistinguishedName};
+use x509_cert::request::RequestBuilder;
 use x509_cert::spki::SubjectPublicKeyInfoOwned;
 
 const LOGIN_PORT: u16 = 4794;
@@ -173,7 +174,7 @@ fn adopt(legacy: &Path, name: &str, dir: &Path) -> Result<(), String> {
 }
 
 fn generate() -> Result<RsaPrivateKey, String> {
-    RsaPrivateKey::new(&mut OsRng, KEY_BITS).map_err(|e| e.to_string())
+    RsaPrivateKey::new(&mut SysRng, KEY_BITS).map_err(|e| e.to_string())
 }
 
 fn request(
@@ -194,10 +195,11 @@ fn request(
         }
         let subject = subject
             .into_iter()
-            .map(|attribute| SetOfVec::try_from(vec![attribute]).map(RelativeDistinguishedName))
-            .collect::<Result<_, _>>()?;
+            .map(|attribute| RelativeDistinguishedName::try_from(vec![attribute]))
+            .collect::<Result<Vec<_>, _>>()?;
         let signer = SigningKey::<Sha512>::new(key.clone());
-        let mut builder = RequestBuilder::new(RdnSequence(subject), &signer)?;
+        let subject = Name::hazmat_from_rdn_sequence(RdnSequence::from(subject));
+        let mut builder = RequestBuilder::new(subject)?;
         if let Some((_, duid)) = distributor {
             let names = [
                 "URN:tizen:packageid=".to_owned(),
@@ -208,9 +210,11 @@ fn request(
             .collect::<Result<_, _>>()?;
             builder.add_extension(&SubjectAltName(names))?;
         }
-        let public = SubjectPublicKeyInfoOwned::from_key(key.to_public_key())?;
+        let public = SubjectPublicKeyInfoOwned::from_key(&key.to_public_key())?;
         builder.add_extension(&SubjectKeyIdentifier::try_from(public.owned_to_ref())?)?;
-        Ok(builder.build::<Signature>()?.to_pem(LineEnding::LF)?)
+        Ok(builder
+            .build::<_, Signature>(&signer)?
+            .to_pem(LineEnding::LF)?)
     };
     build().map_err(|e| format!("The certificate request failed: {e}"))
 }
@@ -378,10 +382,10 @@ mod tests {
     use rsa::pkcs1v15::VerifyingKey;
     use rsa::signature::Verifier;
     use std::sync::LazyLock;
-    use x509_cert::builder::{CertificateBuilder, Profile};
+    use x509_cert::builder::CertificateBuilder;
+    use x509_cert::builder::profile::devid::DevId;
     use x509_cert::der::Decode;
     use x509_cert::der::oid::db::rfc5912::SHA_512_WITH_RSA_ENCRYPTION;
-    use x509_cert::name::Name;
     use x509_cert::request::CertReq;
     use x509_cert::serial_number::SerialNumber;
     use x509_cert::time::Validity;
@@ -393,23 +397,22 @@ mod tests {
 
     fn issued_by(authority: &str) -> Vec<u8> {
         let authority = x509_cert::Certificate::from_der(&der(authority).unwrap()).unwrap();
-        let profile = Profile::Leaf {
-            issuer: authority.tbs_certificate.subject,
-            enable_key_agreement: false,
-            enable_key_encipherment: false,
-        };
+        let profile = DevId::new(
+            authority.tbs_certificate().subject().clone(),
+            "CN=StreamVault".parse::<Name>().unwrap(),
+            None,
+        )
+        .unwrap();
         let signer = SigningKey::<Sha512>::new(KEY.clone());
-        let public = SubjectPublicKeyInfoOwned::from_key(KEY.to_public_key()).unwrap();
+        let public = SubjectPublicKeyInfoOwned::from_key(&KEY.to_public_key()).unwrap();
         CertificateBuilder::new(
             profile,
             SerialNumber::from(1u32),
             Validity::from_now(Duration::from_secs(60)).unwrap(),
-            "CN=StreamVault".parse::<Name>().unwrap(),
             public,
-            &signer,
         )
         .unwrap()
-        .build::<Signature>()
+        .build::<_, Signature>(&signer)
         .unwrap()
         .to_der()
         .unwrap()
